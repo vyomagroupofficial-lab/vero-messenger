@@ -102,6 +102,12 @@ export default function CallsScreen() {
   const handleStartCall = async (peerId: string, peerName: string, callType: 'voice' | 'video' = 'voice') => {
     if (!user?.id) return;
     try {
+      if (peerId.startsWith('group:')) {
+        // Group call log entry (see CallService.finish): call the group again.
+        const groupCallId = await callService.startGroupCall({ conversationId: peerId.slice(6), groupName: peerName, callType });
+        router.push(`/call/${groupCallId}`);
+        return;
+      }
       const existing = useChatsStore.getState().conversations.find((c) => c.otherUser?.id === peerId);
       const conversationId =
         existing?.id ?? (isDemo ? null : await conversationRepository.createDirectConversation(peerId));

@@ -91,7 +91,11 @@ export class PeerSession {
   constructor(opts: PeerSessionOptions) {
     this.opts = opts;
     this.remoteDeviceId = opts.remoteDeviceId;
-    this.t = opts.timers ?? { setTimeout, clearTimeout };
+    // Wrapped: browsers throw "Illegal invocation" if the globals are called with another `this`.
+    this.t = opts.timers ?? {
+      setTimeout: ((fn: () => void, ms?: number) => setTimeout(fn, ms)) as typeof setTimeout,
+      clearTimeout: ((id: ReturnType<typeof setTimeout>) => clearTimeout(id)) as typeof clearTimeout,
+    };
     this.pc = opts.adapter.createPeer(opts.config, {
       onIceCandidate: (c) => this.onLocalCandidate(c),
       onTrack: (track, streams) => this.onRemoteTrack(track, streams),

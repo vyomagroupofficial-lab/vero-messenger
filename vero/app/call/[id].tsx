@@ -11,7 +11,9 @@ import { useLocalSearchParams, router } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors, Typography, Spacing, BorderRadius } from '../../src/shared/theme/theme';
-import { callService, ActiveCall, CALL_MEDIA_AVAILABLE } from '../../src/features/calls/CallService';
+import { callService, ActiveCall, callMediaUnavailableReason, callStatusLabel } from '../../src/features/calls/CallService';
+import { CallControls } from '../../src/features/calls/components/CallControls';
+import { CallStage, callHasStage } from '../../src/features/calls/components/CallStage';
 
 export default function CallScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -25,7 +27,8 @@ export default function CallScreen() {
     const leave = () => {
       if (left) return;
       left = true;
-      setTimeout(() => (router.canGoBack() ? router.back() : router.replace('/(tabs)/calls')), 1200);
+      const failed = callService.getActiveCall()?.status === 'failed';
+      setTimeout(() => (router.canGoBack() ? router.back() : router.replace('/(tabs)/calls')), failed ? 2500 : 1200);
     };
     const unsubscribe = callService.subscribe((currentCall) => {
       setCallState(currentCall);
@@ -71,11 +74,20 @@ export default function CallScreen() {
       <View style={styles.topSecurity}>
         <View style={styles.securityBadge}>
           <Ionicons name="lock-closed" size={13} color={Colors.accent} />
-          <Text style={styles.securityText}>Private signalling channel</Text>
+          <Text style={styles.securityText}>End-to-end encrypted</Text>
         </View>
       </View>
 
-      {/* Center Peer Info */}
+      {/* Center: video stage (video / group calls) or peer info */}
+      {callState && callHasStage(callState) ? (
+        <View style={styles.stageSection}>
+          <CallStage call={callState} />
+          <Text style={styles.stageStatus}>
+            {callState.kind === 'group' ? `${callState.peerName} · ` : ''}
+            {callStatusLabel(callState)}
+          </Text>
+        </View>
+      ) : (
       <View style={styles.centerSection}>
         <Animated.View style={[styles.avatarGlow, { transform: [{ scale: pulseAnim }] }]}>
           <View style={styles.avatar}>
@@ -86,19 +98,9 @@ export default function CallScreen() {
         <Text style={styles.peerName}>{peerName}</Text>
 
         <Text style={styles.callStatus}>
-          {isConnected
-            ? formatDuration(callState?.duration || 0)
-            : callState?.status === 'ringing'
-            ? 'Ringing...'
-            : callState?.status === 'calling'
-            ? 'Calling...'
-            : callState?.status === 'ended'
-            ? 'Call Ended'
-            : callState?.status === 'rejected'
-            ? 'Call declined'
-            : callState?.status === 'missed'
-            ? 'No answer'
-            : 'Connecting...'}
+          {callState?.kind === 'group' && callState.status === 'ringing'
+            ? `${callState.inviterName ?? 'Someone'} is calling the group…`
+            : callStatusLabel(callState)}
         </Text>
 
         {callState?.callType === 'video' && (
@@ -108,6 +110,7 @@ export default function CallScreen() {
           </View>
         )}
       </View>
+      )}
 
       {/* Controls */}
       <View style={styles.controlsSection}>
@@ -129,31 +132,19 @@ export default function CallScreen() {
               activeOpacity={0.8}
             >
               <Ionicons name="call" size={32} color={Colors.white} />
-              <Text style={styles.btnLabel}>Accept</Text>
+              <Text style={styles.btnLabel}>{callState?.kind === 'group' ? 'Join' : 'Accept'}</Text>
             </TouchableOpacity>
           </View>
         ) : (
-          /* In-Call Controls */
+          /* In-Call Controls (wired to the real media tracks) */
           <View style={styles.inCallControls}>
-            {!CALL_MEDIA_AVAILABLE && (
+            {!!callMediaUnavailableReason() && (
               <View style={styles.videoBadge}>
                 <Ionicons name="information-circle-outline" size={14} color={Colors.textSecondary} />
-                <Text style={styles.videoBadgeText}>
-                  Audio/video streaming isn't available in this version yet.
-                </Text>
+                <Text style={styles.videoBadgeText}>{callMediaUnavailableReason()}</Text>
               </View>
             )}
-
-            {/* End Call Button */}
-            <View style={styles.endCallWrapper}>
-              <TouchableOpacity
-                style={styles.endCallBtn}
-                onPress={handleEndCall}
-                activeOpacity={0.8}
-              >
-                <Ionicons name="call" size={30} color={Colors.white} style={styles.rotatedIcon} />
-              </TouchableOpacity>
-            </View>
+            {callState && <CallControls call={callState} />}
           </View>
         )}
       </View>
@@ -192,6 +183,18 @@ const styles = StyleSheet.create({
   centerSection: {
     alignItems: 'center',
     gap: Spacing.md,
+  },
+  stageSection: {
+    flex: 1,
+    alignSelf: 'stretch',
+    marginVertical: Spacing.md,
+    marginHorizontal: Spacing.sm,
+    gap: Spacing.xs,
+  },
+  stageStatus: {
+    color: Colors.accent,
+    fontSize: Typography.sm,
+    textAlign: 'center',
   },
   avatarGlow: {
     width: 150,

@@ -27,6 +27,7 @@ import { messageRepository } from '../../src/features/messages/MessageRepository
 import { conversationRepository } from '../../src/features/chats/ConversationRepository';
 import { mediaRepository, MediaTooLargeError, PickedMedia } from '../../src/features/media/MediaRepository';
 import { callService } from '../../src/features/calls/CallService';
+import { GroupCallButton } from '../../src/features/calls/components/GroupCallButton';
 import { friendlyError } from '../../src/core/network/supabase';
 import {
   ConversationMember,
@@ -596,6 +597,9 @@ export default function ChatScreen() {
                 <Ionicons name="videocam-outline" size={22} color={Colors.textPrimary} />
               </TouchableOpacity>
             </>
+          )}
+          {isGroup && !isDemo && (
+            <GroupCallButton conversationId={conversationId} groupName={title} memberCount={members.length} style={styles.headerBtn} />
           )}
           <TouchableOpacity style={styles.headerBtn} onPress={() => setShowMenuModal(true)}>
             <Ionicons name="ellipsis-vertical" size={22} color={Colors.textPrimary} />
