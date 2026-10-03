@@ -44,6 +44,8 @@ import {
   UntrustedIdentityError,
 } from '../src/core/crypto/ratchet/errors';
 import { MemoryRatchetStore, RatchetStore } from '../src/core/crypto/ratchet/store';
+import { MinimalSqlDb, SqliteRatchetStore, RATCHET_TABLE } from '../src/core/crypto/ratchet/SqliteRatchetStore';
+import { bundleFromRow } from '../src/core/crypto/ratchet/serverApi';
 import { openRow, sealRow } from '../src/core/crypto/ratchet/atRest';
 import { KeyedMutex } from '../src/core/crypto/ratchet/mutex';
 import { parseAnyEnvelope, parseSlot } from '../src/core/crypto/ratchet/envelope';
@@ -147,7 +149,7 @@ interface Device {
   userId: string;
   deviceId: string;
   identity: KeyPairB64;
-  store: MemoryRatchetStore;
+  store: RatchetStore;
   manager: SessionManager;
   broken: string[];
   pins: Map<string, string>;
@@ -158,7 +160,7 @@ function makeDevice(
   backend: FakeBackend,
   userId: string,
   deviceId: string,
-  opts: { store?: MemoryRatchetStore; identity?: KeyPairB64; signing?: KeyPairB64; clock?: { now: number } } = {}
+  opts: { store?: RatchetStore; identity?: KeyPairB64; signing?: KeyPairB64; clock?: { now: number } } = {}
 ): Device {
   const identity = opts.identity ?? generateX25519KeyPair(sodium);
   const signing = opts.signing ?? generateSigningKeyPair(sodium);
@@ -361,7 +363,7 @@ describe('Double Ratchet core', () => {
 
   test('stored skipped keys are capped and expire', () => {
     let { a, b } = init();
-    const msgs = [];
+    const msgs: ReturnType<typeof enc>[] = [];
     for (let i = 0; i < 1200; i++) {
       const m = enc(a, `m${i}`);
       a = m.state;
@@ -772,6 +774,88 @@ describe('storage', () => {
     assert.equal(await store.get('opk', '1'), null);
     await store.purge(now);
     assert.deepEqual(await store.keys('pt'), ['b']);
+  });
+
+  test('SQLite store: sealed rows, atomic batches with tombstones, purge follows the messages table', async () => {
+    const { DatabaseSync } = await import('node:sqlite');
+    const raw = new DatabaseSync(':memory:');
+    const db: MinimalSqlDb = {
+      execAsync: async (sql) => void raw.exec(sql),
+      runAsync: async (sql, params) => raw.prepare(sql).run(...params),
+      getFirstAsync: async <T>(sql: string, params: (string | number | null)[]) =>
+        ((raw.prepare(sql).get(...params) as T) ?? null),
+      getAllAsync: async <T>(sql: string, params: (string | number | null)[]) => raw.prepare(sql).all(...params) as T[],
+    };
+    raw.exec('CREATE TABLE messages (id TEXT PRIMARY KEY, deleted_at TEXT, expires_at TEXT)');
+    let now = Date.now();
+    const key = sodium.randombytes_buf(32);
+    const store = new SqliteRatchetStore(sodium, async () => db, key, () => now);
+
+    await store.write([
+      { ns: 'session', key: 'dev-1', value: { secret: 'state' } },
+      { ns: 'opk', key: '5', value: { id: 5 } },
+      { ns: 'pt', key: `${CONV}|m-live|dev-1`, value: 'kept', ref: 'm-live' },
+      { ns: 'pt', key: `${CONV}|m-deleted|dev-1`, value: 'gone', ref: 'm-deleted' },
+      { ns: 'pt', key: `${CONV}|m-reaction|dev-1`, value: 'orphan', ref: 'm-reaction' },
+      { ns: 'pt', key: `story:alice|s1|dev-1`, value: 'story', ref: 's1', expiresAt: now + 1000 },
+    ]);
+    raw.exec(`INSERT INTO messages VALUES ('m-live', NULL, NULL), ('m-deleted', '2020-01-01', NULL)`);
+    // Values are sealed at rest.
+    const stored = raw.prepare(`SELECT v FROM ${RATCHET_TABLE} WHERE ns = 'session'`).get() as { v: string };
+    assert.ok(!stored.v.includes('state'));
+    assert.deepEqual(await store.get('session', 'dev-1'), { secret: 'state' });
+    // A different storage key can't read the rows.
+    await assert.rejects(new SqliteRatchetStore(sodium, async () => db, sodium.randombytes_buf(32)).get('session', 'dev-1'));
+
+    // Deleting inside a batch writes a tombstone in the same statement.
+    await store.write([
+      { ns: 'session', key: 'dev-1', value: { secret: 'next' } },
+      { ns: 'opk', key: '5', value: null },
+    ]);
+    assert.equal(await store.get('opk', '5'), null);
+    assert.deepEqual(await store.keys('opk'), []);
+    assert.deepEqual(await store.get('session', 'dev-1'), { secret: 'next' });
+
+    now += 11 * 60 * 1000;
+    await store.purge(now);
+    assert.equal(await store.get('pt', `${CONV}|m-live|dev-1`), 'kept');
+    assert.equal(await store.get('pt', `${CONV}|m-deleted|dev-1`), null);
+    assert.equal(await store.get('pt', `${CONV}|m-reaction|dev-1`), null);
+    assert.equal(await store.get('pt', 'story:alice|s1|dev-1'), null);
+    const count = raw.prepare(`SELECT count(*) AS n FROM ${RATCHET_TABLE}`).get() as { n: number };
+    assert.equal(count.n, 2, 'tombstones and expired rows are removed');
+    await store.wipe();
+    assert.equal(await store.get('session', 'dev-1'), null);
+
+    // And a full conversation runs on it.
+    const backend = new FakeBackend();
+    const alice = makeDevice(backend, 'alice', 'alice-phone');
+    const bob = makeDevice(backend, 'bob', 'bob-phone', { store: new SqliteRatchetStore(sodium, async () => db, key) });
+    await alice.manager.refreshPreKeys();
+    await bob.manager.refreshPreKeys();
+    for (let i = 0; i < 4; i++) {
+      assert.equal(await open(bob, alice, await send(alice, [bob], `a${i}`)), `a${i}`);
+      assert.equal(await open(alice, bob, await send(bob, [alice], `b${i}`)), `b${i}`);
+    }
+  });
+
+  test('bundle rows from claim_prekey_bundle are parsed defensively', () => {
+    assert.equal(bundleFromRow(null), null);
+    assert.equal(bundleFromRow({ device_id: 'd', identity_public_key: 'k' }), null);
+    const b = bundleFromRow({
+      device_id: 'd',
+      user_id: 'u',
+      identity_public_key: 'ik',
+      signing_public_key: 'sk',
+      identity_signature: 'sig',
+      signed_prekey_id: 3,
+      signed_prekey: 'spk',
+      signed_prekey_signature: 'spks',
+      one_time_prekey_id: null,
+      one_time_prekey: null,
+    });
+    assert.equal(b!.oneTimePreKey, null);
+    assert.equal(b!.signedPreKeyId, 3);
   });
 
   test('keyed mutex serialises per key and runs different keys concurrently', async () => {

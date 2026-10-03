@@ -7,6 +7,7 @@ import { authRepository, AuthUser, AuthResult } from './AuthRepository';
 import { supabase, isSupabaseConfigured } from '../../core/network/supabase';
 import { databaseService } from '../../core/storage/DatabaseService';
 import { keyDirectory } from '../keys/KeyDirectory';
+import { sessionService } from '../keys/SessionService';
 
 export const DEMO_USER_ID = 'demo-user';
 
@@ -34,11 +35,13 @@ export const useAuthStore = create<AuthState>((set, get) => {
     if (result.success && result.user && result.deviceId) {
       databaseService.open(result.user.id);
       keyDirectory.reset();
+      void sessionService.start(result.user.id, result.deviceId);
       set({ user: result.user, deviceId: result.deviceId, isAuthenticated: true, isDemo: false });
     }
   };
 
   const clearSession = () => {
+    sessionService.stop();
     void databaseService.close();
     keyDirectory.reset();
     set({ user: null, deviceId: null, isAuthenticated: false, isDemo: false });
