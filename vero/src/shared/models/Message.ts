@@ -12,7 +12,7 @@ export interface User {
 
 /** What the UI renders. The server only knows the coarse ServerMessageType. */
 export type MessageType = 'text' | 'image' | 'video' | 'voice' | 'document' | 'system' | 'unavailable';
-export type ServerMessageType = 'text' | 'media' | 'reaction' | 'system';
+export type ServerMessageType = 'text' | 'media' | 'reaction' | 'system' | 'control';
 export type MessageStatus = 'sending' | 'sent' | 'delivered' | 'read' | 'failed';
 
 export interface MediaAttachment {
@@ -54,6 +54,14 @@ export interface Message {
   status: MessageStatus;
   isOwn: boolean;
   reactions?: MessageReaction[];
+  /** Server time of the latest applied edit (text/caption changed by the sender). */
+  editedAt?: string | null;
+  /** Deleted for everyone: shown as "This message was deleted". */
+  revokedAt?: string | null;
+  /** Forward hop count from the encrypted payload (0/undefined = original). */
+  forwardCount?: number;
+  /** Starred on this account (local, synced between own devices). */
+  starred?: boolean;
 }
 
 export type ConversationType = 'direct' | 'group';
@@ -76,8 +84,16 @@ export interface Conversation {
     senderName?: string;
     createdAt: string;
     isOwn: boolean;
+    status?: MessageStatus;
+    /** Ready-to-show line: "Alice: 📷 Photo" in groups, deletion notices, etc. */
+    preview?: string;
   };
   unreadCount: number;
+  /** Own, private chat state (conversation_prefs). */
+  pinnedAt?: string | null;
+  archivedAt?: string | null;
+  /** Present only if the backend exposes a mute column (owned elsewhere). */
+  mutedUntil?: string | null;
   createdAt: string;
   updatedAt: string;
 }

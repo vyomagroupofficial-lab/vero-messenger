@@ -13,6 +13,7 @@ import { supabase } from '../../core/network/supabase';
 import { cryptoManager } from '../../core/crypto/CryptoManager';
 import { NotAddressedToDeviceError } from '../../core/crypto/primitives';
 import { databaseService } from '../../core/storage/DatabaseService';
+import { messagingStore } from '../../core/storage/messagingStore';
 import { SessionContext } from '../../core/session';
 import { generateUUID } from '../../shared/utils/uuid';
 import {
@@ -24,11 +25,14 @@ import {
   messagePreview,
 } from '../../shared/models/Message';
 import { MessagePayload, parsePayload, serverTypeFor, timerLabel } from '../../shared/models/payload';
+import type { EditPayload } from '../../shared/models/messageExtras';
 import { keyDirectory } from '../keys/KeyDirectory';
 import { useSettingsStore } from '../settings/useSettingsStore';
 import { computeStatus } from './status';
+import { applyIncomingEdit, applyPendingEdits, hideMessageLocally, revokeMessage } from './messageEffects';
 
 export const PAGE_SIZE = 50;
+const SYNC_MAX_PAGES = 6;
 
 export interface ServerMessageRow {
   id: string;
@@ -48,8 +52,13 @@ export interface ServerMessageRow {
 export type AppliedRow =
   | { kind: 'message'; message: Message }
   | { kind: 'reaction'; target: Message }
-  | { kind: 'deleted'; id: string }
+  | { kind: 'edited'; target: Message }
+  /** Deleted for everyone; `tombstone` is the "This message was deleted" placeholder to show. */
+  | { kind: 'deleted'; id: string; tombstone?: Message | null }
   | { kind: 'ignored' };
+
+/** Payloads that show up as a message bubble (reactions and edits modify other messages). */
+const isVisiblePayload = (p: MessagePayload) => p.t !== 'reaction' && p.t !== 'edit';
 
 const SELECT_COLUMNS =
   'id, conversation_id, sender_device_id, sender_user_id, ciphertext, message_type, media_id, reply_to_message_id, created_at, expires_at, deleted_at';
@@ -118,30 +127,60 @@ class MessageRepository {
       status: 'sending',
       isOwn: true,
       reactions: [],
+      forwardCount: payload.t === 'text' || payload.t === 'media' ? payload.fwd : undefined,
     };
+    const visible = isVisiblePayload(payload);
 
-    if (payload.t !== 'reaction') {
+    if (visible) {
       await databaseService.saveMessage(local);
       onLocal?.(local);
     }
 
     if (session.isDemo) {
       const done = { ...local, status: 'read' as MessageStatus };
-      if (payload.t !== 'reaction') await databaseService.saveMessage(done);
+      if (visible) await databaseService.saveMessage(done);
       return done;
     }
 
     try {
-      await this.deliver(session, local, payload, opts.mediaId ?? null);
-      const sent = { ...local, status: 'sent' as MessageStatus };
-      if (payload.t !== 'reaction') await databaseService.updateMessageStatus(id, 'sent');
+      const serverAt = await this.deliver(session, local, payload, opts.mediaId ?? null);
+      // Adopt the server's timestamp: receipts, ordering and sync cursors all use server time.
+      const sent = { ...local, status: 'sent' as MessageStatus, createdAt: serverAt ?? local.createdAt };
+      if (visible) await messagingStore.confirmSent(id, serverAt);
       return sent;
     } catch (e) {
       console.warn('[MessageRepository] send failed:', (e as Error)?.message);
-      if (payload.t !== 'reaction') await databaseService.updateMessageStatus(id, 'failed');
-      if (payload.t === 'reaction') throw e;
+      if (!visible) throw e;
+      await databaseService.updateMessageStatus(id, 'failed');
       return { ...local, status: 'failed' };
     }
+  }
+
+  /**
+   * Sends an encrypted control payload (e.g. an edit) that changes another
+   * message instead of showing up itself. Returns the control row id and its
+   * server time. Throws on failure.
+   */
+  async sendControl(
+    session: SessionContext,
+    conversationId: string,
+    payload: EditPayload,
+    expiresAt: string | null
+  ): Promise<{ id: string; createdAt: string }> {
+    const control: Message = {
+      id: generateUUID(),
+      conversationId,
+      senderDeviceId: session.deviceId,
+      senderUserId: session.userId,
+      messageType: 'system',
+      createdAt: new Date().toISOString(),
+      expiresAt,
+      status: 'sending',
+      isOwn: true,
+    };
+    if (session.isDemo) return { id: control.id, createdAt: control.createdAt };
+    const serverAt = await this.deliver(session, control, payload, null);
+    return { id: control.id, createdAt: serverAt ?? control.createdAt };
   }
 
   private async deliver(
@@ -149,7 +188,7 @@ class MessageRepository {
     local: Message,
     payload: MessagePayload,
     mediaId: string | null
-  ): Promise<void> {
+  ): Promise<string | null> {
     const recipients = await keyDirectory.getConversationRecipients(local.conversationId);
     const ciphertext = await cryptoManager.encryptMessage(
       session.userId,
@@ -157,7 +196,7 @@ class MessageRepository {
       { conversationId: local.conversationId, messageId: local.id, senderDeviceId: session.deviceId },
       recipients
     );
-    const { error } = await supabase.from('messages').insert({
+    const { data, error } = await supabase.from('messages').insert({
       id: local.id,
       conversation_id: local.conversationId,
       sender_device_id: session.deviceId,
@@ -167,27 +206,48 @@ class MessageRepository {
       media_id: mediaId,
       reply_to_message_id: local.replyToMessageId,
       expires_at: local.expiresAt,
-    });
+    }).select('created_at').maybeSingle();
     if (error) throw error;
+    return (data as { created_at?: string } | null)?.created_at ?? null;
   }
 
-  /** Re-sends a failed text/media message with a fresh id. */
+  /**
+   * Re-sends a failed text/media message with the SAME id, so a send that
+   * actually reached the server before the error (e.g. lost response) is
+   * deduplicated instead of appearing twice.
+   */
   async retry(session: SessionContext, failed: Message, onLocal?: (m: Message) => void): Promise<Message | null> {
     let payload: MessagePayload | null = null;
-    if (failed.messageType === 'text' && failed.content) payload = { t: 'text', body: failed.content };
+    const fwd = failed.forwardCount || undefined;
+    if (failed.messageType === 'text' && failed.content) payload = { t: 'text', body: failed.content, ...(fwd ? { fwd } : {}) };
     else if (failed.media && ['image', 'video', 'voice', 'document'].includes(failed.messageType)) {
       const { localUri: _l, ...media } = failed.media;
-      payload = { t: 'media', kind: failed.messageType as any, caption: failed.content, media };
+      const caption = failed.messageType === 'document' ? undefined : failed.content;
+      payload = { t: 'media', kind: failed.messageType as any, caption, media, ...(fwd ? { fwd } : {}) };
     }
     if (!payload) return null;
-    await databaseService.markMessageDeleted(failed.id);
-    return this.send(
-      session,
-      failed.conversationId,
-      payload,
-      { mediaId: failed.media?.mediaId, localUri: failed.media?.localUri },
-      onLocal
-    );
+
+    const sending: Message = { ...failed, status: 'sending' };
+    await databaseService.updateMessageStatus(failed.id, 'sending');
+    onLocal?.(sending);
+    if (session.isDemo) {
+      await databaseService.updateMessageStatus(failed.id, 'read');
+      return { ...failed, status: 'read' };
+    }
+    try {
+      const serverAt = await this.deliver(session, sending, payload, failed.media?.mediaId ?? null);
+      await messagingStore.confirmSent(failed.id, serverAt);
+      return { ...failed, status: 'sent', createdAt: serverAt ?? failed.createdAt };
+    } catch (e) {
+      if ((e as { code?: string })?.code === '23505') {
+        // Already on the server: the earlier attempt went through.
+        await messagingStore.confirmSent(failed.id, null);
+        return { ...failed, status: 'sent' };
+      }
+      console.warn('[MessageRepository] retry failed:', (e as Error)?.message);
+      await databaseService.updateMessageStatus(failed.id, 'failed');
+      return { ...failed, status: 'failed' };
+    }
   }
 
   async react(session: SessionContext, target: Message, emoji: string | null): Promise<Message> {
@@ -208,16 +268,17 @@ class MessageRepository {
     await this.send(session, conversationId, { t: 'timer', seconds }, {}, onLocal);
   }
 
-  async deleteForEveryone(session: SessionContext, message: Message): Promise<void> {
+  /** Server-side delete (48 h window, 006) + local tombstone. Returns the tombstone. */
+  async deleteForEveryone(session: SessionContext, message: Message): Promise<Message | null> {
     if (!session.isDemo) {
       const { error } = await supabase.rpc('delete_message', { p_message_id: message.id });
       if (error) throw error;
     }
-    await databaseService.markMessageDeleted(message.id);
+    return revokeMessage(message.id);
   }
 
   async deleteForMe(messageId: string): Promise<void> {
-    await databaseService.markMessageDeleted(messageId);
+    await hideMessageLocally(messageId);
   }
 
   // ── Receiving ──────────────────────────────────────────────────────────────
@@ -251,22 +312,35 @@ class MessageRepository {
     return { messages, hasMore: messages.length === PAGE_SIZE };
   }
 
-  /** Fetches anything newer than what we have locally (used for chat list previews). */
+  /**
+   * Fetches anything newer than what we have locally (chat list previews and
+   * unread counts). Walks back up to SYNC_MAX_PAGES pages so a long offline
+   * period doesn't leave a gap; first sync of a chat takes only the newest page.
+   */
   async syncLatest(session: SessionContext, conversationId: string, names: Record<string, string>): Promise<number> {
     if (session.isDemo) return 0;
     const newest = await databaseService.getNewestMessageTime(conversationId);
-    let query = supabase
-      .from('messages')
-      .select(SELECT_COLUMNS)
-      .eq('conversation_id', conversationId)
-      .order('created_at', { ascending: false })
-      .limit(PAGE_SIZE);
-    if (newest) query = query.gt('created_at', newest);
-    const { data, error } = await query;
-    if (error || !data?.length) return 0;
-    await this.applyRows(session, (data as ServerMessageRow[]).reverse(), names);
-    await this.markReceipt(conversationId, 'delivered');
-    return data.length;
+    let applied = 0;
+    let before: string | null = null;
+    for (let page = 0; page < SYNC_MAX_PAGES; page++) {
+      let query = supabase
+        .from('messages')
+        .select(SELECT_COLUMNS)
+        .eq('conversation_id', conversationId)
+        .order('created_at', { ascending: false })
+        .limit(PAGE_SIZE);
+      if (newest) query = query.gt('created_at', newest);
+      if (before) query = query.lt('created_at', before);
+      const { data, error } = await query;
+      if (error || !data?.length) break;
+      const rows = data as ServerMessageRow[];
+      await this.applyRows(session, [...rows].reverse(), names);
+      applied += rows.length;
+      if (!newest || rows.length < PAGE_SIZE) break;
+      before = rows[rows.length - 1].created_at;
+    }
+    if (applied > 0) await this.markReceipt(conversationId, 'delivered');
+    return applied;
   }
 
   async fetchOne(session: SessionContext, messageId: string, names: Record<string, string>): Promise<AppliedRow> {
@@ -286,23 +360,24 @@ class MessageRepository {
     const out: AppliedRow[] = [];
 
     for (const row of rows) {
+      const isOwn = row.sender_user_id === session.userId;
+
       if (row.deleted_at) {
-        await databaseService.markMessageDeleted(row.id);
-        out.push({ kind: 'deleted', id: row.id });
+        out.push(await this.applyDeletedRow(session, row, names));
         continue;
       }
 
       const existing = await databaseService.getMessage(row.id);
       if (existing && existing.messageType !== 'unavailable') {
         if (existing.status === 'sending' || existing.status === 'failed') {
-          await databaseService.updateMessageStatus(row.id, 'sent');
+          await messagingStore.confirmSent(row.id, row.created_at);
           existing.status = 'sent';
+          existing.createdAt = row.created_at;
         }
         if (!existing.deletedAt) out.push({ kind: 'message', message: existing });
         continue;
       }
 
-      const isOwn = row.sender_user_id === session.userId;
       const base: Message = {
         id: row.id,
         conversationId: row.conversation_id,
@@ -336,7 +411,7 @@ class MessageRepository {
           e instanceof NotAddressedToDeviceError
             ? 'This message was sent before this device was linked.'
             : "This message couldn't be decrypted.";
-        if (row.message_type === 'reaction') {
+        if (row.message_type === 'reaction' || row.message_type === 'control') {
           out.push({ kind: 'ignored' });
           continue;
         }
@@ -357,6 +432,12 @@ class MessageRepository {
         continue;
       }
 
+      if (payload.t === 'edit') {
+        const target = await applyIncomingEdit(row, payload);
+        out.push(target ? { kind: 'edited', target } : { kind: 'ignored' });
+        continue;
+      }
+
       if (payload.t === 'timer' && !isOwn) {
         await databaseService.setDisappearingTimer(row.conversation_id, payload.seconds);
       }
@@ -369,11 +450,43 @@ class MessageRepository {
         content: payload.t === 'timer' ? `${isOwn ? 'You' : base.senderName} set ${content?.toLowerCase()}` : content,
         media: payload.t === 'media' ? { ...payload.media } : undefined,
         replyPreview: replyTarget ? messagePreview(replyTarget.messageType, replyTarget.content) : null,
+        forwardCount: payload.t === 'text' || payload.t === 'media' ? payload.fwd : undefined,
       };
       await databaseService.saveMessage(message);
-      out.push({ kind: 'message', message });
+      out.push({ kind: 'message', message: await applyPendingEdits(message) });
     }
     return out;
+  }
+
+  /** A row deleted for everyone: tombstone the local copy (or create one for a text/media row we never saw). */
+  private async applyDeletedRow(
+    session: SessionContext,
+    row: ServerMessageRow,
+    names: Record<string, string>
+  ): Promise<AppliedRow> {
+    const existing = await databaseService.getMessage(row.id);
+    if (existing) {
+      const tombstone = existing.revokedAt ? existing : await revokeMessage(row.id, row.deleted_at);
+      return { kind: 'deleted', id: row.id, tombstone: tombstone && !tombstone.deletedAt ? tombstone : null };
+    }
+    if (row.message_type !== 'text' && row.message_type !== 'media') return { kind: 'deleted', id: row.id };
+    const isOwn = row.sender_user_id === session.userId;
+    const tombstone: Message = {
+      id: row.id,
+      conversationId: row.conversation_id,
+      senderDeviceId: row.sender_device_id,
+      senderUserId: row.sender_user_id,
+      senderName: isOwn ? 'You' : names[row.sender_user_id] || 'Unknown',
+      messageType: 'text',
+      createdAt: row.created_at,
+      expiresAt: null,
+      status: isOwn ? 'sent' : 'delivered',
+      isOwn,
+      reactions: [],
+      revokedAt: row.deleted_at,
+    };
+    await databaseService.saveMessage(tombstone);
+    return { kind: 'deleted', id: row.id, tombstone };
   }
 
   // ── Receipts ───────────────────────────────────────────────────────────────

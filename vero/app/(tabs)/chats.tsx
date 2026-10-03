@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -15,8 +15,16 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuthStore } from '../../src/features/auth/useAuthStore';
 import { useChatsStore } from '../../src/features/chats/useChatsStore';
-import { Conversation, Message, conversationTitle, messagePreview } from '../../src/shared/models/Message';
-import { databaseService } from '../../src/core/storage/DatabaseService';
+import { Conversation, conversationTitle } from '../../src/shared/models/Message';
+import { splitArchived } from '../../src/features/chats/chatList';
+import {
+  ArchivedEntry,
+  ChatActionSheet,
+  ChatMarkers,
+  StatusTicks,
+} from '../../src/features/chats/components/ChatRowParts';
+import { useMessageSearch } from '../../src/features/search/useMessageSearch';
+import { GlobalMessageResults } from '../../src/features/search/components/GlobalMessageResults';
 import { Colors, Typography, Spacing, BorderRadius } from '../../src/shared/theme/theme';
 import { StoriesTray } from '../../src/features/stories/components/StoriesTray';
 import dayjs from 'dayjs';
@@ -42,9 +50,10 @@ export function avatarColor(seed: string): string {
 interface ChatListItemProps {
   conversation: Conversation;
   onPress: () => void;
+  onLongPress?: () => void;
 }
 
-const ChatListItem = React.memo(function ChatListItem({ conversation, onPress }: ChatListItemProps) {
+const ChatListItem = React.memo(function ChatListItem({ conversation, onPress, onLongPress }: ChatListItemProps) {
   const isDirect = conversation.conversationType === 'direct';
   const name = conversationTitle(conversation);
   const initials = name.slice(0, 2).toUpperCase();
@@ -52,11 +61,18 @@ const ChatListItem = React.memo(function ChatListItem({ conversation, onPress }:
   const lastMsgTime = lastMsg ? dayjs(lastMsg.createdAt).fromNow(true) : '';
   const isOwn = lastMsg?.isOwn;
   const preview = lastMsg
-    ? `${!isDirect && lastMsg.senderName ? `${lastMsg.senderName}: ` : ''}${lastMsg.content || ''}`
+    ? lastMsg.preview ?? `${!isDirect && lastMsg.senderName ? `${lastMsg.senderName}: ` : ''}${lastMsg.content || ''}`
     : '🔒 End-to-end encrypted';
+  const hasUnread = conversation.unreadCount > 0;
 
   return (
-    <TouchableOpacity style={styles.chatItem} onPress={onPress} activeOpacity={0.75}>
+    <TouchableOpacity
+      style={styles.chatItem}
+      onPress={onPress}
+      onLongPress={onLongPress}
+      delayLongPress={300}
+      activeOpacity={0.75}
+    >
       <View style={styles.avatarWrapper}>
         <View style={[styles.avatar, { backgroundColor: avatarColor(conversation.id) }]}>
           {isDirect ? (
@@ -70,18 +86,17 @@ const ChatListItem = React.memo(function ChatListItem({ conversation, onPress }:
       <View style={styles.chatContent}>
         <View style={styles.chatHeader}>
           <View style={styles.nameRow}>
-            <Text style={styles.chatName} numberOfLines={1}>
+            <Text style={[styles.chatName, hasUnread && styles.chatNameUnread]} numberOfLines={1}>
               {name}
             </Text>
+            <ChatMarkers conversation={conversation} />
           </View>
           <Text style={styles.chatTime}>{lastMsgTime}</Text>
         </View>
 
         <View style={styles.chatFooter}>
           <View style={styles.previewRow}>
-            {isOwn && (
-              <Ionicons name="checkmark" size={15} color={Colors.textTertiary} style={styles.receiptIcon} />
-            )}
+            {isOwn && <StatusTicks status={lastMsg?.status ?? 'sent'} />}
             <Text
               style={[styles.chatPreview, conversation.unreadCount > 0 && styles.chatPreviewUnread]}
               numberOfLines={1}
@@ -121,7 +136,13 @@ export default function ChatsScreen() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [showSearch, setShowSearch] = useState(false);
-  const [matchedMessages, setMatchedMessages] = useState<Message[]>([]);
+  const [actionChat, setActionChat] = useState<Conversation | null>(null);
+  // Local (on-device) full-text search over decrypted messages.
+  const { results: matchedMessages } = useMessageSearch(searchQuery, undefined, 50);
+  const { active: activeConversations, archived: archivedConversations } = useMemo(
+    () => splitArchived(conversations),
+    [conversations]
+  );
 
   useFocusEffect(
     useCallback(() => {
@@ -129,27 +150,15 @@ export default function ChatsScreen() {
     }, [userId, load])
   );
 
-  // Local (on-device) full-text search over decrypted messages, debounced.
-  useEffect(() => {
-    const q = searchQuery.trim();
-    if (q.length < 2) {
-      setMatchedMessages([]);
-      return;
-    }
-    const t = setTimeout(() => {
-      void databaseService.searchMessages(q).then(setMatchedMessages);
-    }, 250);
-    return () => clearTimeout(t);
-  }, [searchQuery]);
-
   const displayedConversations = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    let list = q ? conversations.filter((c) => conversationTitle(c).toLowerCase().includes(q)) : conversations;
+    // Search covers archived chats too; the normal list hides them behind the "Archived" row.
+    let list = q ? conversations.filter((c) => conversationTitle(c).toLowerCase().includes(q)) : activeConversations;
     if (selectedCategory === 'Direct') list = list.filter((c) => c.conversationType === 'direct');
     else if (selectedCategory === 'Groups') list = list.filter((c) => c.conversationType === 'group');
     else if (selectedCategory === 'Unread') list = list.filter((c) => c.unreadCount > 0);
     return list;
-  }, [conversations, searchQuery, selectedCategory]);
+  }, [conversations, activeConversations, searchQuery, selectedCategory]);
 
   const handleRefresh = async () => {
     setIsRefreshing(true);
@@ -237,6 +246,10 @@ export default function ChatsScreen() {
                 <Ionicons name="search-outline" size={20} color={Colors.textPrimary} />
               </TouchableOpacity>
 
+              <TouchableOpacity style={styles.headerActionBtn} onPress={() => router.push('/starred')} activeOpacity={0.7} accessibilityLabel="Starred messages">
+                <Ionicons name="star-outline" size={20} color={Colors.textPrimary} />
+              </TouchableOpacity>
+
               <TouchableOpacity style={styles.headerActionBtn} onPress={() => router.push('/channels')} activeOpacity={0.7} accessibilityLabel="Channels and communities">
                 <Ionicons name="megaphone-outline" size={20} color={Colors.textPrimary} />
               </TouchableOpacity>
@@ -285,7 +298,7 @@ export default function ChatsScreen() {
       )}
 
       {/* Main Conversation List */}
-      {displayedConversations.length === 0 && matchedMessages.length === 0 ? (
+      {displayedConversations.length === 0 && matchedMessages.length === 0 && archivedConversations.length === 0 ? (
         <View style={styles.emptyState}>
           <View style={styles.emptyIcon}>
             <Ionicons name="chatbubbles-outline" size={42} color={Colors.accent} />
@@ -317,8 +330,18 @@ export default function ChatsScreen() {
             <ChatListItem
               conversation={item}
               onPress={() => handleChatPress(item)}
+              onLongPress={() => setActionChat(item)}
             />
           )}
+          ListHeaderComponent={
+            !searchQuery && selectedCategory === 'All' ? (
+              <ArchivedEntry
+                count={archivedConversations.length}
+                unread={archivedConversations.reduce((n, c) => n + c.unreadCount, 0)}
+                onPress={() => router.push('/archived')}
+              />
+            ) : null
+          }
           refreshControl={
             <RefreshControl
               refreshing={isRefreshing}
@@ -330,34 +353,12 @@ export default function ChatsScreen() {
           contentContainerStyle={styles.listContent}
           ItemSeparatorComponent={() => <View style={styles.separator} />}
           ListFooterComponent={
-            matchedMessages.length > 0 ? (
-              <View style={styles.messagesSearchSection}>
-                <View style={styles.searchSectionHeader}>
-                  <Ionicons name="lock-closed" size={13} color={Colors.accent} />
-                  <Text style={styles.searchSectionTitle}>Decrypted Local Search Matches</Text>
-                </View>
-                {matchedMessages.map((msg) => (
-                  <TouchableOpacity
-                    key={msg.id}
-                    style={styles.messageSearchResult}
-                    onPress={() => router.push(`/chat/${msg.conversationId}`)}
-                  >
-                    <Ionicons name="chatbubble-ellipses-outline" size={18} color={Colors.accentLight} />
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.messageSearchText} numberOfLines={1}>
-                        {messagePreview(msg.messageType, msg.content)}
-                      </Text>
-                      <Text style={styles.messageSearchMeta}>
-                        {dayjs(msg.createdAt).format('MMM D, h:mm A')}
-                      </Text>
-                    </View>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            ) : null
+            <GlobalMessageResults results={matchedMessages} conversations={conversations} query={searchQuery} />
           }
         />
       )}
+
+      <ChatActionSheet conversation={actionChat} onClose={() => setActionChat(null)} />
 
       {/* Floating Action Button */}
       <TouchableOpacity
@@ -613,6 +614,9 @@ const styles = StyleSheet.create({
     color: Colors.textPrimary,
     fontWeight: Typography.semibold,
   },
+  chatNameUnread: {
+    fontWeight: Typography.bold,
+  },
   chatMeta: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -706,42 +710,5 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.5,
     shadowRadius: 16,
     elevation: 10,
-  },
-  messagesSearchSection: {
-    marginTop: Spacing.base,
-    paddingTop: Spacing.sm,
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(255, 255, 255, 0.08)',
-    paddingHorizontal: Spacing.xl,
-  },
-  searchSectionHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginBottom: Spacing.sm,
-  },
-  searchSectionTitle: {
-    fontSize: Typography.xs,
-    fontWeight: Typography.bold,
-    color: Colors.accentLight,
-    textTransform: 'uppercase',
-    letterSpacing: 0.6,
-  },
-  messageSearchResult: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.md,
-    paddingVertical: Spacing.sm,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.04)',
-  },
-  messageSearchText: {
-    fontSize: Typography.sm,
-    color: Colors.textPrimary,
-  },
-  messageSearchMeta: {
-    fontSize: Typography.xs,
-    color: Colors.textTertiary,
-    marginTop: 2,
   },
 });

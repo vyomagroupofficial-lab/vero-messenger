@@ -4,14 +4,17 @@
  */
 
 import type { MediaAttachment, ServerMessageType } from './Message';
+import { EditPayload, parseEditPayload, parseForwardHops } from './messageExtras';
 
 export type MediaKind = 'image' | 'video' | 'voice' | 'document';
 
+/** `fwd`: how many times the content has been forwarded (1 = forwarded once). */
 export type MessagePayload =
-  | { t: 'text'; body: string }
-  | { t: 'media'; kind: MediaKind; caption?: string; media: Omit<MediaAttachment, 'localUri'> }
+  | { t: 'text'; body: string; fwd?: number }
+  | { t: 'media'; kind: MediaKind; caption?: string; media: Omit<MediaAttachment, 'localUri'>; fwd?: number }
   | { t: 'reaction'; target: string; emoji: string | null }
-  | { t: 'timer'; seconds: number };
+  | { t: 'timer'; seconds: number }
+  | EditPayload;
 
 export const MAX_TEXT_LENGTH = 5000;
 
@@ -25,6 +28,8 @@ export function serverTypeFor(payload: MessagePayload): ServerMessageType {
       return 'reaction';
     case 'timer':
       return 'system';
+    case 'edit':
+      return 'control';
   }
 }
 
@@ -40,8 +45,13 @@ export function parsePayload(raw: string): MessagePayload | null {
   }
   if (!p || typeof p !== 'object') return null;
   switch (p.t) {
-    case 'text':
-      return str(p.body, MAX_TEXT_LENGTH) ? { t: 'text', body: p.body } : null;
+    case 'text': {
+      if (!str(p.body, MAX_TEXT_LENGTH)) return null;
+      const fwd = parseForwardHops(p.fwd);
+      return fwd ? { t: 'text', body: p.body, fwd } : { t: 'text', body: p.body };
+    }
+    case 'edit':
+      return parseEditPayload(p, MAX_TEXT_LENGTH);
     case 'reaction':
       return str(p.target, 64) && (p.emoji === null || str(p.emoji, 16))
         ? { t: 'reaction', target: p.target, emoji: p.emoji }
@@ -55,7 +65,9 @@ export function parsePayload(raw: string): MessagePayload | null {
       if (!['image', 'video', 'voice', 'document'].includes(p.kind) || !m || typeof m !== 'object') return null;
       if (![m.mediaId, m.objectId, m.key, m.nonce, m.hash, m.mimeType].every((v) => str(v, 512))) return null;
       if (typeof m.size !== 'number' || m.size < 0) return null;
+      const fwd = parseForwardHops(p.fwd);
       return {
+        ...(fwd ? { fwd } : {}),
         t: 'media',
         kind: p.kind,
         caption: str(p.caption, MAX_TEXT_LENGTH) ? p.caption : undefined,

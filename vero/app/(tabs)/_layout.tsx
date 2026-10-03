@@ -3,6 +3,7 @@ import { Platform, View, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors } from '../../src/shared/theme/theme';
+import { useTotalUnread } from '../../src/features/chats/useChatsStore';
 
 interface TabIconProps {
   name: keyof typeof Ionicons.glyphMap;
@@ -25,6 +26,7 @@ function TabIcon({ name, focused, color }: TabIconProps) {
 export default function TabsLayout() {
   const insets = useSafeAreaInsets();
   const bottom = Math.max(insets.bottom, 8);
+  const unread = useTotalUnread();
   return (
     <Tabs
       screenOptions={{
@@ -40,6 +42,8 @@ export default function TabsLayout() {
         name="chats"
         options={{
           title: 'Chats',
+          tabBarBadge: unread > 0 ? (unread > 99 ? '99+' : unread) : undefined,
+          tabBarBadgeStyle: { backgroundColor: Colors.accent, color: Colors.white, fontSize: 10 },
           tabBarIcon: ({ focused, color }) => (
             <TabIcon name={focused ? 'chatbubbles' : 'chatbubbles-outline'} focused={focused} color={color} />
           ),

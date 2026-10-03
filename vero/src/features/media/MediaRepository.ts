@@ -161,6 +161,29 @@ class MediaRepository {
     return target.uri;
   }
 
+  /**
+   * Removes the decrypted copy of one attachment from this device's cache
+   * (message deleted for everyone / for me). Files outside the app's media
+   * cache (e.g. the sender's original photo) are never touched.
+   */
+  deleteCachedFile(media: Pick<MediaAttachment, 'mediaId' | 'localUri'>): void {
+    try {
+      const dir = cacheDir();
+      const prefix = media.mediaId.replace(/[^a-zA-Z0-9-]/g, '');
+      if (prefix) {
+        for (const entry of dir.list()) {
+          if (entry instanceof File && entry.name.startsWith(`${prefix}.`)) entry.delete();
+        }
+      }
+      if (media.localUri && media.localUri.startsWith(dir.uri)) {
+        const f = new File(media.localUri);
+        if (f.exists) f.delete();
+      }
+    } catch (e) {
+      console.warn('[MediaRepository] cache cleanup failed:', (e as Error)?.message);
+    }
+  }
+
   clearCache(): void {
     const dir = new Directory(Paths.cache, 'vero-media');
     if (dir.exists) dir.delete();
