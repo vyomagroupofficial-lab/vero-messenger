@@ -27,7 +27,10 @@ src/
     chats/                 Conversation list, directory, groups, blocks/reports
     media/                 Encrypt -> upload, download -> decrypt
     calls/                 Call signalling (ringing/answer/history)
-    notifications/         Expo push token registration
+    notifications/         Push registration, notification taps, muted chats
+    settings/              Privacy settings (synced + enforced), app lock, settings screens
+    presence/              Online status (Realtime Presence) and last seen
+    backup/                Encrypted cloud backup (recovery key / passphrase)
     demo/                  Offline demo account (isolated local DB)
 supabase/
   migrations/              Schema, RLS, RPCs, realtime authorisation
@@ -155,8 +158,12 @@ Done:
 - Sender authentication and per-message binding
 - Key pinning, safety numbers covering all of a user's devices, change detection
 - RLS on every table, RPC-only membership changes, private realtime channels
-- Push notifications contain no content ("New message")
+- Push notifications contain no content ("New message"; the sender's name only
+  if the recipient turns on previews)
 - Disappearing messages (server-side hard delete plus local purge)
+- Privacy settings enforced (read receipts, typing, last seen, online)
+- App lock (biometrics / device passcode) and app-switcher cover
+- End-to-end encrypted backups (recovery key and/or passphrase)
 
 Not done yet (roadmap):
 - **Forward secrecy / post-compromise security.** Envelopes use long-term
@@ -165,7 +172,7 @@ Not done yet (roadmap):
   so it can be upgraded.
 - **Call media.** Signalling works (invite, ring, accept, decline, history);
   audio/video over WebRTC isn't wired up yet.
-- Voice notes, encrypted backups, encrypted group names/avatars, app lock.
+- Voice notes, encrypted group names/avatars.
 - On-device testing of libsodium's asm.js fallback on Hermes for large files.
 
 ## Setup
@@ -176,12 +183,14 @@ Not done yet (roadmap):
 supabase link --project-ref <your-project>
 supabase db push                     # applies supabase/migrations
 supabase functions deploy media-upload media-download send-push cleanup-expired device-link
-supabase secrets set PUSH_WEBHOOK_SECRET=$(openssl rand -hex 32) CRON_SECRET=$(openssl rand -hex 32)
+supabase secrets set CRON_SECRET=$(openssl rand -hex 32)
 ```
 
 Then, in the dashboard:
-- **Database → Webhooks:** on `public.messages` INSERT, call the `send-push`
-  function with the header `x-webhook-secret: <PUSH_WEBHOOK_SECRET>`.
+- **Push:** enable the `pg_net` extension, then run once in the SQL editor
+  (the push trigger is a silent no-op until this secret exists):
+  `select vault.create_secret('https://<ref>.supabase.co', 'project_url');`
+  The webhook secret itself is created in Vault by migration 005.
 - **Database → Extensions:** enable `pg_cron` (expired-message cleanup runs every
   5 min), and schedule `cleanup-expired` with `Authorization: Bearer <CRON_SECRET>`
   to delete expired attachment blobs.
@@ -200,8 +209,10 @@ npm start                   # Expo dev server
 Without a `.env`, the app still runs, but only the **offline demo** is
 available. The demo has its own local database and never talks to the backend.
 
-Push notifications need an EAS project id (`extra.eas.projectId`) and a
-development build.
+Push notifications need an EAS project id and a development build: run
+`eas init` (or set `expo.extra.eas.projectId` in `app.json`) and configure
+FCM (Android) / APNs (iOS) credentials with `eas credentials`. Without a
+project id the app logs that push is disabled and everything else works.
 
 ## Checks
 
@@ -276,3 +287,76 @@ npm run build:linux                # or build:win / build:mac (sign on that OS)
 Self-hosted Supabase on a custom domain: set `VERO_CSP_CONNECT="https://api.example.com wss://api.example.com"`
 when you start the desktop app. Deploy: `supabase functions deploy device-link` (it is
 `verify_jwt = false` in `config.toml` because signed-out devices call it).
+
+## Notifications, privacy settings, presence, app lock, backups
+
+Server side: `supabase/migrations/005_settings_push_backup.sql` (tests:
+`supabase/tests/settings_push_backup_test.sql`), Edge Function
+`supabase/functions/send-push`; client code in
+`src/features/{notifications,settings,presence,backup}`.
+
+**Push.** An AFTER INSERT trigger on `messages` (text/media only) calls
+`net.http_post(<project_url>/functions/v1/send-push)` with ids only and the
+header `x-webhook-secret`. Both values live in **Supabase Vault**:
+`push_webhook_secret` (random, created by the migration) and `project_url`
+(created by the operator, see Setup). `send-push` checks the header with the
+service-role-only RPC `verify_push_webhook_secret()`, asks
+`get_message_push_targets()` for every active device of every *other* member
+(skipping muted chats and members who blocked the sender) and sends through
+the Expo Push API in batches of 100, deleting `DeviceNotRegistered` tokens.
+Notifications say "New message"; the sender's name appears only if the
+recipient enabled *Show sender name*. Android channels: `messages`, `calls`.
+Revoking a device deletes its push token (trigger).
+
+Reusable for other features: `select public.send_push_event('call',
+jsonb_build_object('call_id', <id>))` from SQL (high priority, channel `calls`,
+category `incoming_call`), or POST `{ "type": "call", "call_id" }` to
+`send-push` with the caller's JWT; in Edge Functions use
+`_shared/push.ts` + `_shared/pushPayload.ts`. Channel posts (007) push to
+non-muted followers once this trigger exists (create it in a migration after
+007):
+
+```sql
+create trigger channel_posts_push_after_insert after insert on public.channel_posts
+  for each row execute function public.channel_posts_push_after_insert();
+```
+
+**Mute.** `mute_conversation(conversation_id, until)` sets
+`conversation_members.muted_until` (`'infinity'` = always, `null` = unmute);
+chat menu → *Mute notifications* (8 hours, 1 week, always). Co-members can
+technically read the value through the members API, like `last_read_at`.
+
+**Privacy settings** (`user_settings`, one row per user, RLS owner-only,
+created automatically): read receipts (off: only "delivered" is sent - and the
+server refuses to move the read watermark - and you don't see others' read
+ticks), typing indicators (off: never broadcast), last seen
+(everyone / contacts = people you share a direct chat with / nobody;
+reciprocal), show online (reciprocal), default disappearing timer (applied
+to chats you start), notification previews.
+
+**Last seen / online.** Last seen is kept in `user_last_seen` (no client
+access; `profiles` is readable by every signed-in user, so it can't live
+there) and read through `get_last_seen(user_id)`, which returns null whenever
+it is hidden. The app writes it through the throttled `touch_last_seen()`
+(once a minute while open, and when the app goes to the background). Online
+status uses Realtime Presence on the private topic `presence:<user id>`: only
+that user can track; people who share a chat with them can watch, and only
+while both have *Show when I'm online* on. `usePresence(userId)` returns
+`{ online, lastSeenAt }` (used in the chat header).
+
+**App lock.** Settings → Privacy → App lock (Face ID / fingerprint / device
+passcode via `expo-local-authentication`), immediately or after 1/5/30
+minutes in the background; the app is covered while not in the foreground.
+
+**Encrypted backups.** Settings → Chat backup. A random 256-bit backup key
+encrypts the local database (messages, chat list, timers, call log, pinned
+contact keys, preferences - never private keys) with libsodium
+secretstream (XChaCha20-Poly1305, 64 KiB frames, header authenticated). The key
+is wrapped for a **recovery key** (64 Crockford base32 characters, 300 random
+bits + 20-bit checksum, shown once) and/or a **passphrase** (>= 12 characters,
+Argon2id `crypto_pwhash` MODERATE: 3 passes, 256 MiB), so either unlocks it.
+The file is uploaded to the private bucket `vero-backups` at
+`<user id>/backup.bin` (storage policies: own folder only, 50 MB). After
+signing in on a device with no chats, Vero offers to restore. Optional daily
+automatic backup. Vero cannot reset a lost recovery key or passphrase.
+
