@@ -252,3 +252,76 @@ export function decryptAttachment(
   }
   return plain;
 }
+
+// ── Streaming drivers (device files via FileHandles; tests via memory) ──────
+
+/** Reads exactly `length` bytes at the current position (fewer only at EOF). */
+export interface ChunkReader {
+  read(length: number): Uint8Array;
+}
+export interface ChunkWriter {
+  write(bytes: Uint8Array): void;
+}
+
+export interface StreamOptions {
+  /** Called every `yieldEvery` chunks with progress 0..1, then awaited (lets the UI breathe). */
+  onChunk?: (fraction: number) => void | Promise<void>;
+  yieldEvery?: number;
+}
+
+/**
+ * Encrypts `plainSize` bytes from `reader` into `writer`, one chunk in memory
+ * at a time. Throws if the source turns out shorter than `plainSize`.
+ */
+export async function encryptStream(
+  sodium: Sodium,
+  reader: ChunkReader,
+  writer: ChunkWriter,
+  plainSize: number,
+  chunkSize = DEFAULT_CHUNK_SIZE,
+  opts: StreamOptions = {}
+): Promise<StreamEncryptionResult> {
+  const enc = new AttachmentEncryptor(sodium, chunkSize);
+  const every = opts.yieldEvery ?? 8;
+  let offset = 0;
+  let n = 0;
+  do {
+    const want = Math.min(chunkSize, plainSize - offset);
+    const chunk = want > 0 ? reader.read(want) : new Uint8Array(0);
+    if (chunk.length !== want) throw new Error('The file changed while it was being encrypted.');
+    offset += chunk.length;
+    writer.write(enc.push(chunk, offset >= plainSize));
+    if (++n % every === 0) await opts.onChunk?.(plainSize > 0 ? offset / plainSize : 1);
+  } while (!enc.isFinished);
+  await opts.onChunk?.(1);
+  return enc.finish();
+}
+
+/**
+ * Decrypts `cipherSize` bytes of a v2 attachment from `reader` into `writer`.
+ * Throws DecryptionError on truncation, reordering, tampering, trailing data
+ * or a hash mismatch. Output written before a throw must be discarded.
+ */
+export async function decryptStream(
+  sodium: Sodium,
+  reader: ChunkReader,
+  writer: ChunkWriter,
+  cipherSize: number,
+  params: { key: string; header: string; chunkSize: number; hash?: string },
+  opts: StreamOptions = {}
+): Promise<void> {
+  const dec = new AttachmentDecryptor(sodium, params.key, params.header, params.chunkSize, params.hash);
+  const every = opts.yieldEvery ?? 8;
+  let offset = 0;
+  let n = 0;
+  while (offset < cipherSize) {
+    const want = Math.min(dec.cipherChunkSize, cipherSize - offset);
+    const chunk = reader.read(want);
+    if (chunk.length !== want) throw new DecryptionError('Attachment was truncated');
+    offset += want;
+    writer.write(dec.pull(chunk));
+    if (++n % every === 0) await opts.onChunk?.(offset / cipherSize);
+  }
+  dec.finish();
+  await opts.onChunk?.(1);
+}

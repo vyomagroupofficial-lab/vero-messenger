@@ -9,8 +9,8 @@
  * one's plaintext. Cleared on logout, on "Clear media cache", and swept when
  * the messages that reference a file are deleted or expire.
  *
- * Native only: on web every method is a no-op (MediaRepository keeps blob URLs
- * in memory instead).
+ * On web there is no file system: decrypted files are kept as blob: URLs in
+ * memory (rememberWeb/findWeb) and revoked by the same clear calls.
  */
 
 import { Platform } from 'react-native';
@@ -79,6 +79,21 @@ function deleteQuietly(entry: File | Directory): void {
 
 let tmpCounter = 0;
 
+/** Web: `${accountId}:${mediaId}` -> blob: URL of the decrypted file. */
+const webUrls = new Map<string, string>();
+
+function revokeWeb(prefix: string | null): void {
+  for (const [k, url] of webUrls) {
+    if (prefix !== null && !k.startsWith(prefix)) continue;
+    try {
+      URL.revokeObjectURL(url);
+    } catch {
+      // ignore
+    }
+    webUrls.delete(k);
+  }
+}
+
 export const mediaCache = {
   isSupported: isNative,
 
@@ -115,22 +130,47 @@ export const mediaCache = {
     return target;
   },
 
-  /** Moves an already-plaintext file (e.g. our own voice recording) into the cache. */
-  adopt(accountId: string, sourceUri: string, media: Pick<MediaAttachment, 'mediaId' | 'mimeType' | 'fileName'>): string | null {
+  /**
+   * Puts an already-plaintext file (our own upload) into the cache under its
+   * media id, so it is swept/cleared with everything else. `move` is for files
+   * we own (e.g. a voice recording); picker files are copied.
+   */
+  store(
+    accountId: string,
+    sourceUri: string,
+    media: Pick<MediaAttachment, 'mediaId' | 'mimeType' | 'fileName'>,
+    move = false
+  ): string | null {
     if (!isNative) return null;
     try {
       const src = new File(sourceUri);
       if (!src.exists) return null;
       const target = this.fileFor(accountId, media);
-      src.moveSync(target, { overwrite: true });
+      if (move) src.moveSync(target, { overwrite: true });
+      else src.copySync(target, { overwrite: true });
       return target.uri;
-    } catch {
+    } catch (e) {
+      console.warn('[mediaCache] store failed:', (e as Error)?.message);
       return null;
     }
   },
 
+  rememberWeb(accountId: string, mediaId: string, url: string): void {
+    const k = `${accountId}:${mediaId}`;
+    const old = webUrls.get(k);
+    if (old && old !== url) URL.revokeObjectURL(old);
+    webUrls.set(k, url);
+  },
+
+  findWeb(accountId: string, mediaId: string): string | null {
+    return webUrls.get(`${accountId}:${mediaId}`) ?? null;
+  },
+
   evict(accountId: string, media: Pick<MediaAttachment, 'mediaId' | 'mimeType' | 'fileName'>): void {
-    if (!isNative) return;
+    if (!isNative) {
+      revokeWeb(`${accountId}:${media.mediaId}`);
+      return;
+    }
     try {
       deleteQuietly(this.fileFor(accountId, media));
     } catch {
@@ -143,8 +183,17 @@ export const mediaCache = {
    * deleted, expired or cleared), stale temp files and old share copies.
    */
   sweep(accountId: string, liveMediaIds: ReadonlySet<string>, now = Date.now()): number {
-    if (!isNative) return 0;
     let removed = 0;
+    if (!isNative) {
+      for (const k of [...webUrls.keys()]) {
+        const [acc, id] = k.split(':');
+        if (acc === accountId && !liveMediaIds.has(id)) {
+          revokeWeb(k);
+          removed++;
+        }
+      }
+      return removed;
+    }
     try {
       const dir = new Directory(rootDir(), safeSegment(accountId));
       if (!dir.exists) return 0;
@@ -176,7 +225,10 @@ export const mediaCache = {
 
   /** Removes this account's cache, plus files from the pre-v2 flat layout. */
   clearAccount(accountId: string | null): void {
-    if (!isNative) return;
+    if (!isNative) {
+      revokeWeb(accountId ? `${accountId}:` : null);
+      return;
+    }
     try {
       const root = rootDir();
       if (!root.exists) return;
@@ -189,6 +241,7 @@ export const mediaCache = {
 
   /** Removes every account's decrypted media (logout). */
   clearAll(): void {
+    revokeWeb(null);
     if (!isNative) return;
     try {
       deleteQuietly(rootDir());

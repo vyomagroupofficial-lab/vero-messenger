@@ -80,3 +80,12 @@ export function formatDuration(ms: number | undefined): string {
   const mm = h > 0 ? String(m).padStart(2, '0') : String(m);
   return `${h > 0 ? `${h}:` : ''}${mm}:${String(s).padStart(2, '0')}`;
 }
+
+/** Voice-note playback speeds, cycled by the speed button. */
+export const PLAYBACK_RATES = [1, 1.5, 2] as const;
+export type PlaybackRate = (typeof PLAYBACK_RATES)[number];
+
+export function nextRate(rate: number): PlaybackRate {
+  const i = PLAYBACK_RATES.indexOf(rate as PlaybackRate);
+  return PLAYBACK_RATES[(i + 1) % PLAYBACK_RATES.length];
+}

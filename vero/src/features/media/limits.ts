@@ -8,10 +8,11 @@
 
 import { DEFAULT_CHUNK_SIZE, encryptedSizeFor } from '../../core/crypto/attachments';
 
-const configuredMb = Number(process.env.EXPO_PUBLIC_MEDIA_MAX_MB);
-/** Max encrypted object size in bytes (default 50 MiB; override with EXPO_PUBLIC_MEDIA_MAX_MB). */
-export const MAX_ENCRYPTED_BYTES =
-  Number.isFinite(configuredMb) && configuredMb > 0 ? Math.floor(configuredMb * 1024 * 1024) : 50 * 1024 * 1024;
+/**
+ * Max encrypted object size in bytes. Must match MAX_BYTES in the media-upload
+ * function and the bucket's file_size_limit (004_media.sql).
+ */
+export const MAX_ENCRYPTED_BYTES = 50 * 1024 * 1024;
 
 /** Images up to this size download automatically; bigger media waits for a tap. */
 export const AUTO_DOWNLOAD_MAX_BYTES = 8 * 1024 * 1024;

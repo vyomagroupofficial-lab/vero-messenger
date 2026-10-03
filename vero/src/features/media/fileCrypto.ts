@@ -2,25 +2,52 @@
  * File-to-file attachment encryption on device.
  *
  * Reads and writes in chunks through expo-file-system FileHandles, so only
- * one chunk (64 KiB) of a video is in JS memory at a time. The crypto itself
- * is in core/crypto/attachments (pure, unit-tested).
+ * one chunk (64 KiB) of a video is in JS memory at a time. The crypto and the
+ * chunk loop are in core/crypto/attachments (pure, unit-tested); this file
+ * only adapts FileHandles to its reader/writer interfaces.
  */
 
 import { File, FileMode } from 'expo-file-system';
 import {
-  AttachmentDecryptor,
-  AttachmentEncryptor,
+  ChunkReader,
+  ChunkWriter,
+  decryptStream,
   DEFAULT_CHUNK_SIZE,
+  encryptStream,
   StreamEncryptionResult,
 } from '../../core/crypto/attachments';
 import { decryptBlob, DecryptionError, type Sodium } from '../../core/crypto/primitives';
 import type { MediaAttachment } from '../../shared/models/Message';
 
-/** Let the UI breathe every N chunks (libsodium runs on the JS thread). */
-const YIELD_EVERY = 8;
+export type ProgressFn = (fraction: number) => void;
+
+/** libsodium runs on the JS thread: give the UI a frame between batches of chunks. */
 const yieldToUI = () => new Promise<void>((r) => setTimeout(r, 0));
 
-export type ProgressFn = (fraction: number) => void;
+function deleteQuietly(file: File): void {
+  try {
+    if (file.exists) file.delete();
+  } catch {
+    // ignore
+  }
+}
+
+function withHandles<T>(source: File, target: File, fn: (r: ChunkReader, w: ChunkWriter) => Promise<T>): Promise<T> {
+  target.create({ overwrite: true, intermediates: true });
+  const input = source.open(FileMode.ReadOnly);
+  let output;
+  try {
+    output = target.open(FileMode.WriteOnly);
+  } catch (e) {
+    input.close();
+    throw e;
+  }
+  const out = output;
+  return fn({ read: (n) => input.readBytes(n) }, { write: (b) => out.writeBytes(b) }).finally(() => {
+    out.close();
+    input.close();
+  });
+}
 
 export async function encryptFileToFile(
   sodium: Sodium,
@@ -29,39 +56,19 @@ export async function encryptFileToFile(
   onProgress?: ProgressFn,
   chunkSize = DEFAULT_CHUNK_SIZE
 ): Promise<StreamEncryptionResult> {
-  const size = source.size;
-  const enc = new AttachmentEncryptor(sodium, chunkSize);
-  target.create({ overwrite: true, intermediates: true });
-  const input = source.open(FileMode.ReadOnly);
-  const output = target.open(FileMode.WriteOnly);
   try {
-    let offset = 0;
-    let n = 0;
-    do {
-      const want = Math.min(chunkSize, size - offset);
-      const chunk = want > 0 ? input.readBytes(want) : new Uint8Array(0);
-      if (chunk.length !== want) throw new Error('The file changed while it was being encrypted.');
-      offset += chunk.length;
-      output.writeBytes(enc.push(chunk, offset >= size));
-      if (++n % YIELD_EVERY === 0) {
-        onProgress?.(size > 0 ? offset / size : 1);
-        await yieldToUI();
-      }
-    } while (!enc.isFinished);
+    return await withHandles(source, target, (r, w) =>
+      encryptStream(sodium, r, w, source.size, chunkSize, {
+        onChunk: async (f) => {
+          onProgress?.(f);
+          await yieldToUI();
+        },
+      })
+    );
   } catch (e) {
-    output.close();
-    input.close();
-    try {
-      target.delete();
-    } catch {
-      // ignore
-    }
+    deleteQuietly(target);
     throw e;
   }
-  output.close();
-  input.close();
-  onProgress?.(1);
-  return enc.finish();
 }
 
 /**
@@ -75,46 +82,33 @@ export async function decryptFileToFile(
   media: Pick<MediaAttachment, 'v' | 'chunkSize' | 'key' | 'nonce' | 'hash'>,
   onProgress?: ProgressFn
 ): Promise<void> {
-  target.create({ overwrite: true, intermediates: true });
   try {
     if (media.v !== 2) {
       // Format v1: one AEAD over the whole file (old messages, small by construction).
       const plain = decryptBlob(sodium, await source.bytes(), media.key, media.nonce, media.hash);
+      target.create({ overwrite: true, intermediates: true });
       target.write(plain);
       onProgress?.(1);
       return;
     }
-
-    const dec = new AttachmentDecryptor(sodium, media.key, media.nonce, media.chunkSize!, media.hash);
-    const size = source.size;
-    const input = source.open(FileMode.ReadOnly);
-    const output = target.open(FileMode.WriteOnly);
-    try {
-      let offset = 0;
-      let n = 0;
-      while (offset < size) {
-        const want = Math.min(dec.cipherChunkSize, size - offset);
-        const chunk = input.readBytes(want);
-        if (chunk.length !== want) throw new DecryptionError('Attachment was truncated');
-        offset += want;
-        output.writeBytes(dec.pull(chunk));
-        if (++n % YIELD_EVERY === 0) {
-          onProgress?.(offset / size);
-          await yieldToUI();
+    if (!media.chunkSize) throw new DecryptionError('Unsupported attachment chunk size');
+    await withHandles(source, target, (r, w) =>
+      decryptStream(
+        sodium,
+        r,
+        w,
+        source.size,
+        { key: media.key, header: media.nonce, chunkSize: media.chunkSize!, hash: media.hash },
+        {
+          onChunk: async (f) => {
+            onProgress?.(f);
+            await yieldToUI();
+          },
         }
-      }
-      dec.finish();
-    } finally {
-      output.close();
-      input.close();
-    }
-    onProgress?.(1);
+      )
+    );
   } catch (e) {
-    try {
-      target.delete();
-    } catch {
-      // ignore
-    }
+    deleteQuietly(target);
     throw e;
   }
 }
