@@ -122,7 +122,7 @@ export class BlobTooLargeError extends Error {
 export async function measureBlob(objectId: string, maxBytes: number): Promise<{ size: number; hash: string }> {
   const stream = await openBlob(objectId);
   let size = 0;
-  async function* counted() {
+  async function* counted(): AsyncGenerator<Uint8Array<ArrayBuffer>> {
     const reader = stream.getReader();
     try {
       while (true) {
@@ -130,7 +130,7 @@ export async function measureBlob(objectId: string, maxBytes: number): Promise<{
         if (done) return;
         size += value.length;
         if (size > maxBytes) throw new BlobTooLargeError();
-        yield value;
+        yield value as Uint8Array<ArrayBuffer>;
       }
     } finally {
       reader.releaseLock();
