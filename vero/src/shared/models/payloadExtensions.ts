@@ -11,6 +11,7 @@
  */
 
 import type { MediaAttachment, ServerMessageType } from './Message';
+import { isValidChunkSize } from '../../core/crypto/attachments';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -91,7 +92,11 @@ export function parseWireMedia(m: any): WireMedia | null {
   if (![m.mediaId, m.objectId, m.key, m.nonce, m.hash, m.mimeType].every((v) => str(v, 512))) return null;
   if (typeof m.size !== 'number' || !Number.isFinite(m.size) || m.size < 0) return null;
   const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 && v < 1e9 ? v : undefined);
+  // Attachment format (core/crypto/attachments): unknown formats can't be decrypted.
+  const v = m.v === undefined || m.v === 1 ? undefined : m.v === 2 ? 2 : null;
+  if (v === null || (v === 2 && !isValidChunkSize(m.chunkSize))) return null;
   return {
+    ...(v === 2 ? { v: 2 as const, chunkSize: m.chunkSize as number } : {}),
     mediaId: m.mediaId,
     objectId: m.objectId,
     key: m.key,

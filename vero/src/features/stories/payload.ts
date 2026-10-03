@@ -3,6 +3,8 @@
  * it only sees `story_type` ('text' | 'media') and the encrypted blob path.
  */
 
+import { isValidChunkSize } from '../../core/crypto/attachments';
+
 export type StoryKind = 'text' | 'image' | 'video';
 
 export const STORY_FONTS = ['sans', 'serif', 'mono', 'bold'] as const;
@@ -27,6 +29,10 @@ export const MAX_STORY_VIDEO_MS = 30_000;
 /** Encrypted blob in the `vero-stories` bucket; key/nonce never leave the envelope. */
 export interface StoryMediaRef {
   path: string;
+  /** Attachment format (see core/crypto/attachments): absent/1 single-shot, 2 chunked secretstream. */
+  v?: 1 | 2;
+  /** v2 only: plaintext chunk size. */
+  chunkSize?: number;
   key: string;
   nonce: string;
   hash: string;
@@ -73,6 +79,9 @@ export function parseStoryPayload(raw: string): StoryPayload | null {
     if (!num(m.size)) return null;
     const expectedPrefix = p.kind === 'image' ? 'image/' : 'video/';
     if (!m.mimeType.startsWith(expectedPrefix)) return null;
+    // Unknown formats can't be decrypted: reject rather than fail later.
+    const v = m.v === undefined || m.v === 1 ? undefined : m.v === 2 ? 2 : null;
+    if (v === null || (v === 2 && !isValidChunkSize(m.chunkSize))) return null;
     return {
       t: 'story',
       kind: p.kind,
@@ -87,6 +96,7 @@ export function parseStoryPayload(raw: string): StoryPayload | null {
         width: num(m.width) ? m.width : undefined,
         height: num(m.height) ? m.height : undefined,
         durationMs: num(m.durationMs) ? m.durationMs : undefined,
+        ...(v === 2 ? { v: 2 as const, chunkSize: m.chunkSize as number } : {}),
       },
     };
   }

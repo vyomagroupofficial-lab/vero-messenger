@@ -22,7 +22,7 @@ import {
   MessageType,
   messagePreview,
 } from '../../shared/models/Message';
-import { MessagePayload, parsePayload, serverTypeFor, timerLabel } from '../../shared/models/payload';
+import { MessagePayload, parsePayload, serverTypeFor, timerLabel, toMessageMedia } from '../../shared/models/payload';
 import { extensionContent, extensionPayloadFromMessage, isControlPayload } from '../../shared/models/payloadExtensions';
 import { applyExtensionControl, finalizeExtensionMessage } from '../payments/paymentControl';
 import { keyDirectory } from '../keys/KeyDirectory';
@@ -180,8 +180,7 @@ class MessageRepository {
     let payload: MessagePayload | null = null;
     if (failed.messageType === 'text' && failed.content) payload = { t: 'text', body: failed.content };
     else if (failed.media && ['image', 'video', 'voice', 'document'].includes(failed.messageType)) {
-      const { localUri: _l, ...media } = failed.media;
-      payload = { t: 'media', kind: failed.messageType as any, caption: failed.content, media };
+      payload = { t: 'media', kind: failed.messageType as any, caption: failed.content, media: toMessageMedia(failed.media) };
     } else payload = extensionPayloadFromMessage(failed);
     if (!payload) return null;
     await databaseService.markMessageDeleted(failed.id);

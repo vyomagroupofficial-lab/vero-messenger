@@ -276,6 +276,28 @@ class DatabaseService {
     });
   }
 
+  /**
+   * Media ids still referenced by a live local message (for sweeping the
+   * decrypted media cache). Null if the database isn't available.
+   */
+  getLiveMediaIds(): Promise<Set<string> | null> {
+    return this.safe('getLiveMediaIds', null, async (db) => {
+      const rows = await db.getAllAsync<{ media_json: string }>(
+        'SELECT media_json FROM messages WHERE media_json IS NOT NULL AND deleted_at IS NULL'
+      );
+      const ids = new Set<string>();
+      for (const r of rows) {
+        try {
+          const id = JSON.parse(r.media_json)?.mediaId;
+          if (typeof id === 'string') ids.add(id);
+        } catch {
+          // ignore unreadable rows
+        }
+      }
+      return ids;
+    });
+  }
+
   updateMessageExt(id: string, ext: MessageExt): Promise<void> {
     return this.safe('updateMessageExt', undefined, async (db) => {
       await db.runAsync('UPDATE messages SET ext_json = ? WHERE id = ?', [JSON.stringify(ext), id]);
