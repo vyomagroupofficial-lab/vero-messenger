@@ -4,33 +4,30 @@
  */
 
 import React, { useCallback } from 'react';
-import { Alert, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { Colors, Spacing, Typography } from '../../../shared/theme/theme';
 import { useAuthStore } from '../../auth/useAuthStore';
+import { confirmAction, notify } from '../confirm';
 import { useStoriesLive, useStoryTray } from '../hooks';
 import { StoryGroup, useStoriesStore } from '../useStoriesStore';
 import { StoryRing } from './StoryRing';
 
-export function confirmToggleMute(group: Pick<StoryGroup, 'userId' | 'displayName' | 'muted'>) {
+export async function confirmToggleMute(group: Pick<StoryGroup, 'userId' | 'displayName' | 'muted'>): Promise<void> {
   const action = group.muted ? 'Unmute' : 'Mute';
-  Alert.alert(
+  const ok = await confirmAction(
     `${action} ${group.displayName}'s stories?`,
     group.muted
       ? 'Their new stories will appear with everyone else’s again.'
       : 'Their stories move to the end of the list. They won’t be told.',
-    [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: action,
-        onPress: () =>
-          void useStoriesStore
-            .getState()
-            .toggleMute(group.userId)
-            .catch((e) => Alert.alert('Couldn’t save', e?.message ?? 'Try again.')),
-      },
-    ]
+    action
   );
+  if (!ok) return;
+  try {
+    await useStoriesStore.getState().toggleMute(group.userId);
+  } catch (e: any) {
+    notify('Saved on this device only', e?.message ?? 'Couldn’t sync the change.');
+  }
 }
 
 export function StoriesTray() {

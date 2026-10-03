@@ -4,7 +4,7 @@
  */
 
 import React, { useMemo, useState } from 'react';
-import { Alert, FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { router } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -12,6 +12,7 @@ import { BorderRadius, Colors, Spacing, Typography } from '../../../shared/theme
 import { useAuthStore } from '../../auth/useAuthStore';
 import { AUDIENCE_LABELS, AudienceMode, StoryPrivacy, resolveAudience } from '../audience';
 import { useStoryContacts } from '../hooks';
+import { notify } from '../confirm';
 import { useStoriesStore } from '../useStoriesStore';
 import { StoryRing } from './StoryRing';
 
@@ -33,7 +34,7 @@ export function StoryPrivacySettings() {
     try {
       await useStoriesStore.getState().setPrivacy(patch);
     } catch (e: any) {
-      Alert.alert('Saved on this device only', e?.message ?? 'Couldn’t sync your story privacy. It will be applied here.');
+      notify('Saved on this device only', e?.message ?? 'Couldn’t sync your story privacy. It will be applied here.');
     } finally {
       setSaving(false);
     }

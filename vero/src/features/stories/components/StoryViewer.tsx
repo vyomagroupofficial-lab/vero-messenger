@@ -7,7 +7,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Animated,
   AppState,
   Keyboard,
@@ -27,6 +26,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { BorderRadius, Colors, Spacing, Typography } from '../../../shared/theme/theme';
 import { currentSession } from '../../../core/session';
 import { useAuthStore } from '../../auth/useAuthStore';
+import { confirmAction, notify } from '../confirm';
 import { useStoriesLive, useStoryTray } from '../hooks';
 import { storyAgeLabel, timeLeftLabel } from '../expiry';
 import { STORY_QUICK_REACTIONS } from '../payload';
@@ -151,9 +151,17 @@ export function StoryViewer({ startUserId }: { startUserId: string }) {
   }, [story, onReady]);
 
   // ── Gestures ──────────────────────────────────────────────────────────────
+  // Tap zones are measured against the viewer itself (on web the app is a
+  // centred column, so screen coordinates alone would be off).
   const { width } = useWindowDimensions();
-  const widthRef = useRef(width);
-  widthRef.current = width;
+  const rootRef = useRef<View>(null);
+  const frame = useRef({ left: 0, width });
+  const measure = useCallback(() => {
+    rootRef.current?.measureInWindow((x, _y, w) => {
+      if (w > 0) frame.current = { left: x, width: w };
+    });
+  }, []);
+  useEffect(measure, [width, measure]);
   const translateY = useRef(new Animated.Value(0)).current;
   const holdTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const held = useRef(false);
@@ -189,7 +197,8 @@ export function StoryViewer({ startUserId }: { startUserId: string }) {
             return;
           }
           if (Math.abs(g.dx) < 12 && Math.abs(g.dy) < 12) {
-            dispatch({ type: g.x0 < widthRef.current / 3 ? 'PREV' : 'NEXT' });
+            const x = g.x0 - frame.current.left;
+            dispatch({ type: x < frame.current.width / 3 ? 'PREV' : 'NEXT' });
           }
         },
         onPanResponderTerminate: () => {
@@ -229,31 +238,33 @@ export function StoryViewer({ startUserId }: { startUserId: string }) {
         setToast(`Sent ${value}`);
       }
     } catch (e: any) {
-      Alert.alert('Couldn’t send', e?.message ?? 'Try again.');
+      notify('Couldn’t send', e?.message ?? 'Try again.');
     } finally {
       setSending(false);
     }
   };
 
-  const confirmDelete = () => {
+  const confirmDelete = async () => {
     if (!story) return;
     dispatch({ type: 'PAUSE', reason: 'sheet' });
-    Alert.alert('Delete this story?', 'It will disappear for everyone who can see it.', [
-      { text: 'Cancel', style: 'cancel', onPress: () => dispatch({ type: 'RESUME', reason: 'sheet' }) },
-      {
-        text: 'Delete',
-        style: 'destructive',
-        onPress: async () => {
-          try {
-            await useStoriesStore.getState().deleteStory(story.id);
-          } catch (e: any) {
-            Alert.alert('Couldn’t delete', e?.message ?? 'Try again.');
-          } finally {
-            dispatch({ type: 'RESUME', reason: 'sheet' });
-          }
-        },
-      },
-    ]);
+    try {
+      if (await confirmAction('Delete this story?', 'It will disappear for everyone who can see it.', 'Delete', true)) {
+        await useStoriesStore.getState().deleteStory(story.id);
+      }
+    } catch (e: any) {
+      notify('Couldn’t delete', e?.message ?? 'Try again.');
+    } finally {
+      dispatch({ type: 'RESUME', reason: 'sheet' });
+    }
+  };
+
+  const toggleMute = async (target: { userId: string; displayName: string; muted: boolean }) => {
+    dispatch({ type: 'PAUSE', reason: 'sheet' });
+    try {
+      await confirmToggleMute(target);
+    } finally {
+      dispatch({ type: 'RESUME', reason: 'sheet' });
+    }
   };
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -274,7 +285,7 @@ export function StoryViewer({ startUserId }: { startUserId: string }) {
   const caption = payload && payload.kind !== 'text' ? payload.caption : undefined;
 
   return (
-    <View style={styles.root}>
+    <View style={styles.root} ref={rootRef} onLayout={measure}>
       <Animated.View
         style={[
           styles.stage,
@@ -326,7 +337,7 @@ export function StoryViewer({ startUserId }: { startUserId: string }) {
           {!story.isOwn && (
             <TouchableOpacity
               hitSlop={10}
-              onPress={() => confirmToggleMute({ userId: story.authorId, displayName: authorName, muted })}
+              onPress={() => void toggleMute({ userId: story.authorId, displayName: authorName, muted })}
               accessibilityLabel={muted ? 'Unmute stories' : 'Mute stories'}
             >
               <Ionicons name={muted ? 'volume-mute' : 'ellipsis-horizontal'} size={22} color={Colors.white} />

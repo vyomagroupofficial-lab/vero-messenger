@@ -7,7 +7,6 @@
 import React, { useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Image,
   KeyboardAvoidingView,
   Platform,
@@ -27,6 +26,7 @@ import { audienceSummary } from '../audience';
 import { STORY_FONT_LABELS, storyFontStyle, useStoryContacts } from '../hooks';
 import { MAX_STORY_CAPTION, MAX_STORY_TEXT, STORY_BACKGROUNDS, STORY_FONTS, StoryFont } from '../payload';
 import { PickedStoryMedia, pickStoryMedia } from '../storyMedia';
+import { notify } from '../confirm';
 import { useStoriesStore } from '../useStoriesStore';
 import { textStoryFontSize } from './TextStoryCanvas';
 
@@ -61,7 +61,7 @@ export function StoryComposer() {
       const picked = await pickStoryMedia(source);
       if (picked) setMedia(picked);
     } catch (e: any) {
-      Alert.alert('Can’t use this', e?.message ?? 'Try another photo or video.');
+      notify('Can’t use this', e?.message ?? 'Try another photo or video.');
     }
   };
 
@@ -75,12 +75,12 @@ export function StoryComposer() {
           setStage
         );
       if (recipients === 0) {
-        Alert.alert('Posted', 'Your story is up, but nobody is in its audience yet. Change who can see it in story privacy.');
+        notify('Posted', 'Your story is up, but nobody is in its audience yet. Change who can see it in story privacy.');
       }
       router.back();
     } catch (e: any) {
       setStage(null);
-      Alert.alert('Couldn’t post story', e?.message ?? 'Try again.');
+      notify('Couldn’t post story', e?.message ?? 'Try again.');
     }
   };
 
