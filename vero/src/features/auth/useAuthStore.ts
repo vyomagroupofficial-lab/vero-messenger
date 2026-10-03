@@ -7,6 +7,7 @@ import { authRepository, AuthUser, AuthResult } from './AuthRepository';
 import { supabase, isSupabaseConfigured } from '../../core/network/supabase';
 import { databaseService } from '../../core/storage/DatabaseService';
 import { keyDirectory } from '../keys/KeyDirectory';
+import { mediaCache } from '../media/mediaCache';
 
 export const DEMO_USER_ID = 'demo-user';
 
@@ -40,6 +41,7 @@ export const useAuthStore = create<AuthState>((set, get) => {
 
   const clearSession = () => {
     void databaseService.close();
+    mediaCache.clearAll(); // decrypted attachments never outlive the session
     keyDirectory.reset();
     set({ user: null, deviceId: null, isAuthenticated: false, isDemo: false });
   };

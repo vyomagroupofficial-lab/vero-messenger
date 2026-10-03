@@ -22,6 +22,9 @@ Deno.serve(async (req) => {
 
     const { data: expired, error } = await admin.rpc("cleanup_expired_messages");
     if (error) throw error;
+    // Uploads that were started but never confirmed (004_media.sql).
+    const { error: staleError } = await admin.rpc("cleanup_stale_media_uploads");
+    if (staleError) console.error("[cleanup-expired] stale upload sweep failed:", staleError.code ?? "unknown");
 
     const { data: media } = await admin
       .from("media")
