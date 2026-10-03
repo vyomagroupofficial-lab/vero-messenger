@@ -11,3 +11,7 @@ verify_jwt = false
 
 [functions.stories-cleanup]
 verify_jwt = false
+
+# Called by signed-out devices (QR login); signed-in actions check the JWT itself.
+[functions.device-link]
+verify_jwt = false

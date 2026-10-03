@@ -29,11 +29,21 @@
       "permissions": [
         "android.permission.CAMERA",
         "android.permission.POST_NOTIFICATIONS"
+      ],
+      "blockedPermissions": [
+        "android.permission.WRITE_CONTACTS"
       ]
     },
     "web": {
       "favicon": "./assets/favicon.png",
-      "bundler": "metro"
+      "bundler": "metro",
+      "name": "Vero Messenger",
+      "shortName": "Vero",
+      "description": "Private, end-to-end encrypted messenger.",
+      "themeColor": "#050A14",
+      "backgroundColor": "#050A14",
+      "display": "standalone",
+      "lang": "en"
     },
     "plugins": [
       "expo-router",
@@ -52,6 +62,19 @@
           "photosPermission": "Vero needs access to your photos so you can send them end-to-end encrypted.",
           "cameraPermission": "Vero needs camera access so you can take photos to send end-to-end encrypted.",
           "microphonePermission": false
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Vero uses the camera to scan QR codes (adding contacts, linking devices) and to take photos you send end-to-end encrypted.",
+          "recordAudioAndroid": false
+        }
+      ],
+      [
+        "expo-contacts",
+        {
+          "contactsPermission": "Vero checks which of your contacts use Vero. Only short hash prefixes leave your device, never names or numbers."
         }
       ]
     ],

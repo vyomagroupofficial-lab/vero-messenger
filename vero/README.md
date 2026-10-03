@@ -175,7 +175,7 @@ Not done yet (roadmap):
 ```bash
 supabase link --project-ref <your-project>
 supabase db push                     # applies supabase/migrations
-supabase functions deploy media-upload media-download send-push cleanup-expired
+supabase functions deploy media-upload media-download send-push cleanup-expired device-link
 supabase secrets set PUSH_WEBHOOK_SECRET=$(openssl rand -hex 32) CRON_SECRET=$(openssl rand -hex 32)
 ```
 
@@ -211,3 +211,68 @@ npm test                    # crypto + payload + receipt unit tests
 ./scripts/test-db.sh        # schema/RLS/RPC tests (needs a local PostgreSQL; PGHOST/PGPORT/PGUSER)
 (cd supabase/functions && npx deno check --no-lock */index.ts)
 ```
+
+## QR codes, contact discovery, linked devices, desktop
+
+Code: `src/features/{discovery,linking,transfer}`, screens under `app/qr`,
+`app/u/[username]`, `app/discovery`, `app/devices`, `app/(auth)/qr-login`,
+schema in `supabase/migrations/009_discovery_linking.sql`, Edge Function
+`supabase/functions/device-link`, desktop shell in `desktop/`.
+
+**Add by QR.** *Contacts → QR icon* shows `vero://u/<username>?fp=<fingerprint>`
+(30-digit fingerprint of all your device keys). Scanning it opens the profile;
+starting the chat compares the fingerprint with the keys the server serves and,
+if they match, marks the safety number verified (`verifyContactFromQr`). With
+`EXPO_PUBLIC_WEB_URL` set, share links are `https://<host>/u/<username>`.
+
+**Find friends from contacts (opt-in, k-anonymous).** *Settings → Who can find
+me* lists a SHA-256 hash of your **verified** email and/or phone
+(`discovery_identifiers`, written only by SECURITY DEFINER functions). The
+finder normalises the address book on the device (E.164, default country India;
+lower-cased emails), hashes it, and sends only 4-hex-char prefixes to
+`discovery_lookup()`; matches are made on the device. Lookups are limited to
+30 requests / 5,000 prefixes per user per day. Phone hashes are brute-forceable
+by anyone who collects them, hence opt-in and rate limits.
+Phone verification uses `supabase.auth.updateUser({ phone })` + `verifyOtp`
+(`phone_change`) and needs **Auth → Providers → Phone** with an SMS provider
+(Twilio, MessageBird, Vonage, …). Until then only email discovery works.
+
+**Link web / desktop by QR.** The signed-out device shows
+`vero-link:<id>:<secret>:<ephemeralPub>`; the server stores only
+`sha256(claimKey)`, where `claimKey = BLAKE2b(secret, "vero-link/claim/v1")`.
+A signed-in phone scans and approves (*Settings → Devices & transfer*); the
+`device-link` function checks its JWT. The first poll that presents the claim
+key gets a one-time magic-link `hashed_token` (`auth.admin.generateLink`), which
+the new device exchanges with `verifyOtp({ token_hash, type: 'magiclink' })`.
+It then registers **its own** device keys. Requests are single-use and expire
+after 2 minutes. No password or private key leaves the phone. Because the token
+hash is used directly, no Site URL / redirect URL is involved, but Auth's
+email OTP expiry applies and the account needs an email address.
+The phone then sends its recent 200 messages per chat (see below).
+
+**Move chats to a new phone.** On the new phone, *Devices & transfer → Receive
+chats* shows `vero-transfer:<id>:<secret>:<ephemeralPub>`; the old phone scans
+it and uploads its local database (messages, chat cache, timers, call log,
+pinned contact keys, preferences). Private keys and session state are never
+included. Encryption: `key = BLAKE2b(key = QR secret, id || R_pk || S_pk ||
+X25519(eph))`, XChaCha20-Poly1305 per 192 KiB chunk with
+`id|index|total` as associated data. The server relays the sender's ephemeral
+key but never sees the QR secret, so it can neither read nor forge the
+transfer. Chunks live in `device_transfer_chunks` (account-only RLS) and are
+deleted on import or after 1 hour. Downloads resume after an app restart.
+
+**Desktop and PWA.** The web export is installable (`public/manifest.webmanifest`,
+icons, `public/index.html` template). `desktop/` is an Electron shell that serves
+the export from `app://vero` with a strict CSP, contextIsolation, sandbox, no Node
+in the renderer, single instance and `vero://` deep links:
+
+```bash
+cd desktop && npm install          # separate from the app's dependencies
+npm run dev                        # export web build to ../dist and start Electron
+npm run build:linux                # or build:win / build:mac (sign on that OS)
+# from the app folder: npm run desktop:dev / npm run desktop:build
+```
+
+Self-hosted Supabase on a custom domain: set `VERO_CSP_CONNECT="https://api.example.com wss://api.example.com"`
+when you start the desktop app. Deploy: `supabase functions deploy device-link` (it is
+`verify_jwt = false` in `config.toml` because signed-out devices call it).

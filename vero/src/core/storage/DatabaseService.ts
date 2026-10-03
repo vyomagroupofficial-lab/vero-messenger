@@ -479,6 +479,14 @@ class DatabaseService {
     });
   }
 
+  /**
+   * Raw access for bulk export/import (device-to-device transfer, see
+   * src/features/transfer). Unlike the methods above, errors propagate.
+   */
+  async withConnection<T>(fn: (db: SQLite.SQLiteDatabase) => Promise<T>): Promise<T> {
+    return fn(await this.db());
+  }
+
   /** Erases everything this account stored on this device. */
   clearAllData(): Promise<void> {
     return this.safe('clearAllData', undefined, async (db) => {

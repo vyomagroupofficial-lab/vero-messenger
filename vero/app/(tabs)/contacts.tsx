@@ -130,8 +130,18 @@ export default function ContactsScreen() {
       <StatusBar barStyle="light-content" backgroundColor={Colors.background} />
 
       {/* Header */}
-      <View style={styles.header}>
+      <View style={[styles.header, { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }]}>
         <Text style={styles.headerTitle}>Contacts</Text>
+        {!isDemo && (
+          <View style={{ flexDirection: 'row', gap: Spacing.md }}>
+            <TouchableOpacity onPress={() => router.push('/discovery')} accessibilityLabel="Find friends from contacts">
+              <Ionicons name="person-add-outline" size={22} color={Colors.accentLight} />
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => router.push('/qr')} accessibilityLabel="My QR code">
+              <Ionicons name="qr-code-outline" size={22} color={Colors.accentLight} />
+            </TouchableOpacity>
+          </View>
+        )}
       </View>
 
       {/* Search Bar */}

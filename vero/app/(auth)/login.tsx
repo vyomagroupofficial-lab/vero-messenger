@@ -249,6 +249,17 @@ export default function LoginScreen() {
             <Text style={styles.demoButtonText}>Explore offline demo</Text>
           </TouchableOpacity>
 
+          {/* Sign in by scanning a QR code with a signed-in phone (web/desktop/second device) */}
+          <TouchableOpacity
+            style={[styles.demoButton, { marginTop: Spacing.sm }]}
+            onPress={() => router.push('/(auth)/qr-login')}
+            disabled={isLoading}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="qr-code-outline" size={17} color={Colors.accent} style={{ marginRight: 8 }} />
+            <Text style={styles.demoButtonText}>Link with QR code from your phone</Text>
+          </TouchableOpacity>
+
           {/* E2EE notice */}
           <View style={styles.e2eeNotice}>
             <Ionicons name="shield-checkmark" size={13} color={Colors.online} />

@@ -1,0 +1,91 @@
+{
+  "name": "vero-desktop",
+  "productName": "Vero",
+  "version": "1.0.0",
+  "description": "Vero Messenger desktop app (Electron wrapper around the Expo web build).",
+  "main": "main.js",
+  "private": true,
+  "license": "SEE LICENSE IN ../LICENSE",
+  "author": "Vero",
+  "scripts": {
+    "web:export": "cd .. && npx expo export --platform web --output-dir dist",
+    "start": "electron .",
+    "dev": "npm run web:export && electron .",
+    "pack": "npm run web:export && electron-builder --dir",
+    "build": "npm run web:export && electron-builder",
+    "build:linux": "npm run web:export && electron-builder --linux",
+    "build:win": "npm run web:export && electron-builder --win",
+    "build:mac": "npm run web:export && electron-builder --mac",
+    "check": "node --check main.js && node --check preload.js && node --test test/*.test.js"
+  },
+  "devDependencies": {
+    "electron": "44.5.1",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "com.vero.messenger.desktop",
+    "productName": "Vero",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "security.js",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../dist",
+        "to": "web",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "protocols": [
+      {
+        "name": "Vero link",
+        "schemes": [
+          "vero"
+        ]
+      }
+    ],
+    "asar": true,
+    "publish": null,
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Network;InstantMessaging",
+      "icon": "../assets/icon.png",
+      "mimeTypes": [
+        "x-scheme-handler/vero"
+      ]
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "../assets/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.social-networking",
+      "icon": "../assets/icon.png",
+      "hardenedRuntime": true,
+      "extendInfo": {
+        "NSCameraUsageDescription": "Vero uses the camera to scan QR codes and for video calls.",
+        "NSMicrophoneUsageDescription": "Vero uses the microphone for calls and voice messages."
+      }
+    }
+  }
+}
