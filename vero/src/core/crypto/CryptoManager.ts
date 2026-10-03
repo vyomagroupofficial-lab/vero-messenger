@@ -28,6 +28,7 @@ import {
   generateIdentityKeyPair,
   safetyNumber,
   serializeEnvelope,
+  type Sodium,
 } from './primitives';
 
 import { generateSigningKeyPair, KeyPairB64 } from './ratchet/keys';
@@ -234,6 +235,17 @@ class CryptoManager {
     them: { userId: string; keys: string[] }
   ): Promise<string> {
     return safetyNumber(await getSodium(), me, them);
+  }
+
+  // ── Feature-level crypto (e.g. call signalling, src/features/calls) ───────
+
+  /**
+   * Runs a synchronous crypto operation with this device's identity secret
+   * key. The key is only passed to `fn` (never returned or stored elsewhere).
+   */
+  async withIdentitySecretKey<T>(userId: string, fn: (sodium: Sodium, secretKey: string) => T): Promise<T> {
+    const sodium = await getSodium();
+    return fn(sodium, await this.secretKey(userId));
   }
 }
 

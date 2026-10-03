@@ -7,9 +7,8 @@ import { useEffect, useRef } from 'react';
 import { Platform } from 'react-native';
 import { router } from 'expo-router';
 import * as Notifications from 'expo-notifications';
-import { supabase } from '../../core/network/supabase';
+import { callService } from '../calls/CallService';
 import { routeForNotification } from './notificationRoutes';
-import { CALL_ACTION_DECLINE } from './pushRegistration';
 
 export function useNotificationRouting(signedIn: boolean): void {
   const handled = useRef(new Set<string>());
@@ -23,10 +22,9 @@ export function useNotificationRouting(signedIn: boolean): void {
       if (handled.current.has(id)) return;
       handled.current.add(id);
       const data = response.notification.request.content.data as Record<string, unknown> | undefined;
-      if (response.actionIdentifier === CALL_ACTION_DECLINE && data?.type === 'call' && typeof data.callId === 'string') {
-        void supabase
-          .rpc('update_call_status', { p_call_id: data.callId, p_status: 'rejected' })
-          .then(({ error }) => error && console.warn('[Push] decline failed:', error.message));
+      if (data?.type === 'call') {
+        // Answer / Decline / tap: the calls feature verifies the call and rings, answers or declines.
+        void callService.handleNotificationResponse(response.actionIdentifier, data);
         return;
       }
       const route = routeForNotification(data);

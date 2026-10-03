@@ -14,6 +14,8 @@ export type BroadcastHandler = (payload: any) => void;
 const USER_EVENTS = [
   'inbox.message',
   'call.invite',
+  // 002_calls.sql: status changes of my calls (answered elsewhere, declined, cancelled, ...)
+  'call.status',
   'story.new',
   'story.deleted',
   'story.viewed',
