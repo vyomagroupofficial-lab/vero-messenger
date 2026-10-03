@@ -419,9 +419,9 @@ select pg_temp.check(send_push_event('call', jsonb_build_object('call_id', pg_te
 reset role;
 select pg_temp.check((select body ->> 'type' = 'call' from net.http_request_queue order by id desc limit 1), 'call push request has type call');
 
--- Channel posts (the trigger is created after 007, as documented)
-create trigger channel_posts_push_after_insert after insert on public.channel_posts
-  for each row execute function public.channel_posts_push_after_insert();
+-- Channel posts (the trigger is created by 090_cross_feature_wiring.sql)
+select pg_temp.check(exists (select 1 from pg_trigger where tgname = 'channel_posts_push_after_insert'),
+  'channel post push trigger is installed');
 set role authenticated;
 select pg_temp.as_user(:alice);
 insert into ids values ('ch', create_channel('Trail News', 'trail_news', 'Updates', 'public'));
