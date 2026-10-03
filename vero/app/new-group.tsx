@@ -1,334 +1,536 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { FlatList, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
-import Animated, { FadeIn, FadeInDown, FadeInRight, FadeOutLeft, ZoomIn, ZoomOut, LinearTransition } from 'react-native-reanimated';
+import React, { useState, useEffect, useMemo } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  TouchableOpacity,
+  TextInput,
+  FlatList,
+  Alert,
+  ActivityIndicator,
+  ScrollView,
+} from 'react-native';
 import { router } from 'expo-router';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
+import { Colors, Typography, Spacing, BorderRadius } from '../src/shared/theme/theme';
 import { useAuthStore } from '../src/features/auth/useAuthStore';
 import { conversationRepository } from '../src/features/chats/ConversationRepository';
-import { DEMO_CONTACTS, DEMO_MEMBERS, DEMO_MESSAGES, DEMO_USER_ID } from '../src/features/demo/demoData';
+import { useChatsStore } from '../src/features/chats/useChatsStore';
+import { friendlyError } from '../src/core/network/supabase';
 import { User } from '../src/shared/models/Message';
-import { AvatarTones, Colors, Fonts, Type } from '../src/shared/theme/theme';
-import { Avatar, Button, Chip, DotWall, Grain, Icon, IconButton, Pressy, SearchField, notify, useLayout } from '../src/shared/ui';
 
-const TIMERS = ['Off', '24 hours', '7 days', '90 days'];
-
-function Check({ on }: { on: boolean }) {
-  return (
-    <View style={[styles.check, on && styles.checkOn]}>
-      {on && (
-        <Animated.View entering={ZoomIn.springify().damping(12)}>
-          <Icon name="check" size={15} color={Colors.brassInk} strokeWidth={2.6} />
-        </Animated.View>
-      )}
-    </View>
-  );
-}
+const AVATAR_GRADIENTS = [
+  '#0284C7',
+  '#7C3AED',
+  '#0D9488',
+  '#D97706',
+  '#E11D48',
+  '#4F46E5',
+];
 
 export default function NewGroupScreen() {
-  const insets = useSafeAreaInsets();
-  const { isWide } = useLayout();
-  const { user } = useAuthStore();
-  const isDemo = user?.id === DEMO_USER_ID;
-
-  const [contacts, setContacts] = useState<User[]>(isDemo ? DEMO_CONTACTS : []);
-  const [query, setQuery] = useState('');
-  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const isDemo = useAuthStore((s) => s.isDemo);
+  const conversations = useChatsStore((s) => s.conversations);
   const [groupName, setGroupName] = useState('');
-  const [tone, setTone] = useState<string>(AvatarTones[1]);
-  const [timer, setTimer] = useState('Off');
-  const [step, setStep] = useState<1 | 2>(1);
-  const [creating, setCreating] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<User[]>([]);
+  const [selected, setSelected] = useState<Map<string, User>>(new Map());
+  const [isLoading, setIsLoading] = useState(false);
+  const [isCreating, setIsCreating] = useState(false);
 
+  const knownContacts = useMemo<User[]>(() => {
+    const seen = new Map<string, User>();
+    for (const c of conversations) if (c.otherUser) seen.set(c.otherUser.id, c.otherUser);
+    return [...seen.values()];
+  }, [conversations]);
+
+  // Directory search for people you haven't chatted with yet.
   useEffect(() => {
-    if (isDemo || !user?.id) return;
-    conversationRepository
-      .searchUsers('a', user.id)
-      .then((r) => setContacts(r.length ? r : DEMO_CONTACTS))
-      .catch(() => setContacts(DEMO_CONTACTS));
-  }, [user?.id]);
-
-  const toggle = (id: string) =>
-    setSelected((s) => {
-      const n = new Set(s);
-      n.has(id) ? n.delete(id) : n.add(id);
-      return n;
-    });
-
-  const filtered = useMemo(() => {
-    const q = query.toLowerCase();
-    return contacts.filter((c) => c.displayName.toLowerCase().includes(q) || c.username.toLowerCase().includes(q));
-  }, [contacts, query]);
-  const picked = contacts.filter((c) => selected.has(c.id));
-
-  const close = () => (router.canGoBack() ? router.back() : router.replace('/(tabs)/chats'));
-
-  const create = async () => {
-    if (!groupName.trim()) {
-      notify('Name your group', 'Give the group a name so everyone knows what it’s for.');
+    const q = searchQuery.trim();
+    if (q.length < 2 || isDemo) {
+      setSearchResults([]);
       return;
     }
-    if (picked.length === 0) {
-      notify('Add people', 'Pick at least one person for the group.');
-      return;
+    setIsLoading(true);
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      try {
+        const results = await conversationRepository.searchUsers(q);
+        if (!cancelled) setSearchResults(results);
+      } catch {
+        if (!cancelled) setSearchResults([]);
+      } finally {
+        if (!cancelled) setIsLoading(false);
+      }
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [searchQuery, isDemo]);
+
+  const selectedUserIds = useMemo(() => new Set(selected.keys()), [selected]);
+
+  const toggleSelectUser = (id: string) => {
+    const updated = new Map(selected);
+    if (updated.has(id)) updated.delete(id);
+    else {
+      const u = [...knownContacts, ...searchResults].find((c) => c.id === id);
+      if (u) updated.set(id, u);
     }
-    if (!user?.id) return;
+    setSelected(updated);
+  };
+
+  const removeSelectedUser = (id: string) => {
+    const updated = new Map(selected);
+    updated.delete(id);
+    setSelected(updated);
+  };
+
+  const handleCreateGroup = async () => {
     if (isDemo) {
-      const cid = `demo-group-${Date.now()}`;
-      DEMO_MEMBERS[cid] = [{ id: user.id, displayName: user.displayName || 'You', username: user.username || 'you' }, ...picked];
-      DEMO_MESSAGES[cid] = [];
-      router.replace({ pathname: '/chat/[id]', params: { id: cid, name: groupName.trim(), group: '1' } } as any);
+      Alert.alert('Demo mode', 'Create a real account to start encrypted groups.');
       return;
     }
-    setCreating(true);
+    if (!groupName.trim()) {
+      Alert.alert('Group name required', 'Please enter a name for this group.');
+      return;
+    }
+    if (selected.size === 0) {
+      Alert.alert('Add participants', 'Please select at least one participant.');
+      return;
+    }
+    setIsCreating(true);
     try {
-      const res = await conversationRepository.createGroupConversation(user.id, picked.map((p) => p.id), groupName.trim());
-      if (res) router.replace({ pathname: '/chat/[id]', params: { id: res.conversationId, name: groupName.trim(), group: '1' } } as any);
-      else notify('Couldn’t create the group', 'Check your connection and try again.');
+      const conversationId = await conversationRepository.createGroupConversation(groupName.trim(), [...selected.keys()]);
+      void useChatsStore.getState().load({ sync: false });
+      router.replace(`/chat/${conversationId}`);
+    } catch (e) {
+      Alert.alert('Could not create group', friendlyError(e));
     } finally {
-      setCreating(false);
+      setIsCreating(false);
     }
   };
 
-  const countText = picked.length ? `${picked.length} of 1,000 selected` : 'Choose who to add';
-
-  const chips = picked.length > 0 && (
-    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingVertical: 2 }}>
-      {picked.map((p) => (
-        <Animated.View key={p.id} entering={ZoomIn.springify().damping(13)} exiting={ZoomOut.duration(160)} layout={LinearTransition.springify()}>
-          <View style={styles.chip}>
-            <Avatar name={p.displayName} size={28} />
-            <Text style={styles.chipText}>{p.displayName.split(' ')[0]}</Text>
-            <Pressy onPress={() => toggle(p.id)} accessibilityLabel={`Remove ${p.displayName}`} style={styles.chipX} scaleTo={0.85}>
-              <Icon name="close" size={13} color={Colors.muted} />
-            </Pressy>
-          </View>
-        </Animated.View>
-      ))}
-    </ScrollView>
+  const selectedUsersList = [...selected.values()];
+  const q = searchQuery.trim().toLowerCase();
+  const pool = q.length >= 2 ? [...knownContacts, ...searchResults.filter((r) => !knownContacts.some((k) => k.id === r.id))] : knownContacts;
+  const filteredContacts = pool.filter(
+    (c) => !q || c.displayName.toLowerCase().includes(q) || c.username.toLowerCase().includes(q)
   );
-
-  const list = (
-    <FlatList
-      data={filtered}
-      keyExtractor={(c) => c.id}
-      keyboardShouldPersistTaps="handled"
-      showsVerticalScrollIndicator={false}
-      contentContainerStyle={{ paddingBottom: isWide ? 8 : 120 }}
-      renderItem={({ item, index }) => {
-        const on = selected.has(item.id);
-        return (
-          <Animated.View entering={FadeInDown.delay(Math.min(index, 10) * 35).duration(380)}>
-            <Pressy
-              onPress={() => toggle(item.id)}
-              scaleTo={0.98}
-              accessibilityState={{ selected: on }}
-              accessibilityLabel={item.displayName}
-              hoverStyle={{ backgroundColor: Colors.creamTint }}
-              style={styles.row}
-            >
-              <Avatar name={item.displayName} size={isWide ? 44 : 50} />
-              <View style={{ flex: 1, minWidth: 0 }}>
-                <Text style={Type.name} numberOfLines={1}>
-                  {item.displayName}
-                </Text>
-                <Text style={Type.caption} numberOfLines={1}>
-                  {item.about || `@${item.username}`}
-                </Text>
-              </View>
-              <Check on={on} />
-            </Pressy>
-          </Animated.View>
-        );
-      }}
-    />
-  );
-
-  const details = (
-    <View style={{ gap: 20 }}>
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 16 }}>
-        <Pressy
-          onPress={() => notify('Group photo', 'Choose a photo from your library, or keep the colour tile.')}
-          style={[styles.groupPhoto, { backgroundColor: tone }]}
-          accessibilityLabel="Add group photo"
-        >
-          {groupName.trim() ? (
-            <Text style={{ fontFamily: Fonts.display, fontSize: 30, color: Colors.avatarText }}>{groupName.trim().slice(0, 2).toUpperCase()}</Text>
-          ) : (
-            <Icon name="camera" size={28} color={Colors.cream} />
-          )}
-        </Pressy>
-        <View style={{ flexDirection: 'row', gap: 8, flexWrap: 'wrap', flex: 1 }}>
-          {AvatarTones.slice(0, 6).map((t) => (
-            <Pressy
-              key={t}
-              onPress={() => setTone(t)}
-              scaleTo={0.85}
-              accessibilityLabel="Group colour"
-              accessibilityState={{ selected: tone === t }}
-              style={[styles.swatch, { backgroundColor: t }, tone === t && styles.swatchOn]}
-            />
-          ))}
-        </View>
-      </View>
-      <View style={{ gap: 8 }}>
-        <Text style={Type.label}>Group name</Text>
-        <TextInput
-          value={groupName}
-          onChangeText={setGroupName}
-          placeholder="Weekend shoot"
-          placeholderTextColor={Colors.faint}
-          selectionColor={Colors.brass}
-          maxLength={50}
-          accessibilityLabel="Group name"
-          style={[styles.nameInput, groupName.length > 0 && { borderColor: Colors.brass }]}
-        />
-        <Text style={[Type.small, { alignSelf: 'flex-end' }]}>{groupName.length}/50</Text>
-      </View>
-      <View style={{ gap: 10 }}>
-        <Text style={Type.label}>Disappearing messages</Text>
-        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-          {TIMERS.map((t) => (
-            <Chip key={t} label={t} active={timer === t} onPress={() => setTimer(t)} />
-          ))}
-        </View>
-      </View>
-      <View style={styles.note}>
-        <Icon name="lock" size={16} color={Colors.sage} />
-        <Text style={[Type.caption, { flex: 1, color: '#B7D3C1' }]}>Group messages are end-to-end encrypted for every member.</Text>
-      </View>
-    </View>
-  );
-
-  if (isWide) {
-    return (
-      <View style={styles.wideBg}>
-        <DotWall />
-        <View style={styles.dim} />
-        <Grain />
-        <Animated.View entering={FadeInDown.springify().damping(18)} style={styles.dialog} accessibilityViewIsModal>
-          <View style={styles.dialogLeft}>
-            <View style={styles.dialogHead}>
-              <View>
-                <Text style={Type.h2}>New group</Text>
-                <Text style={Type.caption}>{countText}</Text>
-              </View>
-              <IconButton icon="close" label="Close" variant="filled" onPress={close} />
-            </View>
-            {chips}
-            <SearchField value={query} onChangeText={setQuery} placeholder="Search people" />
-            <View style={{ flex: 1, minHeight: 0 }}>{list}</View>
-          </View>
-          <View style={styles.dialogRight}>
-            <Text style={Type.eyebrow}>GROUP DETAILS</Text>
-            {details}
-            <View style={{ flex: 1 }} />
-            <Button label="Create group" iconRight="arrowRight" loading={creating} disabled={!groupName.trim() || picked.length === 0} onPress={create} />
-          </View>
-        </Animated.View>
-      </View>
-    );
-  }
 
   return (
-    <View style={[styles.container, { paddingTop: insets.top }]}>
-      <Grain />
+    <SafeAreaView style={styles.container} edges={['top']}>
+      {/* Frosted Glass Cyber Header */}
       <View style={styles.header}>
-        <IconButton icon="back" label="Back" onPress={() => (step === 2 ? setStep(1) : close())} />
-        <View style={{ flex: 1 }}>
-          <Text style={Type.h3}>{step === 1 ? 'New group' : 'Group details'}</Text>
-          <Animated.Text key={countText} entering={FadeIn} style={Type.caption}>
-            {step === 1 ? countText : `${picked.length} ${picked.length === 1 ? 'person' : 'people'}`}
-          </Animated.Text>
+        <TouchableOpacity style={styles.iconBtn} onPress={() => router.back()} activeOpacity={0.7}>
+          <Ionicons name="arrow-back" size={20} color={Colors.textPrimary} />
+        </TouchableOpacity>
+        <View style={styles.headerTitleContainer}>
+          <Text style={styles.headerTitle}>New group</Text>
+          <Text style={styles.headerSub}>End-to-end encrypted</Text>
         </View>
-        <Text style={[Type.eyebrow, { paddingRight: 12 }]}>{step}/2</Text>
+        <TouchableOpacity
+          style={[styles.createBtn, (!groupName.trim() || selectedUserIds.size === 0) && styles.createBtnDisabled]}
+          onPress={handleCreateGroup}
+          disabled={!groupName.trim() || selectedUserIds.size === 0 || isCreating}
+          activeOpacity={0.85}
+        >
+          {isCreating ? (
+            <ActivityIndicator size="small" color={Colors.white} />
+          ) : (
+            <Text style={styles.createBtnText}>Create</Text>
+          )}
+        </TouchableOpacity>
       </View>
 
-      {step === 1 ? (
-        <Animated.View key="s1" entering={FadeIn} exiting={FadeOutLeft.duration(180)} style={{ flex: 1, gap: 12 }}>
-          <View style={{ paddingHorizontal: 20, gap: 12 }}>
-            {chips}
-            <SearchField value={query} onChangeText={setQuery} placeholder="Search people" />
+      {/* Group Info Input Card */}
+      <View style={styles.groupInfoCard}>
+        <View style={styles.groupAvatarPlaceholder}>
+          <Ionicons name="people" size={26} color={Colors.accent} />
+          <View style={styles.cameraBadge}>
+            <Ionicons name="camera" size={10} color={Colors.white} />
           </View>
-          {list}
-        </Animated.View>
-      ) : (
-        <Animated.View key="s2" entering={FadeInRight.springify().damping(18)} style={{ flex: 1 }}>
-          <ScrollView contentContainerStyle={{ padding: 20, paddingBottom: 140 }} keyboardShouldPersistTaps="handled">
-            {details}
+        </View>
+        <View style={styles.groupInputWrap}>
+          <TextInput
+            style={styles.groupNameInput}
+            placeholder="Group subject..."
+            placeholderTextColor={Colors.textTertiary}
+            value={groupName}
+            onChangeText={setGroupName}
+            maxLength={50}
+          />
+          <Text style={styles.charCounter}>{groupName.length}/50</Text>
+        </View>
+      </View>
+
+      {/* Selected Members Carousel */}
+      {selectedUsersList.length > 0 && (
+        <View style={styles.selectedSection}>
+          <Text style={styles.selectedCountText}>
+            PARTICIPANTS ({selectedUsersList.length})
+          </Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.selectedChipsList}>
+            {selectedUsersList.map((item) => (
+              <View key={item.id} style={styles.selectedChip}>
+                <View style={styles.chipAvatar}>
+                  <Text style={styles.chipAvatarText}>{item.displayName.slice(0, 1)}</Text>
+                </View>
+                <Text style={styles.chipName} numberOfLines={1}>{item.displayName.split(' ')[0]}</Text>
+                <TouchableOpacity onPress={() => removeSelectedUser(item.id)} style={styles.chipRemove}>
+                  <Ionicons name="close-circle" size={16} color={Colors.textSecondary} />
+                </TouchableOpacity>
+              </View>
+            ))}
           </ScrollView>
-        </Animated.View>
+        </View>
       )}
 
-      {picked.length > 0 && (
-        <Animated.View entering={FadeInDown.springify().damping(16)} style={[styles.bottom, { bottom: insets.bottom + 24 }]}>
-          {step === 1 ? (
-            <Button label="Next" iconRight="arrowRight" onPress={() => setStep(2)} style={styles.floatBtn} />
-          ) : (
-            <Button label="Create group" iconRight="check" loading={creating} disabled={!groupName.trim()} onPress={create} style={styles.floatBtn} />
+      {/* Search Input Bar */}
+      <View style={styles.searchSection}>
+        <View style={styles.searchBar}>
+          <Ionicons name="search" size={17} color={Colors.accent} />
+          <TextInput
+            style={styles.searchInput}
+            placeholder="Search directory by name or @handle..."
+            placeholderTextColor={Colors.textTertiary}
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+          />
+          {searchQuery.length > 0 && (
+            <TouchableOpacity onPress={() => setSearchQuery('')}>
+              <Ionicons name="close" size={16} color={Colors.textTertiary} />
+            </TouchableOpacity>
           )}
-        </Animated.View>
-      )}
-    </View>
+        </View>
+      </View>
+
+      {/* Security Info Card */}
+      <View style={styles.secNotice}>
+        <Ionicons name="shield-checkmark" size={14} color={Colors.online} />
+        <Text style={styles.secNoticeText}>Each group member will maintain independent end-to-end ratchet sessions.</Text>
+      </View>
+
+      {/* Contact List */}
+      <FlatList
+        data={filteredContacts}
+        keyExtractor={(item) => item.id}
+        contentContainerStyle={styles.listContent}
+        showsVerticalScrollIndicator={false}
+        ListEmptyComponent={
+          isLoading ? (
+            <ActivityIndicator color={Colors.accent} style={{ marginTop: 30 }} />
+          ) : (
+            <View style={styles.emptyWrap}>
+              <Ionicons name="search-outline" size={36} color={Colors.textTertiary} />
+              <Text style={styles.emptyText}>{q.length >= 2 ? 'No one found' : 'Search for people by name or @username'}</Text>
+            </View>
+          )
+        }
+        renderItem={({ item, index }) => {
+          const isSelected = selectedUserIds.has(item.id);
+          const avatarColor = AVATAR_GRADIENTS[index % AVATAR_GRADIENTS.length];
+          const initials = item.displayName.slice(0, 2).toUpperCase();
+
+          return (
+            <TouchableOpacity
+              style={[styles.contactRow, isSelected && styles.contactRowSelected]}
+              onPress={() => toggleSelectUser(item.id)}
+              activeOpacity={0.75}
+            >
+              <View style={[styles.avatar, { backgroundColor: avatarColor }]}>
+                <Text style={styles.avatarText}>{initials}</Text>
+              </View>
+
+              <View style={styles.contactInfo}>
+                <Text style={styles.displayName}>{item.displayName}</Text>
+                <Text style={styles.username}>@{item.username}</Text>
+              </View>
+
+              <View style={[styles.checkbox, isSelected && styles.checkboxSelected]}>
+                {isSelected ? (
+                  <Ionicons name="checkmark" size={14} color={Colors.white} />
+                ) : (
+                  <View style={styles.checkboxInnerUnchecked} />
+                )}
+              </View>
+            </TouchableOpacity>
+          );
+        }}
+      />
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: Colors.ink },
-  header: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 8, paddingVertical: 10 },
-  chip: {
+  container: {
+    flex: 1,
+    backgroundColor: Colors.background,
+  },
+  header: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    height: 38,
-    paddingLeft: 5,
-    paddingRight: 6,
-    borderRadius: 19,
-    backgroundColor: Colors.raised,
-    borderWidth: 1,
-    borderColor: Colors.line2,
+    justifyContent: 'space-between',
+    paddingHorizontal: Spacing.base,
+    paddingVertical: Spacing.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(6, 182, 212, 0.15)',
+    backgroundColor: 'rgba(8, 14, 26, 0.95)',
   },
-  chipText: { fontFamily: Fonts.medium, fontSize: 13.5, color: Colors.cream },
-  chipX: { width: 24, height: 24, borderRadius: 12, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.field },
-  row: { flexDirection: 'row', alignItems: 'center', gap: 13, paddingHorizontal: 20, paddingVertical: 9, borderRadius: 14 },
-  check: { width: 26, height: 26, borderRadius: 13, borderWidth: 1.5, borderColor: Colors.line3, alignItems: 'center', justifyContent: 'center' },
-  checkOn: { backgroundColor: Colors.brass, borderColor: Colors.brass },
-  groupPhoto: { width: 84, height: 84, borderRadius: 26, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: Colors.line2 },
-  swatch: { width: 30, height: 30, borderRadius: 10 },
-  swatchOn: { borderWidth: 2, borderColor: Colors.brass },
-  nameInput: {
-    height: 52,
+  iconBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#0E1726',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+  },
+  headerTitleContainer: {
+    flex: 1,
+    alignItems: 'center',
+    marginHorizontal: Spacing.sm,
+  },
+  headerTitle: {
+    fontSize: Typography.base,
+    fontWeight: Typography.bold,
+    color: Colors.textPrimary,
+  },
+  headerSub: {
+    fontSize: 10,
+    color: Colors.accent,
+    letterSpacing: 0.3,
+  },
+  createBtn: {
+    backgroundColor: Colors.accent,
     paddingHorizontal: 16,
-    borderRadius: 15,
-    backgroundColor: Colors.raised,
-    borderWidth: 1.5,
-    borderColor: Colors.line,
-    fontFamily: Fonts.body,
-    fontSize: 16,
-    color: Colors.cream,
-    outlineStyle: 'none',
-  } as any,
-  note: { flexDirection: 'row', gap: 10, alignItems: 'center', padding: 14, borderRadius: 14, backgroundColor: Colors.sageTint },
-  bottom: { position: 'absolute', left: 20, right: 20 },
-  floatBtn: { height: 58, borderRadius: 18, shadowColor: '#000', shadowOffset: { width: 0, height: 14 }, shadowOpacity: 0.5, shadowRadius: 30, elevation: 12 },
-  wideBg: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32, backgroundColor: Colors.ink },
-  dim: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(6,7,7,0.6)' },
-  dialog: {
-    width: '100%',
-    maxWidth: 980,
-    height: '100%',
-    maxHeight: 720,
-    flexDirection: 'row',
-    borderRadius: 28,
-    overflow: 'hidden',
-    backgroundColor: Colors.panel,
-    borderWidth: 1,
-    borderColor: Colors.line2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 40 },
-    shadowOpacity: 0.6,
-    shadowRadius: 80,
+    paddingVertical: 7,
+    borderRadius: BorderRadius.full,
+    shadowColor: Colors.accent,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.4,
+    shadowRadius: 6,
+    elevation: 4,
   },
-  dialogLeft: { flex: 1.15, padding: 24, gap: 14, borderRightWidth: 1, borderRightColor: Colors.line },
-  dialogHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  dialogRight: { flex: 1, padding: 28, gap: 20, backgroundColor: '#0F1211' },
+  createBtnDisabled: {
+    opacity: 0.4,
+    shadowOpacity: 0,
+  },
+  createBtnText: {
+    color: Colors.white,
+    fontWeight: Typography.bold,
+    fontSize: Typography.sm,
+  },
+  groupInfoCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: Spacing.base,
+    backgroundColor: '#080E1A',
+    gap: Spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(6, 182, 212, 0.1)',
+  },
+  groupAvatarPlaceholder: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: 'rgba(6, 182, 212, 0.12)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(6, 182, 212, 0.3)',
+    position: 'relative',
+  },
+  cameraBadge: {
+    position: 'absolute',
+    bottom: -2,
+    right: -2,
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: Colors.accent,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  groupInputWrap: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderBottomWidth: 1,
+    borderBottomColor: '#1E293B',
+    paddingBottom: 4,
+  },
+  groupNameInput: {
+    flex: 1,
+    color: Colors.textPrimary,
+    fontSize: Typography.base,
+    fontWeight: Typography.medium,
+  },
+  charCounter: {
+    fontSize: 10,
+    color: Colors.textTertiary,
+    marginLeft: 6,
+  },
+  selectedSection: {
+    paddingVertical: Spacing.sm,
+    backgroundColor: '#050A14',
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(6, 182, 212, 0.08)',
+  },
+  selectedCountText: {
+    fontSize: 10,
+    fontWeight: Typography.bold,
+    color: Colors.textSecondary,
+    letterSpacing: 0.8,
+    paddingHorizontal: Spacing.base,
+    marginBottom: 6,
+  },
+  selectedChipsList: {
+    paddingHorizontal: Spacing.base,
+    gap: 8,
+  },
+  selectedChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#0E1726',
+    borderRadius: BorderRadius.full,
+    paddingVertical: 3,
+    paddingLeft: 4,
+    paddingRight: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(6, 182, 212, 0.25)',
+    gap: 6,
+  },
+  chipAvatar: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: Colors.accent,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  chipAvatarText: {
+    fontSize: 10,
+    fontWeight: Typography.bold,
+    color: Colors.white,
+  },
+  chipName: {
+    fontSize: Typography.xs,
+    color: Colors.textPrimary,
+    fontWeight: Typography.medium,
+    maxWidth: 80,
+  },
+  chipRemove: {
+    padding: 1,
+  },
+  searchSection: {
+    paddingHorizontal: Spacing.base,
+    paddingTop: Spacing.sm,
+    paddingBottom: 6,
+  },
+  searchBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#080E1A',
+    borderRadius: BorderRadius.xl,
+    paddingHorizontal: Spacing.md,
+    height: 42,
+    gap: Spacing.sm,
+    borderWidth: 1,
+    borderColor: '#1E293B',
+  },
+  searchInput: {
+    flex: 1,
+    color: Colors.textPrimary,
+    fontSize: Typography.sm,
+  },
+  secNotice: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: Spacing.base,
+    paddingVertical: 6,
+  },
+  secNoticeText: {
+    fontSize: 10.5,
+    color: Colors.textTertiary,
+  },
+  listContent: {
+    paddingHorizontal: Spacing.base,
+    paddingBottom: Spacing['2xl'],
+  },
+  contactRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    borderRadius: BorderRadius.lg,
+    marginVertical: 1,
+  },
+  contactRowSelected: {
+    backgroundColor: 'rgba(6, 182, 212, 0.08)',
+  },
+  avatar: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: Spacing.md,
+  },
+  avatarText: {
+    color: Colors.white,
+    fontWeight: Typography.bold,
+    fontSize: Typography.sm,
+  },
+  contactInfo: {
+    flex: 1,
+  },
+  displayName: {
+    fontSize: Typography.base,
+    fontWeight: Typography.semibold,
+    color: Colors.textPrimary,
+  },
+  username: {
+    fontSize: Typography.xs,
+    color: Colors.textSecondary,
+    marginTop: 1,
+  },
+  checkbox: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: '#334155',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  checkboxInnerUnchecked: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: 'transparent',
+  },
+  checkboxSelected: {
+    backgroundColor: Colors.accent,
+    borderColor: Colors.accent,
+    shadowColor: Colors.accent,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.6,
+    shadowRadius: 6,
+  },
+  emptyWrap: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingTop: 40,
+    gap: 8,
+  },
+  emptyText: {
+    fontSize: Typography.sm,
+    color: Colors.textTertiary,
+  },
 });
+

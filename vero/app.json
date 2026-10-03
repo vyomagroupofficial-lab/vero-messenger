@@ -14,7 +14,10 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.vero.messenger"
+      "bundleIdentifier": "com.vero.messenger",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -24,7 +27,11 @@
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "package": "com.vero.messenger"
+      "package": "com.vero.messenger",
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.POST_NOTIFICATIONS"
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png",
@@ -33,19 +40,20 @@
     "plugins": [
       "expo-router",
       "expo-secure-store",
-      "expo-camera",
-      "expo-notifications",
+      "expo-sqlite",
+      "expo-video",
       [
-        "expo-image-picker",
+        "expo-notifications",
         {
-          "photosPermission": "Vero accesses your photos to send encrypted media.",
-          "cameraPermission": "Vero accesses your camera to take photos and videos."
+          "color": "#D6A657"
         }
       ],
       [
-        "expo-av",
+        "expo-image-picker",
         {
-          "microphonePermission": "Vero accesses your microphone to record voice messages."
+          "photosPermission": "Vero needs access to your photos so you can send them end-to-end encrypted.",
+          "cameraPermission": "Vero needs camera access so you can take photos to send end-to-end encrypted.",
+          "microphonePermission": false
         }
       ],
       "expo-font"

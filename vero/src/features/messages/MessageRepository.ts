@@ -1,339 +1,395 @@
 /**
  * Vero Message Repository
  *
- * Handles message sending (with E2EE), fetching, decrypting,
- * and syncing with Supabase Realtime.
+ * Send: payload -> encrypt once for every recipient device (incl. our own
+ *       other devices) -> insert ciphertext. The server broadcasts it.
+ * Receive: ciphertext -> verify sender device key (pinned) -> decrypt ->
+ *       apply (message / reaction / timer change) -> local SQLite.
  *
- * KEY PRINCIPLE: The server only sees ciphertext. Decryption happens here on-device.
+ * The server only ever sees envelopes; the local DB holds the plaintext view.
  */
 
 import { supabase } from '../../core/network/supabase';
-import { cryptoManager, EncryptedMessage } from '../../core/crypto/CryptoManager';
-import { Message, MessageType, MessageStatus, MediaAttachment } from '../../shared/models/Message';
-import { conversationRepository } from '../chats/ConversationRepository';
-import * as SecureStore from 'expo-secure-store';
-import { generateUUID } from '../../shared/utils/uuid';
+import { cryptoManager } from '../../core/crypto/CryptoManager';
+import { NotAddressedToDeviceError } from '../../core/crypto/primitives';
 import { databaseService } from '../../core/storage/DatabaseService';
-import { DEMO_MESSAGES } from '../demo/demoData';
+import { SessionContext } from '../../core/session';
+import { generateUUID } from '../../shared/utils/uuid';
+import {
+  ConversationMember,
+  Message,
+  MessageReaction,
+  MessageStatus,
+  MessageType,
+  messagePreview,
+} from '../../shared/models/Message';
+import { MessagePayload, parsePayload, serverTypeFor, timerLabel } from '../../shared/models/payload';
+import { keyDirectory } from '../keys/KeyDirectory';
+import { useSettingsStore } from '../settings/useSettingsStore';
+import { computeStatus } from './status';
 
-const DEVICE_ID_KEY = 'vero_device_id';
+export const PAGE_SIZE = 50;
 
-export interface SendMessageParams {
-  conversationId: string;
-  plaintext: string;
-  messageType?: MessageType;
-  replyToMessageId?: string;
-  recipientUserId: string;
-  mediaAttachment?: MediaAttachment;
+export interface ServerMessageRow {
+  id: string;
+  conversation_id: string;
+  sender_device_id: string;
+  sender_user_id: string;
+  ciphertext: string;
+  message_type: string;
+  media_id: string | null;
+  reply_to_message_id: string | null;
+  created_at: string;
+  expires_at: string | null;
+  deleted_at?: string | null;
 }
 
-const DEMO_CHAT_MESSAGES: Record<string, Message[]> = DEMO_MESSAGES;
+/** Result of applying one server row locally. */
+export type AppliedRow =
+  | { kind: 'message'; message: Message }
+  | { kind: 'reaction'; target: Message }
+  | { kind: 'deleted'; id: string }
+  | { kind: 'ignored' };
+
+const SELECT_COLUMNS =
+  'id, conversation_id, sender_device_id, sender_user_id, ciphertext, message_type, media_id, reply_to_message_id, created_at, expires_at, deleted_at';
+
+export interface SendOptions {
+  replyTo?: Message | null;
+  mediaId?: string;
+  /** Local file to show immediately for the sender's own media message. */
+  localUri?: string;
+}
+
+function contentFor(payload: MessagePayload): { type: MessageType; content?: string } {
+  switch (payload.t) {
+    case 'text':
+      return { type: 'text', content: payload.body };
+    case 'media':
+      return {
+        type: payload.kind,
+        content: payload.kind === 'document' ? payload.media.fileName || payload.caption : payload.caption,
+      };
+    case 'timer':
+      return { type: 'system', content: `Disappearing messages: ${timerLabel(payload.seconds)}` };
+    default:
+      return { type: 'system' };
+  }
+}
+
+function applyReaction(list: MessageReaction[] | undefined, userId: string, emoji: string | null): MessageReaction[] {
+  const others = (list || []).filter((r) => r.userId !== userId);
+  return emoji ? [...others, { userId, emoji }] : others;
+}
 
 class MessageRepository {
-  // ──────────────────────────────────────────────────────────────────────────
-  // Send message with E2EE
-  // ──────────────────────────────────────────────────────────────────────────
+  // ── Sending ────────────────────────────────────────────────────────────────
 
-  async sendMessage(params: SendMessageParams): Promise<{ success: boolean; messageId?: string; error?: string }> {
+  /**
+   * Encrypts and sends. `onLocal` fires immediately with the optimistic
+   * message (status 'sending') so the UI can render it before the network.
+   */
+  async send(
+    session: SessionContext,
+    conversationId: string,
+    payload: MessagePayload,
+    opts: SendOptions = {},
+    onLocal?: (m: Message) => void
+  ): Promise<Message> {
+    const id = generateUUID();
+    const timer = await databaseService.getDisappearingTimer(conversationId);
+    const expiresAt =
+      timer > 0 && payload.t !== 'timer' ? new Date(Date.now() + timer * 1000).toISOString() : null;
+    const { type, content } = contentFor(payload);
+
+    const local: Message = {
+      id,
+      conversationId,
+      senderDeviceId: session.deviceId,
+      senderUserId: session.userId,
+      senderName: 'You',
+      content,
+      messageType: type,
+      media: payload.t === 'media' ? { ...payload.media, localUri: opts.localUri } : undefined,
+      replyToMessageId: opts.replyTo?.id ?? null,
+      replyPreview: opts.replyTo ? messagePreview(opts.replyTo.messageType, opts.replyTo.content) : null,
+      createdAt: new Date().toISOString(),
+      expiresAt,
+      status: 'sending',
+      isOwn: true,
+      reactions: [],
+    };
+
+    if (payload.t !== 'reaction') {
+      await databaseService.saveMessage(local);
+      onLocal?.(local);
+    }
+
+    if (session.isDemo) {
+      const done = { ...local, status: 'read' as MessageStatus };
+      if (payload.t !== 'reaction') await databaseService.saveMessage(done);
+      return done;
+    }
+
     try {
-      const senderDeviceId = await SecureStore.getItemAsync(DEVICE_ID_KEY);
-      if (!senderDeviceId) throw new Error('Device not registered');
-
-      // 1. Get recipient's public key
-      const recipientPublicKey = await conversationRepository.getRecipientPublicKey(
-        params.recipientUserId
-      );
-      if (!recipientPublicKey) {
-        throw new Error('Recipient public key not found - cannot establish E2EE session');
-      }
-
-      // 2. Encrypt the message
-      const encryptedEnvelope: EncryptedMessage = await cryptoManager.encryptMessage(
-        params.plaintext,
-        recipientPublicKey
-      );
-
-      // 3. Build ciphertext payload (never contains plaintext)
-      const ciphertext = JSON.stringify(encryptedEnvelope);
-
-      // 4. Insert into Supabase (only ciphertext)
-      const messageId = generateUUID();
-      const now = new Date().toISOString();
-
-      const { error } = await supabase
-        .from('messages')
-        .insert({
-          id: messageId,
-          conversation_id: params.conversationId,
-          sender_device_id: senderDeviceId,
-          ciphertext,
-          message_type: params.messageType || 'text',
-          media_id: params.mediaAttachment?.mediaId || null,
-          reply_to_message_id: params.replyToMessageId || null,
-        });
-
-      if (error) throw error;
-
-      // Save plaintext locally in SQLite so sender can read own sent message
-      const userRes = await supabase.auth.getUser();
-      await databaseService.saveMessage({
-        id: messageId,
-        conversationId: params.conversationId,
-        senderDeviceId,
-        senderUserId: userRes.data.user?.id,
-        content: params.plaintext,
-        messageType: params.messageType || 'text',
-        media: params.mediaAttachment,
-        replyToMessageId: params.replyToMessageId,
-        status: 'sent',
-        isOwn: true,
-        createdAt: now,
-      });
-
-      // 5. Update conversation updated_at for ordering
-      await supabase
-        .from('conversations')
-        .update({ updated_at: now })
-        .eq('id', params.conversationId);
-
-      return { success: true, messageId };
-    } catch (e: any) {
-      console.error('[MessageRepository] sendMessage error:', e);
-      return { success: false, error: e.message };
+      await this.deliver(session, local, payload, opts.mediaId ?? null);
+      const sent = { ...local, status: 'sent' as MessageStatus };
+      if (payload.t !== 'reaction') await databaseService.updateMessageStatus(id, 'sent');
+      return sent;
+    } catch (e) {
+      console.warn('[MessageRepository] send failed:', (e as Error)?.message);
+      if (payload.t !== 'reaction') await databaseService.updateMessageStatus(id, 'failed');
+      if (payload.t === 'reaction') throw e;
+      return { ...local, status: 'failed' };
     }
   }
 
-  // ──────────────────────────────────────────────────────────────────────────
-  // Fetch and decrypt messages for a conversation
-  // ──────────────────────────────────────────────────────────────────────────
+  private async deliver(
+    session: SessionContext,
+    local: Message,
+    payload: MessagePayload,
+    mediaId: string | null
+  ): Promise<void> {
+    const recipients = await keyDirectory.getConversationRecipients(local.conversationId);
+    const ciphertext = await cryptoManager.encryptMessage(
+      session.userId,
+      JSON.stringify(payload),
+      { conversationId: local.conversationId, messageId: local.id, senderDeviceId: session.deviceId },
+      recipients
+    );
+    const { error } = await supabase.from('messages').insert({
+      id: local.id,
+      conversation_id: local.conversationId,
+      sender_device_id: session.deviceId,
+      sender_user_id: session.userId,
+      ciphertext,
+      message_type: serverTypeFor(payload),
+      media_id: mediaId,
+      reply_to_message_id: local.replyToMessageId,
+      expires_at: local.expiresAt,
+    });
+    if (error) throw error;
+  }
 
-  async getMessages(
+  /** Re-sends a failed text/media message with a fresh id. */
+  async retry(session: SessionContext, failed: Message, onLocal?: (m: Message) => void): Promise<Message | null> {
+    let payload: MessagePayload | null = null;
+    if (failed.messageType === 'text' && failed.content) payload = { t: 'text', body: failed.content };
+    else if (failed.media && ['image', 'video', 'voice', 'document'].includes(failed.messageType)) {
+      const { localUri: _l, ...media } = failed.media;
+      payload = { t: 'media', kind: failed.messageType as any, caption: failed.content, media };
+    }
+    if (!payload) return null;
+    await databaseService.markMessageDeleted(failed.id);
+    return this.send(
+      session,
+      failed.conversationId,
+      payload,
+      { mediaId: failed.media?.mediaId, localUri: failed.media?.localUri },
+      onLocal
+    );
+  }
+
+  async react(session: SessionContext, target: Message, emoji: string | null): Promise<Message> {
+    const reactions = applyReaction(target.reactions, session.userId, emoji);
+    await databaseService.setReactions(target.id, reactions);
+    const updated = { ...target, reactions };
+    await this.send(session, target.conversationId, { t: 'reaction', target: target.id, emoji });
+    return updated;
+  }
+
+  async setDisappearingTimer(
+    session: SessionContext,
     conversationId: string,
-    currentUserId: string,
-    currentDeviceId: string,
-    limit: number = 50,
-    beforeDate?: string
-  ): Promise<Message[]> {
-    try {
-      // 1. Instant load from local SQLite database
-      const cached = await databaseService.getMessages(conversationId, limit, beforeDate);
+    seconds: number,
+    onLocal?: (m: Message) => void
+  ): Promise<void> {
+    await databaseService.setDisappearingTimer(conversationId, seconds);
+    await this.send(session, conversationId, { t: 'timer', seconds }, {}, onLocal);
+  }
 
-      // 2. Fetch from Supabase
+  async deleteForEveryone(session: SessionContext, message: Message): Promise<void> {
+    if (!session.isDemo) {
+      const { error } = await supabase.rpc('delete_message', { p_message_id: message.id });
+      if (error) throw error;
+    }
+    await databaseService.markMessageDeleted(message.id);
+  }
+
+  async deleteForMe(messageId: string): Promise<void> {
+    await databaseService.markMessageDeleted(messageId);
+  }
+
+  // ── Receiving ──────────────────────────────────────────────────────────────
+
+  /**
+   * Pulls a page from the server (newest first), decrypts it into the local
+   * DB, then returns the local view. Falls back to local data when offline.
+   */
+  async loadPage(
+    session: SessionContext,
+    conversationId: string,
+    names: Record<string, string>,
+    before?: string
+  ): Promise<{ messages: Message[]; hasMore: boolean }> {
+    if (!session.isDemo) {
       let query = supabase
         .from('messages')
-        .select(`
-          id,
-          conversation_id,
-          sender_device_id,
-          ciphertext,
-          message_type,
-          media_id,
-          reply_to_message_id,
-          created_at,
-          expires_at,
-          deleted_at,
-          devices:sender_device_id (
-            user_id,
-            profiles:user_id (
-              id,
-              username,
-              display_name,
-              avatar_reference
-            )
-          )
-        `)
+        .select(SELECT_COLUMNS)
         .eq('conversation_id', conversationId)
-        .is('deleted_at', null)
         .order('created_at', { ascending: false })
-        .limit(limit);
-
-      if (beforeDate) {
-        query = query.lt('created_at', beforeDate);
-      }
-
+        .limit(PAGE_SIZE);
+      if (before) query = query.lt('created_at', before);
       const { data, error } = await query;
-      if (error) {
-        // If network error, return cached messages or demo messages
-        if (cached.length > 0) return cached;
-        return DEMO_CHAT_MESSAGES[conversationId] || [];
+      if (!error && data) {
+        await this.applyRows(session, (data as ServerMessageRow[]).reverse(), names);
+        const messages = await databaseService.getMessages(conversationId, PAGE_SIZE, before);
+        return { messages, hasMore: data.length === PAGE_SIZE };
       }
-
-      // Decrypt each message and update local cache
-      const messages: Message[] = [];
-      for (const raw of (data || [])) {
-        const message = await this.decryptRawMessage(raw as any, currentUserId, currentDeviceId);
-        if (message) {
-          // If own message was already stored in local cache, retain plaintext content
-          const localMatch = cached.find((c) => c.id === message.id);
-          if (localMatch?.content && message.isOwn) {
-            message.content = localMatch.content;
-          }
-          await databaseService.saveMessage(message);
-          messages.push(message);
-        }
-      }
-
-      // Return chronological order
-      if (messages.length > 0) return messages.reverse();
-      if (cached.length > 0) return cached;
-      return DEMO_CHAT_MESSAGES[conversationId] || [];
-    } catch (e) {
-      console.error('[MessageRepository] getMessages error:', e);
-      const fallback = await databaseService.getMessages(conversationId, limit, beforeDate);
-      if (fallback.length > 0) return fallback;
-      return DEMO_CHAT_MESSAGES[conversationId] || [];
     }
+    const messages = await databaseService.getMessages(conversationId, PAGE_SIZE, before);
+    return { messages, hasMore: messages.length === PAGE_SIZE };
   }
 
-  // ──────────────────────────────────────────────────────────────────────────
-  // Decrypt a raw message from Supabase
-  // ──────────────────────────────────────────────────────────────────────────
+  /** Fetches anything newer than what we have locally (used for chat list previews). */
+  async syncLatest(session: SessionContext, conversationId: string, names: Record<string, string>): Promise<number> {
+    if (session.isDemo) return 0;
+    const newest = await databaseService.getNewestMessageTime(conversationId);
+    let query = supabase
+      .from('messages')
+      .select(SELECT_COLUMNS)
+      .eq('conversation_id', conversationId)
+      .order('created_at', { ascending: false })
+      .limit(PAGE_SIZE);
+    if (newest) query = query.gt('created_at', newest);
+    const { data, error } = await query;
+    if (error || !data?.length) return 0;
+    await this.applyRows(session, (data as ServerMessageRow[]).reverse(), names);
+    await this.markReceipt(conversationId, 'delivered');
+    return data.length;
+  }
 
-  async decryptRawMessage(
-    raw: any,
-    currentUserId: string,
-    currentDeviceId: string
-  ): Promise<Message | null> {
-    try {
-      const senderUserId = raw.devices?.user_id;
-      const senderProfile = raw.devices?.profiles;
-      const isOwn = senderUserId === currentUserId;
+  async fetchOne(session: SessionContext, messageId: string, names: Record<string, string>): Promise<AppliedRow> {
+    const { data, error } = await supabase.from('messages').select(SELECT_COLUMNS).eq('id', messageId).maybeSingle();
+    if (error || !data) return { kind: 'ignored' };
+    const [applied] = await this.applyRows(session, [data as ServerMessageRow], names);
+    return applied ?? { kind: 'ignored' };
+  }
 
-      let content: string | undefined;
-      let status: MessageStatus = 'sent';
+  /** Decrypts rows (oldest first) and writes them to the local DB. */
+  async applyRows(
+    session: SessionContext,
+    rows: ServerMessageRow[],
+    names: Record<string, string>
+  ): Promise<AppliedRow[]> {
+    const senderKeys = await keyDirectory.getKeys(rows.map((r) => r.sender_device_id));
+    const out: AppliedRow[] = [];
 
-      // Only decrypt if the message is for us (or we sent it)
-      // Our own messages were encrypted with recipient's key,
-      // so we need to store a copy encrypted with our own key in production.
-      // For this implementation, we decrypt if we have the session key.
-      try {
-        const envelope: EncryptedMessage = JSON.parse(raw.ciphertext);
-        if (isOwn) {
-          // For own messages, we show the plaintext from local cache
-          // In a full implementation, sender encrypts a copy for themselves too
-          content = '[Sent message]'; // Placeholder until local cache is implemented
-          status = 'sent';
-        } else {
-          const decrypted = await cryptoManager.decryptMessage(envelope);
-          content = decrypted.plaintext;
-          status = 'read';
-        }
-      } catch {
-        // Decryption failed - show placeholder
-        content = undefined;
-        status = 'failed';
+    for (const row of rows) {
+      if (row.deleted_at) {
+        await databaseService.markMessageDeleted(row.id);
+        out.push({ kind: 'deleted', id: row.id });
+        continue;
       }
 
-      return {
-        id: raw.id,
-        conversationId: raw.conversation_id,
-        senderDeviceId: raw.sender_device_id,
-        senderUserId,
-        senderProfile: senderProfile ? {
-          id: senderProfile.id,
-          username: senderProfile.username,
-          displayName: senderProfile.display_name,
-          avatarReference: senderProfile.avatar_reference,
-        } : undefined,
-        content,
-        messageType: raw.message_type,
-        replyToMessageId: raw.reply_to_message_id,
-        createdAt: raw.created_at,
-        expiresAt: raw.expires_at,
-        deletedAt: raw.deleted_at,
-        status,
+      const existing = await databaseService.getMessage(row.id);
+      if (existing && existing.messageType !== 'unavailable') {
+        if (existing.status === 'sending' || existing.status === 'failed') {
+          await databaseService.updateMessageStatus(row.id, 'sent');
+          existing.status = 'sent';
+        }
+        if (!existing.deletedAt) out.push({ kind: 'message', message: existing });
+        continue;
+      }
+
+      const isOwn = row.sender_user_id === session.userId;
+      const base: Message = {
+        id: row.id,
+        conversationId: row.conversation_id,
+        senderDeviceId: row.sender_device_id,
+        senderUserId: row.sender_user_id,
+        senderName: isOwn ? 'You' : names[row.sender_user_id] || 'Unknown',
+        messageType: 'unavailable',
+        replyToMessageId: row.reply_to_message_id,
+        createdAt: row.created_at,
+        expiresAt: row.expires_at,
+        status: isOwn ? 'sent' : 'delivered',
         isOwn,
         reactions: [],
       };
-    } catch {
-      return null;
-    }
-  }
 
-  // ──────────────────────────────────────────────────────────────────────────
-  // Update receipt status
-  // ──────────────────────────────────────────────────────────────────────────
-
-  async markAsRead(messageId: string, deviceId: string): Promise<void> {
-    try {
-      await supabase
-        .from('message_receipts')
-        .upsert({
-          message_id: messageId,
-          device_id: deviceId,
-          status: 'read',
-          updated_at: new Date().toISOString(),
-        });
-    } catch (e) {
-      console.error('[MessageRepository] markAsRead error:', e);
-    }
-  }
-
-  // ──────────────────────────────────────────────────────────────────────────
-  // Delete message
-  // ──────────────────────────────────────────────────────────────────────────
-  async deleteMessage(messageId: string, forEveryone: boolean = false): Promise<boolean> {
-    try {
-      if (forEveryone) {
-        // Mark as deleted in DB (ciphertext remains but deleted_at is set)
-        await supabase
-          .from('messages')
-          .update({ deleted_at: new Date().toISOString() })
-          .eq('id', messageId);
+      let payload: MessagePayload | null = null;
+      const key = senderKeys.get(row.sender_device_id);
+      try {
+        if (!key || key.userId !== row.sender_user_id) throw new Error('Unknown sender device');
+        const plaintext = await cryptoManager.decryptMessage(
+          session.userId,
+          session.deviceId,
+          row.ciphertext,
+          { conversationId: row.conversation_id, messageId: row.id, senderDeviceId: row.sender_device_id },
+          key.publicKey
+        );
+        payload = parsePayload(plaintext);
+        if (!payload) throw new Error('Unreadable payload');
+      } catch (e) {
+        base.content =
+          e instanceof NotAddressedToDeviceError
+            ? 'This message was sent before this device was linked.'
+            : "This message couldn't be decrypted.";
+        if (row.message_type === 'reaction') {
+          out.push({ kind: 'ignored' });
+          continue;
+        }
+        await databaseService.saveMessage(base);
+        out.push({ kind: 'message', message: base });
+        continue;
       }
-      // Always mark as deleted locally in SQLite
-      await databaseService.markMessageDeleted(messageId);
-      return true;
-    } catch {
-      return false;
+
+      if (payload.t === 'reaction') {
+        const target = await databaseService.getMessage(payload.target);
+        if (target && target.conversationId === row.conversation_id) {
+          target.reactions = applyReaction(target.reactions, row.sender_user_id, payload.emoji);
+          await databaseService.setReactions(target.id, target.reactions);
+          out.push({ kind: 'reaction', target });
+        } else {
+          out.push({ kind: 'ignored' });
+        }
+        continue;
+      }
+
+      if (payload.t === 'timer' && !isOwn) {
+        await databaseService.setDisappearingTimer(row.conversation_id, payload.seconds);
+      }
+
+      const { type, content } = contentFor(payload);
+      const replyTarget = row.reply_to_message_id ? await databaseService.getMessage(row.reply_to_message_id) : null;
+      const message: Message = {
+        ...base,
+        messageType: type,
+        content: payload.t === 'timer' ? `${isOwn ? 'You' : base.senderName} set ${content?.toLowerCase()}` : content,
+        media: payload.t === 'media' ? { ...payload.media } : undefined,
+        replyPreview: replyTarget ? messagePreview(replyTarget.messageType, replyTarget.content) : null,
+      };
+      await databaseService.saveMessage(message);
+      out.push({ kind: 'message', message });
     }
+    return out;
   }
 
-  // ──────────────────────────────────────────────────────────────────────────
-  // Reactions (Section 30 of Plan)
-  // ──────────────────────────────────────────────────────────────────────────
+  // ── Receipts ───────────────────────────────────────────────────────────────
 
-  async addReaction(conversationId: string, messageId: string, emoji: string, userId: string): Promise<void> {
-    try {
-      const channel = supabase.channel(`private:conversation:${conversationId}`);
-      await channel.send({
-        type: 'broadcast',
-        event: 'message.reaction',
-        payload: {
-          messageId,
-          emoji,
-          userId,
-          createdAt: new Date().toISOString(),
-        },
-      });
-    } catch (e) {
-      console.error('[MessageRepository] addReaction error:', e);
-    }
+  async markReceipt(conversationId: string, kind: 'delivered' | 'read'): Promise<void> {
+    if (kind === 'read' && !useSettingsStore.getState().readReceipts) kind = 'delivered';
+    const { error } = await supabase.rpc('mark_conversation_receipt', {
+      p_conversation_id: conversationId,
+      p_kind: kind,
+    });
+    if (error) console.warn('[MessageRepository] receipt failed:', error.message);
   }
 
-  // ──────────────────────────────────────────────────────────────────────────
-  // Local message search (Section 28 of Plan)
-  // ──────────────────────────────────────────────────────────────────────────
-
-  async searchLocalMessages(query: string): Promise<Message[]> {
-    return await databaseService.searchMessages(query);
-  }
-
-  // ──────────────────────────────────────────────────────────────────────────
-  // Realtime broadcast helper
-  // ──────────────────────────────────────────────────────────────────────────
-
-  async broadcastTyping(conversationId: string, userId: string, isTyping: boolean): Promise<void> {
-    try {
-      const channel = supabase.channel(`private:conversation:${conversationId}`);
-      await channel.send({
-        type: 'broadcast',
-        event: isTyping ? 'typing.start' : 'typing.stop',
-        payload: { userId },
-      });
-    } catch {
-      // Typing indicators are ephemeral, failure is acceptable
-    }
+  /** Status of one of OUR messages, derived from the other members' watermarks. */
+  statusFor(message: Message, members: ConversationMember[], myUserId: string): MessageStatus {
+    return computeStatus(message, members, myUserId);
   }
 }
 

@@ -1,295 +1,163 @@
 /**
- * Vero Conversation Repository
- *
- * Manages conversations, fetching members, and last message resolution.
- * All message content is decrypted locally - only ciphertext touches Supabase.
+ * Conversations, members and the user directory.
+ * Membership changes go through server RPCs that enforce authorization.
  */
 
 import { supabase } from '../../core/network/supabase';
-import { Conversation, User, Message, MessageType } from '../../shared/models/Message';
-import { cryptoManager } from '../../core/crypto/CryptoManager';
+import { databaseService } from '../../core/storage/DatabaseService';
+import {
+  Conversation,
+  ConversationMember,
+  User,
+  messagePreview,
+} from '../../shared/models/Message';
+
+function toUser(p: any): User {
+  return {
+    id: p.id,
+    username: p.username ?? '',
+    displayName: p.display_name || p.username || 'Unknown',
+    avatarReference: p.avatar_reference ?? null,
+    about: p.about ?? null,
+  };
+}
 
 class ConversationRepository {
-  // ──────────────────────────────────────────────────────────────────────────
-  // Fetch conversations for the current user
-  // ──────────────────────────────────────────────────────────────────────────
-
+  /** Server conversations + locally decrypted previews/unread counts. */
   async getConversations(currentUserId: string): Promise<Conversation[]> {
-    try {
-      // Get conversation IDs the user is a member of
-      const { data: memberData, error: memberError } = await supabase
-        .from('conversation_members')
-        .select('conversation_id, joined_at')
-        .eq('user_id', currentUserId)
-        .is('left_at', null);
+    const { data, error } = await supabase
+      .from('conversations')
+      .select(
+        `id, conversation_type, group_name, created_at, updated_at,
+         conversation_members ( user_id, role, left_at, last_delivered_at, last_read_at,
+           profiles ( id, username, display_name, avatar_reference, about ) )`
+      )
+      .order('updated_at', { ascending: false });
+    if (error) throw error;
 
-      if (memberError) throw memberError;
-      if (!memberData?.length) return [];
-
-      const conversationIds = memberData.map((m: any) => m.conversation_id);
-
-      // Fetch conversation details
-      const { data: convData, error: convError } = await supabase
-        .from('conversations')
-        .select('*')
-        .in('id', conversationIds)
-        .order('updated_at', { ascending: false });
-
-      if (convError) throw convError;
-
-      // Fetch members for each conversation
-      const conversations: Conversation[] = [];
-      for (const conv of (convData || [])) {
-        const conversation = await this.buildConversation(conv, currentUserId);
-        if (conversation) conversations.push(conversation);
-      }
-
-      return conversations;
-    } catch (e) {
-      console.error('[ConversationRepository] getConversations error:', e);
-      return [];
-    }
-  }
-
-  // ──────────────────────────────────────────────────────────────────────────
-  // Build conversation object with members and last message
-  // ──────────────────────────────────────────────────────────────────────────
-
-  private async buildConversation(
-    raw: any,
-    currentUserId: string
-  ): Promise<Conversation | null> {
-    try {
-      const members = await this.getConversationMembers(raw.id);
-      const otherMembers = members.filter((m) => m.id !== currentUserId);
-
-      let otherUser: User | undefined;
-      if (raw.conversation_type === 'direct' && otherMembers.length > 0) {
-        otherUser = otherMembers[0];
-      }
-
-      // Get last message (ciphertext only from DB)
-      const lastMsgData = await this.getLastMessage(raw.id, currentUserId);
-
+    const conversations: Conversation[] = (data || []).map((raw: any) => {
+      const members: ConversationMember[] = (raw.conversation_members || [])
+        .filter((m: any) => !m.left_at)
+        .map((m: any) => ({
+          ...toUser(m.profiles ?? { id: m.user_id }),
+          id: m.user_id,
+          role: m.role,
+          lastDeliveredAt: m.last_delivered_at,
+          lastReadAt: m.last_read_at,
+        }));
       return {
         id: raw.id,
         conversationType: raw.conversation_type,
-        otherUser,
-        memberCount: members.length,
-        lastMessage: lastMsgData || undefined,
-        unreadCount: 0, // TODO: calculate from receipts
+        groupName: raw.group_name,
+        otherUser:
+          raw.conversation_type === 'direct' ? members.find((m) => m.id !== currentUserId) : undefined,
+        members,
+        unreadCount: 0,
         createdAt: raw.created_at,
         updatedAt: raw.updated_at,
       };
-    } catch {
-      return null;
-    }
-  }
-
-  // ──────────────────────────────────────────────────────────────────────────
-  // Members
-  // ──────────────────────────────────────────────────────────────────────────
-
-  async getConversationMembers(conversationId: string): Promise<User[]> {
-    const { data, error } = await supabase
-      .from('conversation_members')
-      .select(`
-        user_id,
-        profiles:user_id (
-          id,
-          username,
-          display_name,
-          avatar_reference,
-          about
-        )
-      `)
-      .eq('conversation_id', conversationId)
-      .is('left_at', null);
-
-    if (error) return [];
-
-    return (data || []).map((m: any) => ({
-      id: m.profiles?.id || m.user_id,
-      username: m.profiles?.username || '',
-      displayName: m.profiles?.display_name || 'Unknown',
-      avatarReference: m.profiles?.avatar_reference,
-      about: m.profiles?.about,
-    }));
-  }
-
-  // ──────────────────────────────────────────────────────────────────────────
-  // Create conversation
-  // ──────────────────────────────────────────────────────────────────────────
-
-  async createDirectConversation(
-    currentUserId: string,
-    otherUserId: string
-  ): Promise<{ conversationId: string } | null> {
-    try {
-      // Check if conversation already exists
-      const existing = await this.findDirectConversation(currentUserId, otherUserId);
-      if (existing) return { conversationId: existing };
-
-      // Create new conversation
-      const { data: conv, error: convError } = await supabase
-        .from('conversations')
-        .insert({ conversation_type: 'direct' })
-        .select('id')
-        .single();
-
-      if (convError || !conv) throw convError;
-
-      // Add members
-      const { error: memberError } = await supabase
-        .from('conversation_members')
-        .insert([
-          { conversation_id: conv.id, user_id: currentUserId, role: 'member' },
-          { conversation_id: conv.id, user_id: otherUserId, role: 'member' },
-        ]);
-
-      if (memberError) throw memberError;
-
-      return { conversationId: conv.id };
-    } catch (e) {
-      console.error('[ConversationRepository] createDirectConversation error:', e);
-      return null;
-    }
-  }
-
-  private async findDirectConversation(
-    userId1: string,
-    userId2: string
-  ): Promise<string | null> {
-    const { data } = await supabase.rpc('find_direct_conversation', {
-      user_a: userId1,
-      user_b: userId2,
     });
-    return data || null;
+
+    await databaseService.saveConversations(conversations);
+    return this.withLocalState(conversations, currentUserId);
   }
 
-  async createGroupConversation(
-    currentUserId: string,
-    memberUserIds: string[],
-    groupName: string
-  ): Promise<{ conversationId: string } | null> {
-    try {
-      const { data: conv, error: convError } = await supabase
-        .from('conversations')
-        .insert({
-          conversation_type: 'group',
-          group_name: groupName,
-        })
-        .select('id')
-        .single();
-
-      if (convError || !conv) throw convError;
-
-      const allMembers = Array.from(new Set([currentUserId, ...memberUserIds]));
-      const memberInserts = allMembers.map((uid) => ({
-        conversation_id: conv.id,
-        user_id: uid,
-        role: uid === currentUserId ? 'admin' : 'member',
-      }));
-
-      const { error: memberError } = await supabase
-        .from('conversation_members')
-        .insert(memberInserts);
-
-      if (memberError) throw memberError;
-
-      return { conversationId: conv.id };
-    } catch (e) {
-      console.error('[ConversationRepository] createGroupConversation error:', e);
-      return null;
-    }
+  /** Offline start-up: last known list from the local cache. */
+  async getCachedConversations(currentUserId: string): Promise<Conversation[]> {
+    return this.withLocalState(await databaseService.getCachedConversations(), currentUserId);
   }
 
-  // ──────────────────────────────────────────────────────────────────────────
-  // Last message (for chat list preview)
-  // ──────────────────────────────────────────────────────────────────────────
-
-  private async getLastMessage(
-    conversationId: string,
-    currentUserId: string
-  ): Promise<Conversation['lastMessage'] | null> {
-    const { data } = await supabase
-      .from('messages')
-      .select(`
-        id,
-        ciphertext,
-        message_type,
-        created_at,
-        sender_device_id,
-        devices:sender_device_id (
-          user_id,
-          profiles:user_id (
-            display_name
-          )
-        )
-      `)
-      .eq('conversation_id', conversationId)
-      .is('deleted_at', null)
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .single();
-
-    if (!data) return null;
-
-    const senderUserId = (data as any).devices?.user_id;
-    const senderDisplayName = (data as any).devices?.profiles?.display_name || 'Unknown';
-    const isOwn = senderUserId === currentUserId;
-
-    // Note: We don't decrypt the last message here for performance.
-    // The chat list shows a generic preview.
-    return {
-      content: undefined, // Will be decrypted when needed
-      messageType: (data as any).message_type as MessageType,
-      senderDisplayName: isOwn ? 'You' : senderDisplayName,
-      createdAt: (data as any).created_at,
-      isOwn,
-    };
+  private async withLocalState(list: Conversation[], currentUserId: string): Promise<Conversation[]> {
+    const [lastMessages, unread] = await Promise.all([
+      databaseService.getLastMessages(),
+      databaseService.getUnreadCounts(),
+    ]);
+    return list.map((c) => {
+      const last = lastMessages[c.id];
+      return {
+        ...c,
+        unreadCount: unread[c.id] || 0,
+        lastMessage: last
+          ? {
+              content: messagePreview(last.messageType, last.content),
+              messageType: last.messageType,
+              senderName: last.senderUserId === currentUserId ? 'You' : last.senderName,
+              createdAt: last.createdAt,
+              isOwn: last.senderUserId === currentUserId,
+            }
+          : undefined,
+      };
+    });
   }
 
-  // ──────────────────────────────────────────────────────────────────────────
-  // User search (for starting new chats)
-  // ──────────────────────────────────────────────────────────────────────────
+  async getConversation(conversationId: string, currentUserId: string): Promise<Conversation | null> {
+    const all = await this.getConversations(currentUserId).catch(() => this.getCachedConversations(currentUserId));
+    return all.find((c) => c.id === conversationId) ?? null;
+  }
 
-  async searchUsers(query: string, currentUserId: string): Promise<User[]> {
+  async createDirectConversation(otherUserId: string): Promise<string> {
+    const { data, error } = await supabase.rpc('create_direct_conversation', { p_other_user_id: otherUserId });
+    if (error) throw error;
+    return data as string;
+  }
+
+  async createGroupConversation(name: string, memberIds: string[]): Promise<string> {
+    const { data, error } = await supabase.rpc('create_group_conversation', {
+      p_name: name,
+      p_member_ids: memberIds,
+    });
+    if (error) throw error;
+    return data as string;
+  }
+
+  async leaveConversation(conversationId: string, currentUserId: string): Promise<void> {
+    const { error } = await supabase.rpc('remove_group_member', {
+      p_conversation_id: conversationId,
+      p_user_id: currentUserId,
+    });
+    if (error) throw error;
+  }
+
+  /** Directory search (server escapes LIKE wildcards; no client-built filters). */
+  async searchUsers(query: string): Promise<User[]> {
     if (query.trim().length < 2) return [];
+    const { data, error } = await supabase.rpc('search_profiles', { p_query: query.trim() });
+    if (error) throw error;
+    return (data || []).map(toUser);
+  }
 
+  async getProfile(userId: string): Promise<User | null> {
     const { data, error } = await supabase
       .from('profiles')
-      .select('id, username, display_name, avatar_reference')
-      .neq('id', currentUserId)
-      .or(`username.ilike.%${query}%,display_name.ilike.%${query}%`)
-      .limit(20);
-
-    if (error) return [];
-
-    return (data || []).map((u: any) => ({
-      id: u.id,
-      username: u.username,
-      displayName: u.display_name,
-      avatarReference: u.avatar_reference,
-    }));
+      .select('id, username, display_name, avatar_reference, about')
+      .eq('id', userId)
+      .maybeSingle();
+    if (error || !data) return null;
+    return toUser(data);
   }
 
-  // ──────────────────────────────────────────────────────────────────────────
-  // Recipient public key (for E2EE session establishment)
-  // ──────────────────────────────────────────────────────────────────────────
+  async blockUser(userId: string): Promise<void> {
+    const { error } = await supabase.from('blocks').insert({ blocked_user_id: userId });
+    if (error && error.code !== '23505') throw error;
+  }
 
-  async getRecipientPublicKey(userId: string): Promise<string | null> {
-    const { data, error } = await supabase
-      .from('devices')
-      .select('identity_public_key')
-      .eq('user_id', userId)
-      .is('revoked_at', null)
-      .order('last_seen_at', { ascending: false })
-      .limit(1)
-      .single();
+  async unblockUser(userId: string): Promise<void> {
+    const { error } = await supabase.from('blocks').delete().eq('blocked_user_id', userId);
+    if (error) throw error;
+  }
 
-    if (error) return null;
-    return data?.identity_public_key || null;
+  async isBlocked(userId: string): Promise<boolean> {
+    const { data } = await supabase.from('blocks').select('blocked_user_id').eq('blocked_user_id', userId).maybeSingle();
+    return !!data;
+  }
+
+  async reportUser(userId: string, reason: string, conversationId?: string): Promise<void> {
+    const { error } = await supabase.from('reports').insert({
+      reported_user_id: userId,
+      reason,
+      conversation_id: conversationId ?? null,
+    });
+    if (error) throw error;
   }
 }
 

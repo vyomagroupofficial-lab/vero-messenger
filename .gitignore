@@ -4,3 +4,6 @@ dist/
 web-build/
 .DS_Store
 .env
+
+# Claude Code agent worktrees
+.claude/
