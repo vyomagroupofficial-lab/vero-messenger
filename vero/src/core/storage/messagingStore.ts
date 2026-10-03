@@ -80,7 +80,7 @@ class MessagingStore {
       if (!before) return null;
       await db.runAsync(
         `UPDATE messages SET revoked_at = COALESCE(revoked_at, ?), content = NULL, media_json = NULL,
-           reply_preview = NULL, reactions_json = NULL, edited_at = NULL WHERE id = ?`,
+           reply_preview = NULL, reactions_json = NULL, edited_at = NULL, ext_json = NULL WHERE id = ?`,
         [at, id]
       );
       await db.runAsync('DELETE FROM message_edits WHERE target_id = ?', [id]);

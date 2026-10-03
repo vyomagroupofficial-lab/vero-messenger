@@ -13,7 +13,7 @@ import { mediaRepository } from '../media/MediaRepository';
 import { isIncomingEditValid, isNewerEdit } from './edits';
 
 function dropCachedMedia(m: Message | null | undefined): void {
-  if (m?.media) mediaRepository.deleteCachedFile(m.media);
+  if (m?.media) mediaRepository.evict(m.media);
 }
 
 /** Deleted for everyone: keep a "This message was deleted" tombstone, drop content + cached file. */

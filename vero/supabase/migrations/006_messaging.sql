@@ -13,7 +13,8 @@
 --     48-hour window and to ping members' inboxes so chat lists (and devices
 --     that don't have the chat open) learn about the deletion.
 --   * forward_media() lets a member reuse an encrypted blob they can already
---     download in another conversation they belong to, without re-uploading.
+--     download in another conversation they belong to, without re-uploading
+--     (only verified 'ready' uploads, see 004_media.sql).
 --     The file key never reaches the server; it is re-wrapped inside the new
 --     E2EE message. Blobs are reference-counted by storage_object_id (see
 --     the cleanup-expired Edge Function).
@@ -160,6 +161,7 @@ begin
   -- Same error for "missing" and "not yours" so ids can't be probed.
   if not found
      or v_src.deleted_at is not null
+     or v_src.upload_status <> 'ready'
      or not public.is_conversation_member(v_src.conversation_id)
      or not exists (
        select 1 from public.messages msg
@@ -182,8 +184,12 @@ begin
     raise exception 'too many attachments, slow down' using errcode = '54000';
   end if;
 
-  insert into public.media (conversation_id, uploader_id, storage_object_id, encrypted_size, encrypted_hash)
-  values (p_conversation_id, v_me, v_src.storage_object_id, v_src.encrypted_size, v_src.encrypted_hash)
+  -- Same verified blob (004: size + hash were checked when it was uploaded), so
+  -- the new row is 'ready' immediately.
+  insert into public.media (conversation_id, uploader_id, storage_object_id, encrypted_size, encrypted_hash,
+                            upload_status, confirmed_at)
+  values (p_conversation_id, v_me, v_src.storage_object_id, v_src.encrypted_size, v_src.encrypted_hash,
+          'ready', now())
   returning id into v_id;
 
   return v_id;

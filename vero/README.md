@@ -14,8 +14,9 @@ routes ciphertext only.
 app/                     Expo Router screens (UI only)
 src/
   core/
-    crypto/primitives.ts   Pure crypto: envelopes, attachments, safety numbers (unit-tested)
-    crypto/CryptoManager   Device identity keys in the platform keystore
+    crypto/primitives.ts   Pure crypto: v2 envelopes, attachments, safety numbers (unit-tested)
+    crypto/ratchet/        X3DH + Double Ratchet session layer, v3 envelopes (unit-tested)
+    crypto/CryptoManager   Device identity/signing keys in the platform keystore
     crypto/sodium.ts       libsodium loader + native CSPRNG polyfill for Hermes
     storage/               Per-account SQLite (decrypted view) + secure key storage
     network/               Supabase client, private realtime channels
@@ -23,11 +24,15 @@ src/
   features/
     auth/                  Sign-up / sign-in, idempotent device registration
     keys/KeyDirectory      Device public keys with trust-on-first-use pinning
+    keys/SessionService    Starts the session layer at sign-in, prekey upkeep, session resets
     messages/              Send/receive/decrypt, receipts, reactions, timers
     chats/                 Conversation list, directory, groups, blocks/reports
-    media/                 Encrypt -> upload, download -> decrypt
+    media/                 Chunked encrypt -> signed upload, signed download -> decrypt; voice notes
     calls/                 Call signalling (ringing/answer/history)
-    notifications/         Expo push token registration
+    notifications/         Push registration, notification taps, muted chats
+    settings/              Privacy settings (synced + enforced), app lock, settings screens
+    presence/              Online status (Realtime Presence) and last seen
+    backup/                Encrypted cloud backup (recovery key / passphrase)
     demo/                  Offline demo account (isolated local DB)
 supabase/
   migrations/              Schema, RLS, RPCs, realtime authorisation
@@ -40,26 +45,125 @@ tests/                     Unit tests (crypto, payload parsing, receipts)
 
 1. The sender builds a payload (`text`, `media`, `reaction`, `timer`) and
    encrypts it **once** with a random content key (XChaCha20-Poly1305).
-2. The content key is wrapped with `crypto_box` (X25519) for **every active
-   device of every member**, including the sender's other devices. Each slot
-   is bound to `conversation|message|senderDevice`, so slots can't be replayed.
+2. The 32-byte content key is encrypted for **every active device of every
+   member** (including the sender's other devices) through a per-device
+   **Double Ratchet session** (envelope `v: 3`, see *Forward secrecy* below).
+   Each slot is bound to `conversation|message|senderDevice`, so slots can't
+   be replayed into another message.
 3. The ciphertext is inserted into `messages`. A trigger checks that the device
    belongs to the sender and broadcasts the row on the private
    `conversation:<id>` channel, plus a tiny "inbox" ping to each member.
-4. Recipients look up the sender device's public key (pinned on first use;
+4. Recipients look up the sender device's identity key (pinned on first use;
    a changed key is rejected), decrypt, and store the plaintext in a per-account
    local SQLite database.
+
+### Forward secrecy (X3DH + Double Ratchet)
+
+Code: `src/core/crypto/ratchet/` (pure, unit-tested in `tests/ratchet.test.ts`),
+`src/features/keys/SessionService.ts` (app wiring), schema in
+`supabase/migrations/003_ratchet.sql` (tests: `supabase/tests/ratchet_test.sql`).
+
+- **Keys.** Each device has its X25519 identity key plus an Ed25519 signing
+  key that signs the identity key and the device's **signed prekey** (rotated
+  weekly; old private halves kept 30 days for in-flight messages). Devices
+  upload a pool of 100 **one-time prekeys** and top it up below 25.
+  `claim_prekey_bundle()` hands out one one-time prekey per device atomically
+  (`FOR UPDATE SKIP LOCKED`), only to people who share a conversation with
+  the device's owner (this includes story contacts), and at most 1000 per
+  caller per hour. An empty pool falls back to X3DH without a one-time prekey.
+- **Sessions.** [X3DH](https://signal.org/docs/specifications/x3dh/) (X25519,
+  HKDF-SHA-512) starts a session; the
+  [Double Ratchet](https://signal.org/docs/specifications/doubleratchet/)
+  (no header encryption) gives every message a fresh key. Out-of-order and
+  lost messages are handled with skipped message keys: at most 1000 per chain
+  step and 1000 stored per session, each dropped after 30 days. Simultaneous
+  first messages converge (old sessions are kept and tried).
+- **Deviation from Signal.** libsodium has no XEdDSA, so the identity key is
+  bound to a separate Ed25519 signing key by a signature *made by the signing
+  key*. That signature doesn't prove possession of the identity key; the
+  signing key is therefore pinned on first use and is part of the safety
+  number (the QR fingerprint and *Verify safety number* cover identity AND
+  signing keys). KDFs are HMAC/HKDF-SHA-512 built on libsodium's SHA-512
+  (checked against Node's implementations).
+- **Local state.** Sessions, prekey private keys and a plaintext cache live in
+  the account's SQLite database (`vero_ratchet_kv`), every row sealed with
+  XChaCha20-Poly1305 under a storage key kept in SecureStore; deleting the
+  identity crypto-shreds them. Updates for one remote device are serialized
+  by a mutex, and a decrypt commits the new session state, the consumed
+  one-time prekey and the plaintext in one atomic statement.
+- **Duplicates.** Realtime and history fetches can deliver the same message
+  twice, and ratchet keys are single-use, so messages are de-duplicated by id
+  *before* decrypting and answered from the plaintext cache. The cache follows
+  the messages table (deleted and disappeared messages lose their copy too);
+  story entries expire after 48 h.
+- **Recovery.** If a message can't be decrypted because the session is gone or
+  out of sync, it is shown as *"couldn't be decrypted: the secure session was
+  out of sync and has been reset. Ask the sender to send it again."* The
+  session is archived (the next message re-runs X3DH) and the sender's device
+  gets an encrypted *session reset* control message (stored as a
+  `reaction`-type row: no push, ignored by every other client). At most one
+  reset per device per 10 minutes. In admins-only groups a non-admin can't
+  post the reset there; the session is repaired by the next message to that
+  device instead.
+- **History and new devices.** A device can only read messages sent after it
+  existed: earlier messages have no slot for it ("sent before this device was
+  linked"). Linking by QR copies the last 200 messages per chat from the old
+  device (see *QR codes ... linked devices* below). Re-downloading old history
+  after clearing a chat doesn't work for v3 messages (their keys are gone);
+  that is the price of forward secrecy.
+- **Stories** use the same v3 envelope (split per recipient as before).
+- **Bots** (`bots/sdk`) run the same session layer and keep it in their state
+  file.
 
 Group membership changes go through RPCs. A removed member's devices simply
 stop getting key slots, so they can't read new messages.
 
-### Attachments
+### Attachments and voice notes
 
-Files are encrypted on device with a fresh key; the key travels only inside the
-E2EE message. The `media-upload` function stores the ciphertext in a private
-Supabase Storage bucket (default) or a Google Drive Shared Drive folder.
-`media-download` is a membership-checked proxy; the client verifies the hash
-and decrypts.
+Code: `src/features/media/`, `src/core/crypto/attachments.ts`, functions
+`media-upload` / `media-download`, schema `supabase/migrations/004_media.sql`
+(tests: `supabase/tests/media_test.sql`, `tests/attachments.test.ts`,
+`tests/media.test.ts`).
+
+- **Encryption (format v2).** Every file gets a fresh key and is encrypted
+  with libsodium's `crypto_secretstream_xchacha20poly1305` in 64 KiB chunks
+  (each chunk authenticated with a counter-derived nonce, the last one tagged
+  `FINAL`), reading and writing through expo-file-system `FileHandle`s so a
+  50 MB video never sits in JS memory. Reordered, duplicated, truncated,
+  appended or modified chunks fail to decrypt. Key, stream header, chunk size,
+  BLAKE2b-256 of the ciphertext, MIME type, file name, dimensions, duration,
+  the voice waveform and a ~48 px preview travel **only inside the E2EE
+  message**. Old single-shot (v1) attachments still decrypt.
+- **Upload.** `media-upload {action:"create"}` checks membership, the 50 MB
+  cap (Supabase free plan, applied to the ciphertext) and rate limits, creates
+  a *pending* `media` row and returns a signed upload URL for exactly
+  `vero-media/<conversation>/<media>`. The app PUTs the ciphertext straight to
+  Storage; `{action:"confirm"}` re-hashes the stored object and only then marks
+  it `ready`. Messages can reference only ready media; unconfirmed uploads are
+  swept after 6 hours. The bucket is private, 50 MB, `application/octet-stream`
+  only, with no client storage policies.
+- **Download.** `media-download?id=…&mode=url` returns a 2-minute signed URL
+  after checking that the caller is a current member of the media's
+  conversation; the app downloads natively to a temp file, verifies the hash
+  and decrypts into a per-account cache (`<cache>/vero-media/<account>/`).
+  The cache is cleared on logout and from *Settings → Clear media cache*
+  (`clearMediaCache()`), and swept when messages are deleted or expire.
+- **Voice notes.** Hold the mic to record, release to send; slide left to
+  cancel; slide up, or just tap the mic, to lock (hands-free) and send with
+  the button. Input metering is reduced to 64 peaks for the waveform. The
+  player downloads on first play, supports drag-to-seek and 1x / 1.5x / 2x,
+  and marks received notes as played (on this device only; no "played"
+  receipt is sent to the sender).
+- **Previews.** Photos and videos show the encrypted thumbnail blurred at the
+  right aspect ratio until the real file is decrypted; photos up to 8 MB
+  download automatically, videos and documents on tap. Videos play from the
+  decrypted cache (expo-video); documents open in the share sheet under their
+  real (sanitised) name.
+- **Google Drive (optional).** With `VERO_MEDIA_BACKEND=drive` uploads go to a
+  Drive resumable-upload session URL and downloads are proxied by
+  `media-download` (Drive has no signed URLs). Drive upload sessions only
+  accept requests from the origin that created them, so the Drive backend is
+  for the native apps; the web build needs the default Storage backend.
 
 ### Stories (24-hour status)
 
@@ -70,9 +174,11 @@ Code: `src/features/stories/`, screens in `app/stories/`, schema in
   ("My contacts", "My contacts except…", "Only share with…"; contacts = people
   you share a direct chat with). The setting is kept locally and synced to your
   own `story_privacy` row.
-- The story is encrypted once with the message envelope, bound to
-  `story:<author>|<storyId>|<authorDevice>`, and its key is wrapped for every
-  active device of the author and every audience member. The key slots are
+- The story is encrypted once with the message envelope (`v: 3`), bound to
+  `story:<author>|<storyId>|<authorDevice>`, and its key is ratchet-encrypted
+  for every active device of the author and every audience member (the
+  posting device keeps its own copy locally; viewers keep the decrypted story
+  in the session layer's cache for 48 h, since its key can be used only once). The key slots are
   stored per recipient (`story_recipients`), so each person downloads only their
   own slots. Photos/videos (≤ 30 s) are encrypted on device and stored in the
   private `vero-stories` bucket; storage policies allow downloads only to the
@@ -203,21 +309,62 @@ links instead (they open the app if installed, or the web build otherwise):
 
 Done:
 - E2EE for messages and attachments, multi-device, groups
+- **Forward secrecy and post-compromise security for messages and stories**
+  (X3DH + Double Ratchet per device pair, envelope `v: 3`). Compromising a
+  device's long-term keys later does not reveal past messages whose keys were
+  already deleted; a compromised session heals after the next DH ratchet step.
 - Sender authentication and per-message binding
-- Key pinning, safety numbers covering all of a user's devices, change detection
+- Key pinning, safety numbers covering all of a user's devices (identity and
+  signing keys), change detection
 - RLS on every table, RPC-only membership changes, private realtime channels
-- Push notifications contain no content ("New message")
+- Push notifications contain no content ("New message"; the sender's name only
+  if the recipient turns on previews)
 - Disappearing messages (server-side hard delete plus local purge)
+- Privacy settings enforced (read receipts, typing, last seen, online)
+- App lock (biometrics / device passcode) and app-switcher cover
+- End-to-end encrypted backups (recovery key and/or passphrase)
+
+Limits of the forward secrecy we have (be precise):
+- **Legacy `v: 2` messages** (sent before the upgrade) are still readable with
+  the long-term device key and have no forward secrecy. The app no longer
+  sends v2; devices that never publish prekeys (old app versions) don't get
+  new messages at all, and a sender whose recipients all lack prekeys gets
+  an error instead of a silent downgrade.
+- **Plaintext at rest.** The local message database holds plaintext (as
+  before); forward secrecy protects against later key compromise, not
+  against someone who can read an unlocked phone's storage.
+- **Groups** use pairwise sessions (one ratchet slot per member device), not
+  MLS / sender keys: cost grows with the number of devices, and slots with a
+  pending X3DH header are ~200 bytes, so very large groups (~1000+ devices)
+  approach the 256 KiB message limit.
+- **Attachments** are encrypted with a per-file key that travels inside the
+  ratcheted message; the ciphertext blob stays on the server until the
+  message is deleted or expires, so a leaked file key decrypts it.
+- **Signing key binding** is TOFU (see above), and devices that registered
+  before this change have their signing key published (and pinned by
+  contacts) on first start of the new version, which changes safety numbers
+  once.
+- **Performance on Hermes.** Hermes has no WebAssembly, so libsodium runs as
+  asm.js. Measured on V8 (JIT) the asm.js build needs ~5 ms per X25519 or
+  Ed25519 operation (wasm: ~0.15 ms); Hermes interprets it and will be
+  several times slower. Steady-state sends are symmetric-only (cheaper than
+  v2's one `crypto_box` per device), but starting a session costs ~8 curve
+  operations per device and each new ratchet chain ~3, so the first message
+  to a large group or story audience can take seconds. Not yet measured on a
+  real device; a native libsodium (JSI) binding is the fix if it's too slow.
+- A malicious server can force a session reset by injecting messages with an
+  unknown ratchet key (rate-limited to one per device per 10 minutes), and
+  can withhold one-time prekeys (X3DH still works without them).
 
 Not done yet (roadmap):
-- **Forward secrecy / post-compromise security.** Envelopes use long-term
-  device keys. The next step is a ratcheting session layer (Signal's Double
-  Ratchet for 1:1, MLS for groups). The envelope format is versioned (`v: 2`)
-  so it can be upgraded.
+- **MLS / sender keys for large groups**, header encryption, and sealed sender
+  (the server still sees which device sent each message).
 - **Call media.** Signalling works (invite, ring, accept, decline, history);
   audio/video over WebRTC isn't wired up yet.
-- Voice notes, encrypted backups, encrypted group names/avatars, app lock.
-- On-device testing of libsodium's asm.js fallback on Hermes for large files.
+- Encrypted group names/avatars.
+- On-device testing of libsodium's asm.js fallback on Hermes for large files
+  (chunked encryption keeps memory flat, but a 50 MB video takes several
+  seconds on the JS thread), and of Argon2id (256 MiB) for backup passphrases.
 
 ## Setup
 
@@ -227,18 +374,49 @@ Not done yet (roadmap):
 supabase link --project-ref <your-project>
 supabase db push                     # applies supabase/migrations
 supabase functions deploy media-upload media-download send-push cleanup-expired device-link
-supabase secrets set PUSH_WEBHOOK_SECRET=$(openssl rand -hex 32) CRON_SECRET=$(openssl rand -hex 32)
+supabase secrets set CRON_SECRET=$(openssl rand -hex 32)
 ```
 
 Then, in the dashboard:
-- **Database → Webhooks:** on `public.messages` INSERT, call the `send-push`
-  function with the header `x-webhook-secret: <PUSH_WEBHOOK_SECRET>`.
+- **Push:** enable the `pg_net` extension, then run once in the SQL editor
+  (the push trigger is a silent no-op until this secret exists):
+  `select vault.create_secret('https://<ref>.supabase.co', 'project_url');`
+  The webhook secret itself is created in Vault by migration 005.
 - **Database → Extensions:** enable `pg_cron` (expired-message cleanup runs every
   5 min), and schedule `cleanup-expired` with `Authorization: Bearer <CRON_SECRET>`
   to delete expired attachment blobs.
 - Optional Google Drive storage: see `.env.example`. A service account has no
   storage quota of its own, so the folder must be inside a **Shared Drive**
   that the service account is a member of.
+
+### Stickers, GIFs, payments, bots (optional configuration)
+
+```bash
+supabase functions deploy gif-search payment-link bot-admin
+```
+
+| Feature | Needs | Without it |
+| --- | --- | --- |
+| Stickers (2 bundled packs, recents, favourites, photo → sticker) | nothing | - |
+| GIF search (`gif-search`) | `TENOR_API_KEY` (Tenor v2) **or** `GIPHY_API_KEY`; `GIF_PROVIDER=giphy` if both | GIF tab says "GIFs aren't set up yet" |
+| UPI payments (request / pay / QR) | nothing (standard `upi://pay` links) | - |
+| Card / netbanking links (`payment-link`) | `RAZORPAY_KEY_ID` + `RAZORPAY_KEY_SECRET`, and allow-listed users in `payment_link_merchants` | option hidden |
+| Bots (`bot-admin`) | nothing; optional `BOT_EMAIL_DOMAIN`; `pg_net` for webhook pings | bots use realtime only |
+
+Keys can be Edge Function secrets (`supabase secrets set TENOR_API_KEY=...`),
+Vault secrets with the same name, or rows in `public.app_config`
+(`insert into app_config (key, value) values ('TENOR_API_KEY', '...')`); only
+the service role can read them (`get_app_secret`). Razorpay links collect into
+the operator's Razorpay account, so they are enabled per account:
+`insert into payment_link_merchants (user_id) values ('<uuid>')`.
+
+Privacy notes: bundled stickers are sent as an encrypted pack/id reference;
+custom stickers and GIFs are re-encrypted on device and uploaded like photos
+(the recipient never gets the GIF provider URL, and searches/previews go
+through the `gif-search` proxy). Payment cards and their status updates are
+E2EE messages; UPI ids are stored only in the device keystore. Vero can't see
+UPI transactions, so "paid" means a member reported it. Bot SDK, examples and
+mini-app docs: [`bots/README.md`](bots/README.md).
 
 ### 2. App
 
@@ -251,8 +429,10 @@ npm start                   # Expo dev server
 Without a `.env`, the app still runs, but only the **offline demo** is
 available. The demo has its own local database and never talks to the backend.
 
-Push notifications need an EAS project id (`extra.eas.projectId`) and a
-development build.
+Push notifications need an EAS project id and a development build: run
+`eas init` (or set `expo.extra.eas.projectId` in `app.json`) and configure
+FCM (Android) / APNs (iOS) credentials with `eas credentials`. Without a
+project id the app logs that push is disabled and everything else works.
 
 ## Checks
 
@@ -327,3 +507,76 @@ npm run build:linux                # or build:win / build:mac (sign on that OS)
 Self-hosted Supabase on a custom domain: set `VERO_CSP_CONNECT="https://api.example.com wss://api.example.com"`
 when you start the desktop app. Deploy: `supabase functions deploy device-link` (it is
 `verify_jwt = false` in `config.toml` because signed-out devices call it).
+
+## Notifications, privacy settings, presence, app lock, backups
+
+Server side: `supabase/migrations/005_settings_push_backup.sql` (tests:
+`supabase/tests/settings_push_backup_test.sql`), Edge Function
+`supabase/functions/send-push`; client code in
+`src/features/{notifications,settings,presence,backup}`.
+
+**Push.** An AFTER INSERT trigger on `messages` (text/media only) calls
+`net.http_post(<project_url>/functions/v1/send-push)` with ids only and the
+header `x-webhook-secret`. Both values live in **Supabase Vault**:
+`push_webhook_secret` (random, created by the migration) and `project_url`
+(created by the operator, see Setup). `send-push` checks the header with the
+service-role-only RPC `verify_push_webhook_secret()`, asks
+`get_message_push_targets()` for every active device of every *other* member
+(skipping muted chats and members who blocked the sender) and sends through
+the Expo Push API in batches of 100, deleting `DeviceNotRegistered` tokens.
+Notifications say "New message"; the sender's name appears only if the
+recipient enabled *Show sender name*. Android channels: `messages`, `calls`.
+Revoking a device deletes its push token (trigger).
+
+Reusable for other features: `select public.send_push_event('call',
+jsonb_build_object('call_id', <id>))` from SQL (high priority, channel `calls`,
+category `incoming_call`), or POST `{ "type": "call", "call_id" }` to
+`send-push` with the caller's JWT; in Edge Functions use
+`_shared/push.ts` + `_shared/pushPayload.ts`. Channel posts (007) push to
+non-muted followers once this trigger exists (create it in a migration after
+007):
+
+```sql
+create trigger channel_posts_push_after_insert after insert on public.channel_posts
+  for each row execute function public.channel_posts_push_after_insert();
+```
+
+**Mute.** `mute_conversation(conversation_id, until)` sets
+`conversation_members.muted_until` (`'infinity'` = always, `null` = unmute);
+chat menu → *Mute notifications* (8 hours, 1 week, always). Co-members can
+technically read the value through the members API, like `last_read_at`.
+
+**Privacy settings** (`user_settings`, one row per user, RLS owner-only,
+created automatically): read receipts (off: only "delivered" is sent - and the
+server refuses to move the read watermark - and you don't see others' read
+ticks), typing indicators (off: never broadcast), last seen
+(everyone / contacts = people you share a direct chat with / nobody;
+reciprocal), show online (reciprocal), default disappearing timer (applied
+to chats you start), notification previews.
+
+**Last seen / online.** Last seen is kept in `user_last_seen` (no client
+access; `profiles` is readable by every signed-in user, so it can't live
+there) and read through `get_last_seen(user_id)`, which returns null whenever
+it is hidden. The app writes it through the throttled `touch_last_seen()`
+(once a minute while open, and when the app goes to the background). Online
+status uses Realtime Presence on the private topic `presence:<user id>`: only
+that user can track; people who share a chat with them can watch, and only
+while both have *Show when I'm online* on. `usePresence(userId)` returns
+`{ online, lastSeenAt }` (used in the chat header).
+
+**App lock.** Settings → Privacy → App lock (Face ID / fingerprint / device
+passcode via `expo-local-authentication`), immediately or after 1/5/30
+minutes in the background; the app is covered while not in the foreground.
+
+**Encrypted backups.** Settings → Chat backup. A random 256-bit backup key
+encrypts the local database (messages, chat list, timers, call log, pinned
+contact keys, preferences - never private keys) with libsodium
+secretstream (XChaCha20-Poly1305, 64 KiB frames, header authenticated). The key
+is wrapped for a **recovery key** (64 Crockford base32 characters, 300 random
+bits + 20-bit checksum, shown once) and/or a **passphrase** (>= 12 characters,
+Argon2id `crypto_pwhash` MODERATE: 3 passes, 256 MiB), so either unlocks it.
+The file is uploaded to the private bucket `vero-backups` at
+`<user id>/backup.bin` (storage policies: own folder only, 50 MB). After
+signing in on a device with no chats, Vero offers to restore. Optional daily
+automatic backup. Vero cannot reset a lost recovery key or passphrase.
+

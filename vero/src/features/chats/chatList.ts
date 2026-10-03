@@ -9,8 +9,8 @@ import { compareDesc, isAfter } from '../../shared/utils/time';
 /** Must match public.pinned_conversation_limit() in 006_messaging.sql. */
 export const PINNED_LIMIT = 3;
 
-/** Message types that count as unread / can be the last-message preview. */
-const UNREAD_TYPES: MessageType[] = ['text', 'image', 'video', 'voice', 'document', 'unavailable'];
+/** System lines (timer changes, group events) never count as unread. */
+const NOT_UNREAD: MessageType[] = ['system'];
 
 /** Body of a preview line (without the sender prefix). */
 export function previewBody(m: Pick<Message, 'messageType' | 'content' | 'revokedAt' | 'isOwn'>): string {
@@ -52,7 +52,7 @@ export function countsAsUnread(
   nowIso: string = new Date().toISOString()
 ): boolean {
   if (m.isOwn || m.deletedAt || m.revokedAt) return false;
-  if (!UNREAD_TYPES.includes(m.messageType)) return false;
+  if (NOT_UNREAD.includes(m.messageType)) return false;
   if (m.expiresAt && !isAfter(m.expiresAt, nowIso)) return false;
   return !lastReadAt || isAfter(m.createdAt, lastReadAt);
 }

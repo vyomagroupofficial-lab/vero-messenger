@@ -162,10 +162,10 @@ select pg_temp.check(true, 'messages still cannot be updated directly');
 
 -- ── forwarding media ─────────────────────────────────────────────────────────
 reset role;
-insert into media (id, conversation_id, uploader_id, storage_object_id, encrypted_size, encrypted_hash) values
-  ('26000000-0000-4000-8000-000000000001', (select id from ids where name = 'dm_bob'), :bob, 'sb:blob1', 100, repeat('a', 64)),
-  ('26000000-0000-4000-8000-000000000002', (select id from ids where name = 'dm_bob'), :bob, 'sb:blob2', 100, repeat('b', 64)),
-  ('26000000-0000-4000-8000-000000000003', (select id from ids where name = 'dm_bob'), :bob, 'sb:blob3', 100, repeat('c', 64));
+insert into media (id, conversation_id, uploader_id, storage_object_id, encrypted_size, encrypted_hash, upload_status) values
+  ('26000000-0000-4000-8000-000000000001', (select id from ids where name = 'dm_bob'), :bob, 'sb:blob1', 100, repeat('a', 64), 'ready'),
+  ('26000000-0000-4000-8000-000000000002', (select id from ids where name = 'dm_bob'), :bob, 'sb:blob2', 100, repeat('b', 64), 'ready'),
+  ('26000000-0000-4000-8000-000000000003', (select id from ids where name = 'dm_bob'), :bob, 'sb:blob3', 100, repeat('c', 64), 'ready');
 set role authenticated;
 select pg_temp.as_user(:bob);
 insert into messages (conversation_id, sender_device_id, sender_user_id, ciphertext, message_type, media_id)
@@ -178,6 +178,7 @@ select pg_temp.as_user(:alice);
 insert into ids values ('fwd_media', forward_media('26000000-0000-4000-8000-000000000001', pg_temp.id('group')));
 select pg_temp.check(
   (select storage_object_id = 'sb:blob1' and uploader_id = :alice and conversation_id = pg_temp.id('group')
+          and upload_status = 'ready'
      from media where id = pg_temp.id('fwd_media')),
   'forward_media creates a row in the target chat pointing at the same blob, owned by the forwarder');
 insert into messages (conversation_id, sender_device_id, sender_user_id, ciphertext, message_type, media_id)

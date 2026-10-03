@@ -15,6 +15,7 @@ import { buildForwardPayload, checkForwardSelection } from './forward';
 import { messageRepository, ServerMessageRow } from './MessageRepository';
 import { revokeMessage } from './messageEffects';
 import { selfSync } from './selfSync';
+import { mediaRepository } from '../media/MediaRepository';
 
 export class MessageActionError extends Error {}
 
@@ -113,7 +114,13 @@ export async function forwardMessages(
         }
         const payload = buildForwardPayload(m, mediaId);
         if (!payload) throw new MessageActionError('Message can’t be forwarded');
-        const result = await sendOne(conversationId, payload, mediaId, m.media?.localUri);
+        // Keep showing our decrypted copy under the new media id instead of downloading it again.
+        let localUri: string | undefined;
+        if (m.media && payload.t === 'media') {
+          const cached = mediaRepository.findCached(m.media);
+          if (cached) localUri = mediaRepository.rememberSent(payload.media, cached) || undefined;
+        }
+        const result = await sendOne(conversationId, payload, mediaId, localUri);
         if (!result || result.status === 'failed') failed++;
         else sent.push(result);
       } catch (e) {

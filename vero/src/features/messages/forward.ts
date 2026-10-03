@@ -6,7 +6,7 @@
  */
 
 import type { Message } from '../../shared/models/Message';
-import type { MessagePayload } from '../../shared/models/payload';
+import { MessagePayload, toMessageMedia } from '../../shared/models/payload';
 import { MAX_FORWARD_HOPS } from '../../shared/models/messageExtras';
 
 /** From this many hops on, the label reads "Forwarded many times". */
@@ -78,7 +78,7 @@ export function buildForwardPayload(m: Message, targetMediaId?: string): Message
   const fwd = nextHopCount(m);
   if (m.messageType === 'text') return { t: 'text', body: m.content!, fwd };
   if (!m.media || !targetMediaId) return null;
-  const { localUri: _local, ...media } = m.media;
+  const media = toMessageMedia(m.media);
   const kind = m.messageType as 'image' | 'video' | 'voice' | 'document';
   const caption = kind === 'document' ? undefined : m.content || undefined;
   return { t: 'media', kind, caption, media: { ...media, mediaId: targetMediaId }, fwd };

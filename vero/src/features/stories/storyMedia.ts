@@ -2,14 +2,19 @@
  * Story media: pick -> encrypt on device -> upload ciphertext; and
  * signed download -> verify hash -> decrypt -> local file.
  *
+ * Encryption and transport use the shared attachment pipeline
+ * (features/media/transfer): chunked secretstream encryption (format v2)
+ * straight from/to disk, a signed upload URL and a native PUT, so even a
+ * 50 MB video never sits in JS memory. Older stories (format v1, single-shot)
+ * still decrypt.
+ *
  * Why not mediaRepository.uploadEncrypted()? That API (and the media-upload /
  * media-download functions behind it) is scoped to a *conversation*: the row
  * needs a conversation_id and downloads are membership-checked. A story's
  * audience is not a conversation, so story blobs go to the private
  * `vero-stories` bucket, whose storage policies (008_stories.sql) allow
  * uploads only into <me>/<storyId>/ and downloads only by the story's author
- * and recipients. Encryption is the same as attachments (CryptoManager
- * encryptFile/decryptFile); keys travel only inside the story envelope.
+ * and recipients. Keys travel only inside the story envelope.
  *
  * Everything that touches transport lives in uploadStoryMedia() /
  * downloadStoryMedia() so it can be pointed at the media module once it
@@ -20,13 +25,15 @@ import { Platform } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { Directory, File, Paths } from 'expo-file-system';
 import { supabase } from '../../core/network/supabase';
-import { cryptoManager } from '../../core/crypto/CryptoManager';
+import { currentSession } from '../../core/session';
 import { generateUUID } from '../../shared/utils/uuid';
+import { exceedsUploadLimit, MediaTooLargeError } from '../media/limits';
+import { decryptToLocal, encryptForUpload, fetchCiphertext, MediaUnavailableError, putCiphertext } from '../media/transfer';
 import { MAX_STORY_VIDEO_MS, StoryMediaRef } from './payload';
 
 export const STORY_MEDIA_BUCKET = 'vero-stories';
-/** Whole files are encrypted in memory; the bucket itself allows 50 MB. */
-export const MAX_STORY_MEDIA_BYTES = 40 * 1024 * 1024;
+/** Plaintext cap; the ciphertext (slightly larger) must fit the bucket's 50 MB. */
+export const MAX_STORY_MEDIA_BYTES = 49 * 1024 * 1024;
 
 export interface PickedStoryMedia {
   uri: string;
@@ -92,47 +99,53 @@ export function validatePicked(p: PickedStoryMedia): void {
   if (p.kind === 'video' && p.durationMs && p.durationMs > MAX_STORY_VIDEO_MS + 500) {
     throw new StoryMediaError('Story videos can be up to 30 seconds. Trim it and try again.');
   }
-  if (p.size > MAX_STORY_MEDIA_BYTES) {
+  if (p.size > MAX_STORY_MEDIA_BYTES || (p.size > 0 && exceedsUploadLimit(p.size))) {
     throw new StoryMediaError(`Story media can be up to ${MAX_STORY_MEDIA_BYTES / 1024 / 1024} MB.`);
   }
 }
 
-async function readBytes(uri: string): Promise<Uint8Array> {
-  if (Platform.OS === 'web') {
-    const res = await fetch(uri);
-    return new Uint8Array(await res.arrayBuffer());
-  }
-  return new File(uri).bytes();
+function accountId(): string {
+  const s = currentSession();
+  if (!s) throw new StoryMediaError('Not signed in');
+  return s.userId;
 }
 
 // ── Upload ─────────────────────────────────────────────────────────────────
 
 /** Encrypts on device and uploads the ciphertext; returns the ref that goes INSIDE the story envelope. */
 export async function uploadStoryMedia(picked: PickedStoryMedia, authorId: string, storyId: string): Promise<StoryMediaRef> {
-  const plain = await readBytes(picked.uri);
-  if (plain.byteLength > MAX_STORY_MEDIA_BYTES) {
-    throw new StoryMediaError(`Story media can be up to ${MAX_STORY_MEDIA_BYTES / 1024 / 1024} MB.`);
+  let enc;
+  try {
+    enc = await encryptForUpload({ uri: picked.uri }, accountId());
+  } catch (e) {
+    if (e instanceof MediaTooLargeError) {
+      throw new StoryMediaError(`Story media can be up to ${MAX_STORY_MEDIA_BYTES / 1024 / 1024} MB.`);
+    }
+    throw e;
   }
-  const blob = await cryptoManager.encryptFile(plain);
-  const path = `${authorId}/${storyId}/${generateUUID().toLowerCase()}.bin`;
+  try {
+    const path = `${authorId}/${storyId}/${generateUUID().toLowerCase()}.bin`;
+    // Storage policies (008) allow this insert only under <me>/<storyId>/.
+    const { data, error } = await supabase.storage.from(STORY_MEDIA_BUCKET).createSignedUploadUrl(path);
+    if (error || !data?.signedUrl) throw new StoryMediaError(`Upload failed: ${error?.message ?? 'no upload URL'}`);
+    await putCiphertext(enc, data.signedUrl, { 'Content-Type': 'application/octet-stream', 'x-upsert': 'false' });
 
-  const { error } = await supabase.storage.from(STORY_MEDIA_BUCKET).upload(path, blob.ciphertext, {
-    contentType: 'application/octet-stream',
-    upsert: false,
-  });
-  if (error) throw new StoryMediaError(`Upload failed: ${error.message}`);
-
-  return {
-    path,
-    key: blob.key,
-    nonce: blob.nonce,
-    hash: blob.hash,
-    mimeType: picked.mimeType,
-    size: plain.byteLength,
-    width: picked.width,
-    height: picked.height,
-    durationMs: picked.durationMs,
-  };
+    return {
+      path,
+      v: 2,
+      chunkSize: enc.chunkSize,
+      key: enc.key,
+      nonce: enc.header,
+      hash: enc.hash,
+      mimeType: picked.mimeType,
+      size: enc.plainSize,
+      width: picked.width,
+      height: picked.height,
+      durationMs: picked.durationMs,
+    };
+  } finally {
+    enc.dispose();
+  }
 }
 
 // ── Download ───────────────────────────────────────────────────────────────
@@ -172,19 +185,21 @@ async function fetchAndDecrypt(storyId: string, ref: StoryMediaRef): Promise<str
 
   const { data, error } = await supabase.storage.from(STORY_MEDIA_BUCKET).createSignedUrl(ref.path, 60);
   if (error || !data?.signedUrl) throw new StoryMediaError('This story is no longer available.');
-  const res = await fetch(data.signedUrl);
-  if (!res.ok) throw new StoryMediaError('Download failed');
-  const ciphertext = new Uint8Array(await res.arrayBuffer());
-  const plain = await cryptoManager.decryptFile(ciphertext, ref.key, ref.nonce, ref.hash);
-
+  let downloaded;
+  try {
+    downloaded = await fetchCiphertext(data.signedUrl, accountId());
+  } catch (e) {
+    throw new StoryMediaError(e instanceof MediaUnavailableError ? 'This story is no longer available.' : 'Download failed');
+  }
   let uri: string;
-  if (Platform.OS === 'web') {
-    uri = URL.createObjectURL(new Blob([plain as unknown as BlobPart], { type: ref.mimeType }));
-  } else {
-    const target = new File(cacheDir(), `${safeId}.${ext}`);
-    target.create({ overwrite: true });
-    target.write(plain);
-    uri = target.uri;
+  try {
+    uri = await decryptToLocal(
+      downloaded,
+      ref,
+      Platform.OS === 'web' ? null : new File(cacheDir(), `${safeId}.${ext}`)
+    );
+  } finally {
+    downloaded.dispose();
   }
   decrypted.set(storyId, uri);
   return uri;

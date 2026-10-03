@@ -11,7 +11,6 @@
 
 import { supabase } from '../../core/network/supabase';
 import { cryptoManager } from '../../core/crypto/CryptoManager';
-import { NotAddressedToDeviceError } from '../../core/crypto/primitives';
 import { databaseService } from '../../core/storage/DatabaseService';
 import { messagingStore } from '../../core/storage/messagingStore';
 import { SessionContext } from '../../core/session';
@@ -24,12 +23,16 @@ import {
   MessageType,
   messagePreview,
 } from '../../shared/models/Message';
-import { MessagePayload, parsePayload, serverTypeFor, timerLabel } from '../../shared/models/payload';
 import type { EditPayload } from '../../shared/models/messageExtras';
+import { MessagePayload, parsePayload, serverTypeFor, timerLabel, toMessageMedia } from '../../shared/models/payload';
+import { extensionContent, extensionPayloadFromMessage, isControlPayload } from '../../shared/models/payloadExtensions';
+import { applyExtensionControl, finalizeExtensionMessage } from '../payments/paymentControl';
 import { keyDirectory } from '../keys/KeyDirectory';
 import { useSettingsStore } from '../settings/useSettingsStore';
+import { receiptKindToSend, visibleStatus } from '../settings/privacy';
 import { computeStatus } from './status';
 import { applyIncomingEdit, applyPendingEdits, hideMessageLocally, revokeMessage } from './messageEffects';
+import { decryptFailureText } from './decryptStatus';
 
 export const PAGE_SIZE = 50;
 const SYNC_MAX_PAGES = 6;
@@ -58,7 +61,7 @@ export type AppliedRow =
   | { kind: 'ignored' };
 
 /** Payloads that show up as a message bubble (reactions and edits modify other messages). */
-const isVisiblePayload = (p: MessagePayload) => p.t !== 'reaction' && p.t !== 'edit';
+const isVisiblePayload = (p: MessagePayload) => p.t !== 'reaction' && p.t !== 'edit' && !isControlPayload(p);
 
 const SELECT_COLUMNS =
   'id, conversation_id, sender_device_id, sender_user_id, ciphertext, message_type, media_id, reply_to_message_id, created_at, expires_at, deleted_at';
@@ -70,7 +73,7 @@ export interface SendOptions {
   localUri?: string;
 }
 
-function contentFor(payload: MessagePayload): { type: MessageType; content?: string } {
+function contentFor(payload: MessagePayload): Pick<Message, 'content' | 'ext'> & { type: MessageType; media?: Message['media'] } {
   switch (payload.t) {
     case 'text':
       return { type: 'text', content: payload.body };
@@ -82,7 +85,7 @@ function contentFor(payload: MessagePayload): { type: MessageType; content?: str
     case 'timer':
       return { type: 'system', content: `Disappearing messages: ${timerLabel(payload.seconds)}` };
     default:
-      return { type: 'system' };
+      return extensionContent(payload);
   }
 }
 
@@ -109,7 +112,7 @@ class MessageRepository {
     const timer = await databaseService.getDisappearingTimer(conversationId);
     const expiresAt =
       timer > 0 && payload.t !== 'timer' ? new Date(Date.now() + timer * 1000).toISOString() : null;
-    const { type, content } = contentFor(payload);
+    const { type, content, ext, media: extMedia } = contentFor(payload);
 
     const local: Message = {
       id,
@@ -119,7 +122,8 @@ class MessageRepository {
       senderName: 'You',
       content,
       messageType: type,
-      media: payload.t === 'media' ? { ...payload.media, localUri: opts.localUri } : undefined,
+      media: payload.t === 'media' ? { ...payload.media, localUri: opts.localUri } : extMedia ? { ...extMedia, localUri: opts.localUri } : undefined,
+      ext,
       replyToMessageId: opts.replyTo?.id ?? null,
       replyPreview: opts.replyTo ? messagePreview(opts.replyTo.messageType, opts.replyTo.content) : null,
       createdAt: new Date().toISOString(),
@@ -221,10 +225,9 @@ class MessageRepository {
     const fwd = failed.forwardCount || undefined;
     if (failed.messageType === 'text' && failed.content) payload = { t: 'text', body: failed.content, ...(fwd ? { fwd } : {}) };
     else if (failed.media && ['image', 'video', 'voice', 'document'].includes(failed.messageType)) {
-      const { localUri: _l, ...media } = failed.media;
       const caption = failed.messageType === 'document' ? undefined : failed.content;
-      payload = { t: 'media', kind: failed.messageType as any, caption, media, ...(fwd ? { fwd } : {}) };
-    }
+      payload = { t: 'media', kind: failed.messageType as any, caption, media: toMessageMedia(failed.media), ...(fwd ? { fwd } : {}) };
+    } else payload = extensionPayloadFromMessage(failed);
     if (!payload) return null;
 
     const sending: Message = { ...failed, status: 'sending' };
@@ -407,16 +410,19 @@ class MessageRepository {
         payload = parsePayload(plaintext);
         if (!payload) throw new Error('Unreadable payload');
       } catch (e) {
-        base.content =
-          e instanceof NotAddressedToDeviceError
-            ? 'This message was sent before this device was linked.'
-            : "This message couldn't be decrypted.";
+        base.content = decryptFailureText(e);
         if (row.message_type === 'reaction' || row.message_type === 'control') {
           out.push({ kind: 'ignored' });
           continue;
         }
         await databaseService.saveMessage(base);
         out.push({ kind: 'message', message: base });
+        continue;
+      }
+
+      if (isControlPayload(payload)) {
+        const target = await applyExtensionControl(row, payload);
+        out.push(target ? { kind: 'reaction', target } : { kind: 'ignored' });
         continue;
       }
 
@@ -442,13 +448,14 @@ class MessageRepository {
         await databaseService.setDisappearingTimer(row.conversation_id, payload.seconds);
       }
 
-      const { type, content } = contentFor(payload);
+      const { type, content, ext, media: extMedia } = contentFor(payload);
       const replyTarget = row.reply_to_message_id ? await databaseService.getMessage(row.reply_to_message_id) : null;
       const message: Message = {
         ...base,
         messageType: type,
         content: payload.t === 'timer' ? `${isOwn ? 'You' : base.senderName} set ${content?.toLowerCase()}` : content,
-        media: payload.t === 'media' ? { ...payload.media } : undefined,
+        media: payload.t === 'media' ? { ...payload.media } : extMedia ? { ...extMedia } : undefined,
+        ext: ext && (await finalizeExtensionMessage(row, ext)),
         replyPreview: replyTarget ? messagePreview(replyTarget.messageType, replyTarget.content) : null,
         forwardCount: payload.t === 'text' || payload.t === 'media' ? payload.fwd : undefined,
       };
@@ -492,7 +499,7 @@ class MessageRepository {
   // ── Receipts ───────────────────────────────────────────────────────────────
 
   async markReceipt(conversationId: string, kind: 'delivered' | 'read'): Promise<void> {
-    if (kind === 'read' && !useSettingsStore.getState().readReceipts) kind = 'delivered';
+    kind = receiptKindToSend(kind, useSettingsStore.getState());
     const { error } = await supabase.rpc('mark_conversation_receipt', {
       p_conversation_id: conversationId,
       p_kind: kind,
@@ -502,7 +509,8 @@ class MessageRepository {
 
   /** Status of one of OUR messages, derived from the other members' watermarks. */
   statusFor(message: Message, members: ConversationMember[], myUserId: string): MessageStatus {
-    return computeStatus(message, members, myUserId);
+    // Read receipts off: other people's read ticks are hidden too (reciprocal).
+    return visibleStatus(computeStatus(message, members, myUserId), useSettingsStore.getState());
   }
 }
 

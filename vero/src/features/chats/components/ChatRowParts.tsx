@@ -16,6 +16,7 @@ import { ActionSheet, notify, SheetOption } from '../../groups/components/ui';
 import { useMessagesStore } from '../../messages/useMessagesStore';
 import { isMuted } from '../chatList';
 import { useChatsStore } from '../useChatsStore';
+import { useMuteStore } from '../../notifications/useMuteStore';
 
 dayjs.extend(relativeTime);
 
@@ -38,9 +39,11 @@ export function StatusTicks({ status }: { status?: MessageStatus }) {
 
 /** Pin and mute markers next to the chat name. */
 export function ChatMarkers({ conversation }: { conversation: Conversation }) {
+  // Mute state lives in the notifications feature (005); the row's own column is a fallback.
+  const mutedUntil = useMuteStore((s) => s.mutes[conversation.id] ?? null);
   return (
     <>
-      {isMuted(conversation) && (
+      {isMuted({ mutedUntil: mutedUntil ?? conversation.mutedUntil }) && (
         <Ionicons name="volume-mute" size={14} color={Colors.textTertiary} accessibilityLabel="Muted" />
       )}
       {!!conversation.pinnedAt && (

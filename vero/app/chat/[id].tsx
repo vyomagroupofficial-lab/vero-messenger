@@ -12,25 +12,27 @@ import {
   Animated,
   Pressable,
   Modal,
-  Image,
   Alert,
 } from 'react-native';
 import { useLocalSearchParams, router } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
-import * as Sharing from 'expo-sharing';
 import dayjs from 'dayjs';
 import { useAuthStore } from '../../src/features/auth/useAuthStore';
 import { useMessagesStore } from '../../src/features/messages/useMessagesStore';
 import { messageRepository } from '../../src/features/messages/MessageRepository';
 import { conversationRepository } from '../../src/features/chats/ConversationRepository';
-import { mediaRepository, MediaTooLargeError, PickedMedia } from '../../src/features/media/MediaRepository';
+import { mediaRepository, PickedMedia } from '../../src/features/media/MediaRepository';
+import { MediaAttachmentView } from '../../src/features/media/components/MediaAttachmentView';
+import { VoiceNotePlayer } from '../../src/features/media/components/VoiceNotePlayer';
+import { VoiceRecordButton, VoiceRecordingBar } from '../../src/features/media/components/VoiceRecorderControls';
+import { markVoicePlayed, useMediaSender, voiceRecordingToMedia } from '../../src/features/media/sendMedia';
+import { useVoiceRecorder } from '../../src/features/media/useVoiceRecorder';
 import { callService } from '../../src/features/calls/CallService';
 import { friendlyError } from '../../src/core/network/supabase';
 import {
   ConversationMember,
-  MediaAttachment,
   Message,
   MessageStatus,
   conversationTitle,
@@ -50,48 +52,15 @@ import { HighlightedText } from '../../src/features/search/components/Highlighte
 import { useChatsStore } from '../../src/features/chats/useChatsStore';
 import { chatActionOptions } from '../../src/features/chats/components/ChatRowParts';
 import { confirmAction } from '../../src/features/groups/components/ui';
+import { usePresence } from '../../src/features/presence/usePresence';
+import { presenceSubtitle } from '../../src/features/presence/format';
+import { useConversationMute } from '../../src/features/notifications/useMuteStore';
+import { MUTE_OPTIONS } from '../../src/features/notifications/mute';
+import * as Extras from '../../src/features/stickers/components/chatIntegration';
 
 const REACTION_EMOJIS = ['❤️', '😂', '👍', '🔥', '😮', '😢'];
 const TYPING_SEND_INTERVAL_MS = 3000;
 const TYPING_IDLE_MS = 4000;
-
-function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
-  return `${(n / 1024 / 1024).toFixed(1)} MB`;
-}
-
-// ──────────────────────────────────────────────────────────────────────────
-// Encrypted media: downloads + decrypts on demand, caches on device
-// ──────────────────────────────────────────────────────────────────────────
-
-function useDecryptedMedia(media: MediaAttachment | undefined, autoLoad: boolean) {
-  const [uri, setUri] = useState<string | null>(media?.localUri ?? null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const load = useCallback(async () => {
-    if (!media) return null;
-    setLoading(true);
-    setError(null);
-    try {
-      const file = await mediaRepository.getDecryptedFile(media);
-      setUri(file);
-      return file;
-    } catch (e) {
-      setError(friendlyError(e, 'Could not load media'));
-      return null;
-    } finally {
-      setLoading(false);
-    }
-  }, [media]);
-
-  useEffect(() => {
-    if (autoLoad && media && !uri) void load();
-  }, [autoLoad, media, uri, load]);
-
-  return { uri, loading, error, load };
-}
 
 // ──────────────────────────────────────────────────────────────────────────
 // Message Bubble
@@ -128,9 +97,8 @@ const MessageBubble = React.memo(function MessageBubble({
 }: MessageBubbleProps) {
   const { isOwn, content, createdAt, senderName, media, reactions } = message;
   const revoked = !!message.revokedAt;
+  if (!revoked && Extras.isExtensionMessageType(message.messageType)) return <Extras.ExtensionMessage message={message} status={status} showSenderName={showSenderName} onLongPress={onLongPress} onRetry={onRetry} />;
   const messageType = revoked ? 'revoked' : message.messageType;
-  const isImage = messageType === 'image';
-  const { uri, loading, error, load } = useDecryptedMedia(revoked ? undefined : media, isImage);
 
   if (messageType === 'system') {
     return (
@@ -139,23 +107,6 @@ const MessageBubble = React.memo(function MessageBubble({
       </View>
     );
   }
-
-  const openMedia = async () => {
-    const file = uri ?? (await load());
-    if (!file) return;
-    if (messageType === 'document') {
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(file, { mimeType: media?.mimeType, dialogTitle: media?.fileName });
-      } else {
-        Alert.alert('Saved', 'The decrypted file is stored in the app cache.');
-      }
-      return;
-    }
-    router.push({
-      pathname: '/media-viewer',
-      params: { uri: file, type: messageType, caption: content ?? '' },
-    });
-  };
 
   const renderStatusIcon = () => {
     if (!isOwn) return null;
@@ -234,62 +185,12 @@ const MessageBubble = React.memo(function MessageBubble({
           </View>
         )}
 
-        {(messageType === 'image' || messageType === 'video') && (
-          <TouchableOpacity activeOpacity={0.9} onPress={openMedia} style={styles.mediaBubble}>
-            {isImage && uri ? (
-              <Image source={{ uri }} style={styles.mediaImage} />
-            ) : (
-              <View style={styles.mediaPlaceholder}>
-                {loading ? (
-                  <ActivityIndicator color={Colors.accent} />
-                ) : (
-                  <Ionicons
-                    name={error ? 'alert-circle-outline' : isImage ? 'image' : 'videocam'}
-                    size={34}
-                    color={error ? Colors.error : Colors.accent}
-                  />
-                )}
-                <Text style={styles.mediaLabel}>
-                  {error ? 'Tap to retry' : isImage ? 'Decrypting photo…' : `Video · ${formatBytes(media?.size || 0)}`}
-                </Text>
-                {!isImage && !loading && !error && (
-                  <View style={styles.playOverlay}>
-                    <Ionicons name="play" size={24} color={Colors.white} />
-                  </View>
-                )}
-              </View>
-            )}
-            {content ? <Text style={styles.mediaCaption}>{content}</Text> : null}
-          </TouchableOpacity>
+        {media && (messageType === 'image' || messageType === 'video' || messageType === 'document') && (
+          <MediaAttachmentView type={messageType} media={media} caption={content} isOwn={isOwn} />
         )}
 
-        {messageType === 'document' && (
-          <TouchableOpacity style={styles.documentContainer} onPress={openMedia}>
-            <View style={styles.docIconWrapper}>
-              {loading ? (
-                <ActivityIndicator color={Colors.accent} />
-              ) : (
-                <Ionicons name="document-text" size={24} color={Colors.accent} />
-              )}
-            </View>
-            <View style={styles.docInfo}>
-              <Text
-                style={[styles.docName, isOwn ? styles.messageTextOwn : styles.messageTextOther]}
-                numberOfLines={2}
-              >
-                {media?.fileName || content || 'Document'}
-              </Text>
-              <Text style={styles.docMeta}>
-                {error ? error : `${formatBytes(media?.size || 0)} · tap to open`}
-              </Text>
-            </View>
-          </TouchableOpacity>
-        )}
-
-        {messageType === 'voice' && (
-          <Text style={[styles.messageText, isOwn ? styles.messageTextOwn : styles.messageTextOther]}>
-            🎤 Voice message (playback not supported in this version)
-          </Text>
+        {media && messageType === 'voice' && (
+          <VoiceNotePlayer media={media} isOwn={isOwn} onPlayed={() => void markVoicePlayed(message)} />
         )}
 
         <View style={styles.bubbleFooter}>
@@ -375,7 +276,6 @@ export default function ChatScreen() {
 
   const [inputText, setInputText] = useState('');
   const [replyTo, setReplyTo] = useState<Message | null>(null);
-  const [uploading, setUploading] = useState(false);
   const [actionMessage, setActionMessage] = useState<Message | null>(null);
   const [showAttachModal, setShowAttachModal] = useState(false);
   const [showMenuModal, setShowMenuModal] = useState(false);
@@ -386,6 +286,19 @@ export default function ChatScreen() {
 
   const lastTypingSent = useRef(0);
   const typingIdle = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Encrypted attachments and voice notes (logic lives in src/features/media).
+  const mediaSender = useMediaSender(conversationId);
+  const uploading = mediaSender.uploading;
+  const replyRef = useRef<Message | null>(null);
+  replyRef.current = replyTo;
+  const sendPicked = async (picked: PickedMedia) => {
+    if (await mediaSender.send(picked, { replyTo: replyRef.current })) setReplyTo(null);
+  };
+  const voice = useVoiceRecorder({
+    onRecorded: (rec) => void sendPicked(voiceRecordingToMedia(rec)),
+    onError: (msg) => Alert.alert('Voice message', msg),
+  });
 
   useEffect(() => {
     if (!conversationId || !user) return;
@@ -403,6 +316,8 @@ export default function ChatScreen() {
   const otherUser = conversation?.otherUser;
   const title = conversation ? conversationTitle(conversation) : 'Loading…';
   const groupChat = useGroupChatSync(conversationId, isGroup && !isDemo);
+  const presence = usePresence(!isGroup && !isDemo ? otherUser?.id : null);
+  const mute = useConversationMute(conversationId);
 
   // Typing users (expire automatically)
   const now = Date.now();
@@ -532,24 +447,7 @@ export default function ChatScreen() {
       return;
     }
     if (!picked) return;
-
-    setUploading(true);
-    try {
-      const media = await mediaRepository.uploadEncrypted(picked, conversationId);
-      await send(
-        conversationId,
-        { t: 'media', kind: picked.kind, media, caption: undefined },
-        { mediaId: media.mediaId, localUri: picked.uri, replyTo }
-      );
-      setReplyTo(null);
-    } catch (e) {
-      Alert.alert(
-        e instanceof MediaTooLargeError ? 'File too large' : 'Upload failed',
-        friendlyError(e, 'Could not send the attachment.')
-      );
-    } finally {
-      setUploading(false);
-    }
+    await sendPicked(picked);
   };
 
   const handleReact = async (emoji: string) => {
@@ -613,6 +511,21 @@ export default function ChatScreen() {
     );
   };
 
+  const chooseMute = () => {
+    setShowMenuModal(false);
+    const fail = (e: unknown) => Alert.alert('Could not change notifications', friendlyError(e));
+    Alert.alert(
+      mute.isMuted ? mute.label ?? 'Muted' : 'Mute notifications',
+      'Muted chats never send push notifications. Messages still arrive.',
+      [
+        ...(mute.isMuted
+          ? [{ text: 'Unmute', onPress: () => void mute.unmute().catch(fail) }]
+          : MUTE_OPTIONS.map((o) => ({ text: o.label, onPress: () => void mute.mute(o.value).catch(fail) }))),
+        { text: 'Cancel', style: 'cancel' as const },
+      ]
+    );
+  };
+
   const leaveGroup = () => {
     setShowMenuModal(false);
     if (!user) return;
@@ -637,7 +550,7 @@ export default function ChatScreen() {
     ? `${typingNames.join(', ')} typing…`
     : isGroup
       ? `${members.length} members · end-to-end encrypted`
-      : 'End-to-end encrypted · tap to verify';
+      : presenceSubtitle(presence) ?? 'End-to-end encrypted · tap to verify';
 
   const canDeleteForEveryone = messaging.canDeleteEveryone(actionMessage);
   const actionRevoked = !!actionMessage?.revokedAt;
@@ -687,6 +600,7 @@ export default function ChatScreen() {
           <View style={{ flex: 1 }}>
             <Text style={styles.headerName} numberOfLines={1}>
               {title}
+              <Extras.BotBadge userId={otherUser?.id} />
             </Text>
             <TouchableOpacity style={styles.headerStatus} onPress={otherUser ? openVerify : undefined}>
               <Ionicons name="lock-closed" size={10} color={Colors.accent} />
@@ -725,7 +639,7 @@ export default function ChatScreen() {
       {uploading && (
         <View style={styles.uploadProgressBanner}>
           <ActivityIndicator size="small" color={Colors.accent} />
-          <Text style={styles.uploadProgressText}>Encrypting and uploading…</Text>
+          <Text style={styles.uploadProgressText}>{mediaSender.status ?? 'Encrypting and uploading…'}</Text>
         </View>
       )}
 
@@ -819,36 +733,52 @@ export default function ChatScreen() {
           </View>
         )}
 
+        <Extras.BotCommandSuggestions botUserId={otherUser?.id} text={inputText} onPick={setInputText} />
         {!groupChat.canSend && <AdminsOnlyNotice />}
         {groupChat.canSend && (
         <View style={styles.inputBar}>
-          <TouchableOpacity style={styles.attachBtn} onPress={() => setShowAttachModal(true)} disabled={uploading}>
-            <Ionicons name="add-circle-outline" size={26} color={Colors.accent} />
-          </TouchableOpacity>
+          {voice.isActive ? (
+            <VoiceRecordingBar voice={voice} />
+          ) : (
+            <>
+              <TouchableOpacity style={styles.attachBtn} onPress={() => setShowAttachModal(true)} disabled={uploading}>
+                <Ionicons name="add-circle-outline" size={26} color={Colors.accent} />
+              </TouchableOpacity>
+              <Extras.ChatComposerExtras conversation={conversation} replyTo={replyTo} onSent={() => setReplyTo(null)} disabled={uploading} />
 
-          <View style={styles.inputWrapper}>
-            <TextInput
-              style={styles.textInput}
-              placeholder="Message"
-              placeholderTextColor={Colors.textTertiary}
-              value={inputText}
-              onChangeText={handleChangeText}
-              multiline
-              maxLength={MAX_TEXT_LENGTH}
-            />
-          </View>
+              <View style={styles.inputWrapper}>
+                <TextInput
+                  style={styles.textInput}
+                  placeholder="Message"
+                  placeholderTextColor={Colors.textTertiary}
+                  value={inputText}
+                  onChangeText={handleChangeText}
+                  multiline
+                  maxLength={MAX_TEXT_LENGTH}
+                />
+              </View>
+            </>
+          )}
 
-          <TouchableOpacity
-            style={[
-              styles.sendBtn,
-              !inputText.trim() && !(messaging.editing && messaging.editing.messageType !== 'text') && styles.sendBtnDisabled,
-            ]}
-            onPress={handleSend}
-            disabled={!inputText.trim() && !(messaging.editing && messaging.editing.messageType !== 'text')}
-            accessibilityLabel={messaging.editing ? 'Save edit' : 'Send message'}
-          >
-            <Ionicons name={messaging.editing ? 'checkmark' : 'send'} size={18} color={Colors.white} />
-          </TouchableOpacity>
+          {messaging.editing ? (
+            <TouchableOpacity
+              style={[
+                styles.sendBtn,
+                !inputText.trim() && messaging.editing.messageType === 'text' && styles.sendBtnDisabled,
+              ]}
+              onPress={handleSend}
+              disabled={!inputText.trim() && messaging.editing.messageType === 'text'}
+              accessibilityLabel="Save edit"
+            >
+              <Ionicons name="checkmark" size={18} color={Colors.white} />
+            </TouchableOpacity>
+          ) : inputText.trim() ? (
+            <TouchableOpacity style={styles.sendBtn} onPress={handleSend} accessibilityLabel="Send message">
+              <Ionicons name="send" size={18} color={Colors.white} />
+            </TouchableOpacity>
+          ) : voice.isLocked || isDemo ? null : (
+            <VoiceRecordButton voice={voice} disabled={uploading} />
+          )}
         </View>
         )}
       </KeyboardAvoidingView>
@@ -1066,6 +996,11 @@ export default function ChatScreen() {
                 <Text style={styles.menuItemText}>Verify safety number</Text>
               </TouchableOpacity>
             )}
+
+            <TouchableOpacity style={styles.menuItem} onPress={chooseMute}>
+              <Ionicons name={mute.isMuted ? 'notifications-off-outline' : 'notifications-outline'} size={20} color={Colors.accent} />
+              <Text style={styles.menuItemText}>{mute.isMuted ? `Unmute (${mute.label})` : 'Mute notifications'}</Text>
+            </TouchableOpacity>
 
             <TouchableOpacity style={styles.menuItem} onPress={chooseTimer}>
               <Ionicons name="timer-outline" size={20} color={Colors.warning} />

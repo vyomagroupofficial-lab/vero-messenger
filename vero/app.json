@@ -14,7 +14,8 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.vero.messenger",
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSFaceIDUsageDescription": "Vero uses Face ID to unlock the app when app lock is on."
       }
     },
     "android": {
@@ -28,7 +29,8 @@
       "package": "com.vero.messenger",
       "permissions": [
         "android.permission.CAMERA",
-        "android.permission.POST_NOTIFICATIONS"
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.RECORD_AUDIO"
       ],
       "blockedPermissions": [
         "android.permission.WRITE_CONTACTS"
@@ -51,6 +53,20 @@
       "expo-sqlite",
       "expo-video",
       [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Vero uses Face ID to unlock the app when app lock is on."
+        }
+      ],
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Vero uses the microphone to record voice messages and videos you send end-to-end encrypted.",
+          "recordAudioAndroid": true,
+          "enableBackgroundPlayback": false
+        }
+      ],
+      [
         "expo-notifications",
         {
           "color": "#06B6D4"
@@ -61,7 +77,7 @@
         {
           "photosPermission": "Vero needs access to your photos so you can send them end-to-end encrypted.",
           "cameraPermission": "Vero needs camera access so you can take photos to send end-to-end encrypted.",
-          "microphonePermission": false
+          "microphonePermission": "Vero uses the microphone to record voice messages and videos you send end-to-end encrypted."
         }
       ],
       [
