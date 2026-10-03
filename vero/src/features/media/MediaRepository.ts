@@ -47,6 +47,7 @@ export type { TransferPhase, TransferProgress } from './transfer';
 
 /** Something to send: a local file URI (or raw bytes) plus what we know about it. */
 export interface PickedMedia {
+  /** Local file (file://, content://, or blob:/data: on web). May be '' when `bytes` is given. */
   uri: string;
   /** Raw plaintext instead of reading `uri` (e.g. a sticker rendered in memory). */
   bytes?: Uint8Array;
@@ -183,7 +184,7 @@ class MediaRepository {
 
     onProgress?.('preparing', 0);
     let { thumb, width, height } = picked;
-    if (!opts.skipPreview && !thumb && (picked.kind === 'image' || picked.kind === 'video')) {
+    if (!opts.skipPreview && !thumb && picked.uri && (picked.kind === 'image' || picked.kind === 'video')) {
       const preview =
         picked.kind === 'image'
           ? await imagePreview(picked.uri, width, height)
@@ -257,6 +258,7 @@ class MediaRepository {
    * for picker files). Returns the local URI to show immediately.
    */
   rememberSent(media: MessageMedia, sourceUri: string, move = false): string {
+    if (!sourceUri) return '';
     if (isWeb) {
       const accountId = currentSession()?.userId;
       if (accountId && sourceUri.startsWith('blob:')) mediaCache.rememberWeb(accountId, media.mediaId, sourceUri);

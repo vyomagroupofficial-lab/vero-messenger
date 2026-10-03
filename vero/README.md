@@ -25,7 +25,7 @@ src/
     keys/KeyDirectory      Device public keys with trust-on-first-use pinning
     messages/              Send/receive/decrypt, receipts, reactions, timers
     chats/                 Conversation list, directory, groups, blocks/reports
-    media/                 Encrypt -> upload, download -> decrypt
+    media/                 Chunked encrypt -> signed upload, signed download -> decrypt; voice notes
     calls/                 Call signalling (ringing/answer/history)
     notifications/         Expo push token registration
     demo/                  Offline demo account (isolated local DB)
@@ -53,13 +53,52 @@ tests/                     Unit tests (crypto, payload parsing, receipts)
 Group membership changes go through RPCs. A removed member's devices simply
 stop getting key slots, so they can't read new messages.
 
-### Attachments
+### Attachments and voice notes
 
-Files are encrypted on device with a fresh key; the key travels only inside the
-E2EE message. The `media-upload` function stores the ciphertext in a private
-Supabase Storage bucket (default) or a Google Drive Shared Drive folder.
-`media-download` is a membership-checked proxy; the client verifies the hash
-and decrypts.
+Code: `src/features/media/`, `src/core/crypto/attachments.ts`, functions
+`media-upload` / `media-download`, schema `supabase/migrations/004_media.sql`
+(tests: `supabase/tests/media_test.sql`, `tests/attachments.test.ts`,
+`tests/media.test.ts`).
+
+- **Encryption (format v2).** Every file gets a fresh key and is encrypted
+  with libsodium's `crypto_secretstream_xchacha20poly1305` in 64 KiB chunks
+  (each chunk authenticated with a counter-derived nonce, the last one tagged
+  `FINAL`), reading and writing through expo-file-system `FileHandle`s so a
+  50 MB video never sits in JS memory. Reordered, duplicated, truncated,
+  appended or modified chunks fail to decrypt. Key, stream header, chunk size,
+  BLAKE2b-256 of the ciphertext, MIME type, file name, dimensions, duration,
+  the voice waveform and a ~48 px preview travel **only inside the E2EE
+  message**. Old single-shot (v1) attachments still decrypt.
+- **Upload.** `media-upload {action:"create"}` checks membership, the 50 MB
+  cap (Supabase free plan, applied to the ciphertext) and rate limits, creates
+  a *pending* `media` row and returns a signed upload URL for exactly
+  `vero-media/<conversation>/<media>`. The app PUTs the ciphertext straight to
+  Storage; `{action:"confirm"}` re-hashes the stored object and only then marks
+  it `ready`. Messages can reference only ready media; unconfirmed uploads are
+  swept after 6 hours. The bucket is private, 50 MB, `application/octet-stream`
+  only, with no client storage policies.
+- **Download.** `media-download?id=…&mode=url` returns a 2-minute signed URL
+  after checking that the caller is a current member of the media's
+  conversation; the app downloads natively to a temp file, verifies the hash
+  and decrypts into a per-account cache (`<cache>/vero-media/<account>/`).
+  The cache is cleared on logout and from *Settings → Clear media cache*
+  (`clearMediaCache()`), and swept when messages are deleted or expire.
+- **Voice notes.** Hold the mic to record, release to send; slide left to
+  cancel; slide up, or just tap the mic, to lock (hands-free) and send with
+  the button. Input metering is reduced to 64 peaks for the waveform. The
+  player downloads on first play, supports drag-to-seek and 1x / 1.5x / 2x,
+  and marks received notes as played (on this device only; no "played"
+  receipt is sent to the sender).
+- **Previews.** Photos and videos show the encrypted thumbnail blurred at the
+  right aspect ratio until the real file is decrypted; photos up to 8 MB
+  download automatically, videos and documents on tap. Videos play from the
+  decrypted cache (expo-video); documents open in the share sheet under their
+  real (sanitised) name.
+- **Google Drive (optional).** With `VERO_MEDIA_BACKEND=drive` uploads go to a
+  Drive resumable-upload session URL and downloads are proxied by
+  `media-download` (Drive has no signed URLs). Drive upload sessions only
+  accept requests from the origin that created them, so the Drive backend is
+  for the native apps; the web build needs the default Storage backend.
 
 ### Stories (24-hour status)
 
@@ -165,8 +204,10 @@ Not done yet (roadmap):
   so it can be upgraded.
 - **Call media.** Signalling works (invite, ring, accept, decline, history);
   audio/video over WebRTC isn't wired up yet.
-- Voice notes, encrypted backups, encrypted group names/avatars, app lock.
-- On-device testing of libsodium's asm.js fallback on Hermes for large files.
+- Encrypted backups, encrypted group names/avatars, app lock.
+- On-device testing of libsodium's asm.js fallback on Hermes for large files
+  (chunked encryption keeps memory flat, but a 50 MB video takes several
+  seconds on the JS thread).
 
 ## Setup
 
