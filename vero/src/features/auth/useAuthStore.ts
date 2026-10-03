@@ -47,7 +47,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         const user = await authRepository.getCurrentUser();
         const deviceId = await authRepository.getLocalDeviceId();
         set({ user, isAuthenticated: !!user, deviceId });
-      } else {
+      } else if (!get().isAuthenticated) {
+        // Don't clobber a session started while this check was in flight (e.g. demo mode).
         set({ user: null, isAuthenticated: false });
       }
 
@@ -63,7 +64,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       });
     } catch (e) {
       console.error('[AuthStore] initialize error:', e);
-      set({ user: null, isAuthenticated: false });
+      if (!get().isAuthenticated) set({ user: null, isAuthenticated: false });
     } finally {
       set({ isLoading: false });
     }
@@ -123,10 +124,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     try {
       const demoUser: AuthUser = {
         id: 'demo-user-id-001',
-        email: 'alex.chen@vero.network',
-        username: 'alexchen',
-        displayName: 'Alex Chen (Vero)',
-        avatarReference: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=200&q=80',
+        email: 'aria@vero.demo',
+        username: 'aria',
+        displayName: 'Aria Rao',
+        avatarReference: undefined,
       };
       set({ user: demoUser, isAuthenticated: true, deviceId: 'dev_local_primary' });
       return { success: true };

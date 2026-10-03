@@ -14,6 +14,7 @@ import { conversationRepository } from '../chats/ConversationRepository';
 import * as SecureStore from 'expo-secure-store';
 import { generateUUID } from '../../shared/utils/uuid';
 import { databaseService } from '../../core/storage/DatabaseService';
+import { DEMO_MESSAGES } from '../demo/demoData';
 
 const DEVICE_ID_KEY = 'vero_device_id';
 
@@ -26,72 +27,7 @@ export interface SendMessageParams {
   mediaAttachment?: MediaAttachment;
 }
 
-const DEMO_CHAT_MESSAGES: Record<string, Message[]> = {
-  'demo-chat-sarah': [
-    {
-      id: 'demo-msg-1',
-      conversationId: 'demo-chat-sarah',
-      senderDeviceId: 'sarah_dev_1',
-      senderUserId: 'sarah-connor-01',
-      senderProfile: { id: 'sarah-connor-01', displayName: 'Sarah Connor', username: 'sarah_c' },
-      content: 'Hey Alex! Did you review the latest E2EE protocol specification?',
-      messageType: 'text',
-      status: 'read',
-      isOwn: false,
-      createdAt: new Date(Date.now() - 1000 * 60 * 25).toISOString(),
-    },
-    {
-      id: 'demo-msg-2',
-      conversationId: 'demo-chat-sarah',
-      senderDeviceId: 'dev_local_primary',
-      senderUserId: 'demo-user-id-001',
-      senderProfile: { id: 'demo-user-id-001', displayName: 'Alex Chen', username: 'alexchen' },
-      content: 'Yes! The X25519 ECDH pairwise exchange and XSalsa20 symmetric encryption are rock solid.',
-      messageType: 'text',
-      status: 'read',
-      isOwn: true,
-      createdAt: new Date(Date.now() - 1000 * 60 * 20).toISOString(),
-    },
-    {
-      id: 'demo-msg-3',
-      conversationId: 'demo-chat-sarah',
-      senderDeviceId: 'sarah_dev_1',
-      senderUserId: 'sarah-connor-01',
-      senderProfile: { id: 'sarah-connor-01', displayName: 'Sarah Connor', username: 'sarah_c' },
-      content: 'Awesome. Verified our 60-digit safety number fingerprint! All green 🔒',
-      messageType: 'text',
-      status: 'read',
-      isOwn: false,
-      createdAt: new Date(Date.now() - 1000 * 60 * 12).toISOString(),
-    },
-  ],
-  'demo-chat-marcus': [
-    {
-      id: 'demo-msg-m1',
-      conversationId: 'demo-chat-marcus',
-      senderDeviceId: 'marcus_dev_1',
-      senderUserId: 'marcus-vance-02',
-      senderProfile: { id: 'marcus-vance-02', displayName: 'Marcus Vance', username: 'marcus_v' },
-      content: 'Media attachment encrypted using AES-256-GCM before Drive proxy upload.',
-      messageType: 'text',
-      status: 'read',
-      isOwn: false,
-      createdAt: new Date(Date.now() - 1000 * 60 * 50).toISOString(),
-    },
-    {
-      id: 'demo-msg-m2',
-      conversationId: 'demo-chat-marcus',
-      senderDeviceId: 'dev_local_primary',
-      senderUserId: 'demo-user-id-001',
-      senderProfile: { id: 'demo-user-id-001', displayName: 'Alex Chen', username: 'alexchen' },
-      content: 'Zero knowledge achieved. Google Drive only sees encrypted blobs.',
-      messageType: 'text',
-      status: 'delivered',
-      isOwn: true,
-      createdAt: new Date(Date.now() - 1000 * 60 * 45).toISOString(),
-    },
-  ],
-};
+const DEMO_CHAT_MESSAGES: Record<string, Message[]> = DEMO_MESSAGES;
 
 class MessageRepository {
   // ──────────────────────────────────────────────────────────────────────────

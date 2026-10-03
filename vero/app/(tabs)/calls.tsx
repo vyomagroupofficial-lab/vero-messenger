@@ -1,109 +1,131 @@
-import React, { useEffect, useState, useCallback } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  FlatList,
-  RefreshControl,
-  StatusBar,
-} from 'react-native';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { RefreshControl, ScrollView, SectionList, StyleSheet, Text, View } from 'react-native';
+import Animated, { FadeIn, ZoomIn } from 'react-native-reanimated';
 import { router } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
-import { Colors, Typography, Spacing, BorderRadius } from '../../src/shared/theme/theme';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import dayjs from 'dayjs';
 import { databaseService, LocalCallRecord } from '../../src/core/storage/DatabaseService';
 import { callService } from '../../src/features/calls/CallService';
 import { useAuthStore } from '../../src/features/auth/useAuthStore';
-import dayjs from 'dayjs';
-import relativeTime from 'dayjs/plugin/relativeTime';
+import { DEMO_CALLS, DEMO_USER_ID, demoConversationFor } from '../../src/features/demo/demoData';
+import { Colors, Fonts, Type } from '../../src/shared/theme/theme';
+import {
+  Avatar,
+  Chip,
+  EmptyState,
+  Grain,
+  Icon,
+  IconButton,
+  IconName,
+  Pill,
+  Pressy,
+  Rise,
+  Ripple,
+  DotWall,
+  useLayout,
+} from '../../src/shared/ui';
 
-dayjs.extend(relativeTime);
+type Filter = 'All' | 'Missed';
 
-const SEED_CALLS: LocalCallRecord[] = [
-  { id: '1', peerId: 'p1', peerName: 'Sarah Connor', callType: 'voice', direction: 'incoming', duration: 323, createdAt: new Date(Date.now() - 1000 * 60 * 15).toISOString() },
-  { id: '2', peerId: 'p2', peerName: 'Marcus Vance', callType: 'video', direction: 'missed', duration: 0, createdAt: new Date(Date.now() - 1000 * 60 * 60 * 2).toISOString() },
-  { id: '3', peerId: 'p3', peerName: 'Security Ops Core', callType: 'voice', direction: 'outgoing', duration: 767, createdAt: new Date(Date.now() - 1000 * 60 * 60 * 24).toISOString() },
-];
+const dirIcon = (d: LocalCallRecord['direction']): IconName => (d === 'outgoing' ? 'arrowOut' : 'arrowIn');
+const dirColor = (d: LocalCallRecord['direction']) => (d === 'missed' ? Colors.ember : d === 'incoming' ? Colors.sage : Colors.brass);
 
-function CallListItem({ call, onRecall }: { call: LocalCallRecord; onRecall: () => void }) {
-  const initials = call.peerName.slice(0, 2).toUpperCase();
-  const isMissed = call.direction === 'missed';
+function durationOf(sec: number) {
+  if (!sec) return '';
+  if (sec < 60) return `${sec} s`;
+  return `${Math.round(sec / 60)} min`;
+}
 
-  const getCallColor = () => {
-    if (isMissed) return Colors.error;
-    if (call.direction === 'outgoing') return Colors.accentLight;
-    return Colors.emerald;
-  };
+function clock(sec: number) {
+  if (!sec) return '—';
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
 
-  const getArrowIcon = () => {
-    if (call.direction === 'incoming') return 'arrow-down';
-    if (call.direction === 'outgoing') return 'arrow-up';
-    return 'close';
-  };
+function sectionOf(iso: string) {
+  const d = dayjs(iso);
+  if (d.isSame(dayjs(), 'day')) return 'Today';
+  if (d.isSame(dayjs().subtract(1, 'day'), 'day')) return 'Yesterday';
+  return 'Earlier';
+}
 
-  const formatDuration = (sec: number) => {
-    if (!sec) return '';
-    const mins = Math.floor(sec / 60);
-    const remaining = sec % 60;
-    return ` (${mins}:${remaining.toString().padStart(2, '0')})`;
-  };
+function whenOf(iso: string) {
+  const d = dayjs(iso);
+  if (d.isSame(dayjs(), 'day')) return d.format('h:mm A');
+  if (d.isSame(dayjs().subtract(1, 'day'), 'day')) return `Yesterday, ${d.format('h:mm A')}`;
+  return d.format('ddd D MMM, h:mm A');
+}
 
+function CallRow({ call, index, selected, onPress, onCall }: {
+  call: LocalCallRecord;
+  index: number;
+  selected: boolean;
+  onPress: () => void;
+  onCall: () => void;
+}) {
+  const missed = call.direction === 'missed';
+  const meta = missed ? `${dayjs(call.createdAt).format('h:mm A')} · Missed` : `${dayjs(call.createdAt).format('h:mm A')} · ${durationOf(call.duration)}`;
   return (
-    <TouchableOpacity style={styles.callItem} activeOpacity={0.75} onPress={onRecall}>
-      <View style={styles.callAvatar}>
-        <Text style={styles.callAvatarText}>{initials}</Text>
-      </View>
-
-      <View style={styles.callInfo}>
-        <Text style={[styles.callName, isMissed && styles.callNameMissed]} numberOfLines={1}>
-          {call.peerName}
-        </Text>
-        <View style={styles.callMeta}>
-          <View style={[styles.directionPill, { backgroundColor: `${getCallColor()}18` }]}>
-            <Ionicons name={getArrowIcon() as any} size={11} color={getCallColor()} />
-            <Text style={[styles.callType, { color: getCallColor() }]}>
-              {call.direction}
+    <Rise index={index}>
+      <View style={[styles.row, selected && styles.rowSelected]}>
+        <Pressy
+          onPress={onPress}
+          scaleTo={0.98}
+          style={styles.rowMain}
+          accessibilityLabel={`${call.peerName}, ${call.direction} ${call.callType} call`}
+        >
+          <Avatar name={call.peerName} size={48} />
+          <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
+            <Text style={[styles.name, missed && { color: Colors.ember }]} numberOfLines={1}>
+              {call.peerName}
             </Text>
+            <View style={styles.metaRow}>
+              <Icon name={dirIcon(call.direction)} size={15} color={dirColor(call.direction)} />
+              <Text style={styles.meta}>{meta}</Text>
+            </View>
           </View>
-          <Text style={styles.callTime}> · {dayjs(call.createdAt).fromNow()}</Text>
-          {call.duration > 0 && <Text style={styles.callDuration}>{formatDuration(call.duration)}</Text>}
-        </View>
+        </Pressy>
+        <IconButton
+          icon={call.callType === 'video' ? 'video' : 'phone'}
+          label={`${call.callType === 'video' ? 'Video call' : 'Call'} ${call.peerName}`}
+          color={Colors.brass}
+          onPress={onCall}
+        />
       </View>
-
-      <View style={styles.callActions}>
-        <TouchableOpacity style={styles.callActionBtn} onPress={onRecall} activeOpacity={0.8}>
-          <Ionicons
-            name={call.callType === 'video' ? 'videocam' : 'call'}
-            size={18}
-            color={Colors.accentLight}
-          />
-        </TouchableOpacity>
-      </View>
-    </TouchableOpacity>
+    </Rise>
   );
 }
 
 export default function CallsScreen() {
+  const insets = useSafeAreaInsets();
+  const { isWide } = useLayout();
   const { user } = useAuthStore();
   const [calls, setCalls] = useState<LocalCallRecord[]>([]);
-  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [filter, setFilter] = useState<Filter>('All');
+  const [refreshing, setRefreshing] = useState(false);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  const loadCalls = useCallback(async () => {
-    const logs = await databaseService.getCallLogs(50);
-    if (logs.length === 0) {
-      setCalls(SEED_CALLS);
-    } else {
-      setCalls(logs);
+  const load = useCallback(async () => {
+    if (user?.id === DEMO_USER_ID) {
+      setCalls(DEMO_CALLS);
+      setRefreshing(false);
+      return;
     }
-    setIsRefreshing(false);
-  }, []);
+    const logs = await databaseService.getCallLogs(50).catch(() => []);
+    setCalls(logs.length ? logs : DEMO_CALLS);
+    setRefreshing(false);
+  }, [user?.id]);
 
   useEffect(() => {
-    loadCalls();
-  }, [loadCalls]);
+    load();
+  }, [load]);
 
-  const handleStartCall = async (peerId: string, peerName: string, callType: 'voice' | 'video' = 'voice') => {
+  useEffect(() => {
+    if (isWide && !selectedId && calls.length) setSelectedId(calls[0].id);
+  }, [isWide, calls]);
+
+  const startCall = async (peerId: string, peerName: string, callType: 'voice' | 'video' = 'voice') => {
     if (!user?.id) return;
     const callId = await callService.startCall({
       peerId,
@@ -115,273 +137,221 @@ export default function CallsScreen() {
     router.push(`/call/${callId}` as any);
   };
 
-  return (
-    <SafeAreaView style={styles.container} edges={['top']}>
-      <StatusBar barStyle="light-content" backgroundColor={Colors.background} />
+  const sections = useMemo(() => {
+    const list = calls.filter((c) => filter === 'All' || c.direction === 'missed');
+    const order = ['Today', 'Yesterday', 'Earlier'];
+    return order
+      .map((title) => ({ title, data: list.filter((c) => sectionOf(c.createdAt) === title) }))
+      .filter((s) => s.data.length > 0);
+  }, [calls, filter]);
 
-      {/* Header */}
-      <View style={styles.header}>
-        <View style={styles.headerLeft}>
-          <Text style={styles.headerTitle}>Calls</Text>
-          <View style={styles.webrtcPill}>
-            <Ionicons name="radio" size={11} color={Colors.emerald} />
-            <Text style={styles.webrtcPillText}>P2P DTLS-SRTP</Text>
+  const favourites = useMemo(() => {
+    const seen = new Map<string, LocalCallRecord>();
+    calls.forEach((c) => {
+      if (!seen.has(c.peerId)) seen.set(c.peerId, c);
+    });
+    return [...seen.values()].slice(0, 5);
+  }, [calls]);
+
+  const selected = calls.find((c) => c.id === selectedId);
+  const history = selected ? calls.filter((c) => c.peerId === selected.peerId) : [];
+
+  const listHeader = (
+    <View>
+      <View style={[styles.header, { paddingTop: (isWide ? 24 : 16) + (isWide ? 0 : insets.top) }]}>
+        <Text style={Type.title}>Calls</Text>
+        <IconButton icon="phonePlus" label="New call" variant="brass" onPress={() => router.push('/(tabs)/contacts' as any)} />
+      </View>
+      <View style={{ paddingHorizontal: 20, gap: 16 }}>
+        {!isWide && favourites.length > 0 && (
+          <View style={{ gap: 10 }}>
+            <Text style={Type.eyebrow}>FAVOURITES</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 14 }}>
+              {favourites.map((f, i) => (
+                <Animated.View key={f.peerId} entering={ZoomIn.delay(60 + i * 50).springify().damping(14)}>
+                  <Pressy onPress={() => startCall(f.peerId, f.peerName, f.callType)} style={styles.fav} accessibilityLabel={`Call ${f.peerName}`}>
+                    <Avatar name={f.peerName} size={58} square />
+                    <Text style={styles.favName} numberOfLines={1}>
+                      {f.peerName.split(' ')[0]}
+                    </Text>
+                  </Pressy>
+                </Animated.View>
+              ))}
+            </ScrollView>
           </View>
-        </View>
-        <TouchableOpacity
-          style={styles.headerButton}
-          onPress={() => router.push('/contacts' as any)}
-          activeOpacity={0.8}
-        >
-          <Ionicons name="call" size={18} color={Colors.accentLight} />
-        </TouchableOpacity>
-      </View>
-
-      {/* Security Telemetry Banner */}
-      <View style={styles.securityBanner}>
-        <View style={styles.securityIconCircle}>
-          <Ionicons name="shield-checkmark" size={16} color={Colors.emerald} />
-        </View>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.securityTitle}>Zero Central Relays</Text>
-          <Text style={styles.securityText}>
-            Direct peer-to-peer WebRTC audio/video encryption. Media packets never touch servers.
-          </Text>
-        </View>
-      </View>
-
-      {/* Call list */}
-      <FlatList
-        data={calls}
-        keyExtractor={(item) => item.id}
-        renderItem={({ item }) => (
-          <CallListItem
-            call={item}
-            onRecall={() => handleStartCall(item.peerId, item.peerName, item.callType)}
-          />
         )}
-        ItemSeparatorComponent={() => <View style={styles.separator} />}
-        showsVerticalScrollIndicator={false}
-        contentContainerStyle={styles.listContent}
-        refreshControl={
-          <RefreshControl
-            refreshing={isRefreshing}
-            onRefresh={() => {
-              setIsRefreshing(true);
-              loadCalls();
-            }}
-            tintColor={Colors.accent}
-          />
-        }
-        ListHeaderComponent={
-          <Text style={styles.listHeader}>Recent Encrypted Logs</Text>
-        }
-      />
+        <Pressy style={styles.linkCard} scaleTo={0.98} hoverStyle={{ backgroundColor: 'rgba(214,166,87,0.12)' }} accessibilityLabel="Create a call link">
+          <View style={styles.linkIcon}>
+            <Icon name="link" size={21} color={Colors.brassInk} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={[Type.name, { fontSize: 15 }]}>Create a call link</Text>
+            <Text style={Type.caption}>Anyone with Vero can join</Text>
+          </View>
+          <Icon name="forwardChevron" size={18} color={Colors.faint} />
+        </Pressy>
+        <View style={{ flexDirection: 'row', gap: 8 }}>
+          {(['All', 'Missed'] as Filter[]).map((f) => (
+            <Chip key={f} label={f} active={filter === f} onPress={() => setFilter(f)} />
+          ))}
+        </View>
+      </View>
+    </View>
+  );
 
-      {/* New Call FAB */}
-      <TouchableOpacity
-        style={styles.fab}
-        onPress={() => router.push('/contacts' as any)}
-        activeOpacity={0.85}
-      >
-        <Ionicons name="call" size={24} color="#FFF" />
-      </TouchableOpacity>
-    </SafeAreaView>
+  const list = (
+    <SectionList
+      sections={sections}
+      keyExtractor={(c) => c.id}
+      stickySectionHeadersEnabled={false}
+      ListHeaderComponent={listHeader}
+      renderSectionHeader={({ section }) => <Text style={styles.section}>{section.title.toUpperCase()}</Text>}
+      renderItem={({ item, index }) => (
+        <CallRow
+          call={item}
+          index={index}
+          selected={isWide && item.id === selectedId}
+          onPress={() => (isWide ? setSelectedId(item.id) : startCall(item.peerId, item.peerName, item.callType))}
+          onCall={() => startCall(item.peerId, item.peerName, item.callType)}
+        />
+      )}
+      contentContainerStyle={{ paddingBottom: 32 }}
+      showsVerticalScrollIndicator={false}
+      ListEmptyComponent={<EmptyState icon="phone" title="No calls yet" body="Voice and video calls are end-to-end encrypted, just like your messages." />}
+      refreshControl={
+        <RefreshControl
+          refreshing={refreshing}
+          onRefresh={() => {
+            setRefreshing(true);
+            load();
+          }}
+          tintColor={Colors.brass}
+        />
+      }
+    />
+  );
+
+  if (!isWide) {
+    return (
+      <View style={styles.container}>
+        <Grain />
+        {list}
+      </View>
+    );
+  }
+
+  return (
+    <View style={[styles.container, { flexDirection: 'row' }]}>
+      <View style={styles.listPane}>
+        <Grain />
+        {list}
+      </View>
+      <View style={{ flex: 1, minWidth: 0 }}>
+        <DotWall />
+        {selected ? (
+          <ScrollView contentContainerStyle={styles.detail} key={selected.peerId}>
+            <Animated.View entering={ZoomIn.springify().damping(16)}>
+              <Ripple size={132}>
+                <Avatar name={selected.peerName} size={132} />
+              </Ripple>
+            </Animated.View>
+            <Animated.View entering={FadeIn.delay(80)} style={{ alignItems: 'center', gap: 8 }}>
+              <Text style={[Type.title, { fontSize: 34, textAlign: 'center' }]}>{selected.peerName}</Text>
+              <Pill icon="lock" label="Calls are end-to-end encrypted" />
+            </Animated.View>
+            <Rise delay={120} style={styles.actions}>
+              {(
+                [
+                  ['phone', 'Voice', () => startCall(selected.peerId, selected.peerName, 'voice')],
+                  ['video', 'Video', () => startCall(selected.peerId, selected.peerName, 'video')],
+                  [
+                    'chat',
+                    'Message',
+                    () => {
+                      const cid = demoConversationFor(selected.peerId);
+                      router.push((cid ? `/chat/${cid}` : '/(tabs)/chats') as any);
+                    },
+                  ],
+                  ['user', 'Profile', () => router.push(`/profile/${selected.peerId}?name=${encodeURIComponent(selected.peerName)}` as any)],
+                ] as [IconName, string, () => void][]
+              ).map(([icon, label, fn]) => (
+                <Pressy key={label} onPress={fn} style={styles.action} hoverStyle={{ backgroundColor: Colors.field }} scaleTo={0.95}>
+                  <Icon name={icon} size={22} color={Colors.brass} />
+                  <Text style={styles.actionLabel}>{label}</Text>
+                </Pressy>
+              ))}
+            </Rise>
+            <Rise delay={180} style={styles.historyCard}>
+              <Text style={[Type.eyebrow, { paddingTop: 16, paddingBottom: 4 }]}>CALL HISTORY</Text>
+              {history.map((h, i) => (
+                <View key={h.id} style={[styles.historyRow, i > 0 && { borderTopWidth: 1, borderTopColor: Colors.divider }]}>
+                  <Icon name={dirIcon(h.direction)} size={20} color={dirColor(h.direction)} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={[Type.body, { fontFamily: Fonts.medium }, h.direction === 'missed' && { color: Colors.ember }]}>
+                      {h.direction === 'missed' ? 'Missed' : h.direction === 'incoming' ? 'Incoming' : 'Outgoing'} {h.callType} call
+                    </Text>
+                    <Text style={Type.caption}>{whenOf(h.createdAt)}</Text>
+                  </View>
+                  <Text style={[Type.mono, { fontSize: 13, color: Colors.muted }]}>{clock(h.duration)}</Text>
+                </View>
+              ))}
+            </Rise>
+          </ScrollView>
+        ) : (
+          <EmptyState icon="phone" title="Your calls" body="Pick a call on the left to see its history." />
+        )}
+      </View>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  container: { flex: 1, backgroundColor: Colors.ink },
+  listPane: { width: 380, backgroundColor: Colors.panel, borderRightWidth: 1, borderRightColor: Colors.line },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingBottom: 14 },
+  fav: { alignItems: 'center', gap: 6, width: 66 },
+  favName: { fontFamily: Fonts.medium, fontSize: 12, color: Colors.muted },
+  linkCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    padding: 12,
+    borderRadius: 18,
+    backgroundColor: Colors.brassTint,
+    borderWidth: 1,
+    borderColor: 'rgba(214,166,87,0.2)',
+  },
+  linkIcon: { width: 42, height: 42, borderRadius: 13, backgroundColor: Colors.brass, alignItems: 'center', justifyContent: 'center' },
+  section: { ...Type.eyebrow, paddingHorizontal: 20, paddingTop: 20, paddingBottom: 6 },
+  row: { flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: 8, paddingHorizontal: 12, paddingVertical: 9, borderRadius: 18 },
+  rowMain: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 13 },
+  rowSelected: { backgroundColor: Colors.raised, borderWidth: 1, borderColor: Colors.line },
+  name: { fontFamily: Fonts.semibold, fontSize: 16, color: Colors.cream },
+  metaRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  meta: { fontFamily: Fonts.body, fontSize: 13, color: Colors.muted },
+  detail: { alignItems: 'center', gap: 24, paddingTop: 110, paddingBottom: 64, paddingHorizontal: 32, maxWidth: 620, width: '100%', alignSelf: 'center' },
+  actions: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, width: '100%' },
+  action: {
     flex: 1,
-    backgroundColor: Colors.background,
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: Spacing.xl,
-    paddingTop: Spacing.md,
-    paddingBottom: Spacing.sm,
-    backgroundColor: Colors.background,
-  },
-  headerLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.md,
-  },
-  headerTitle: {
-    fontSize: Typography['2xl'],
-    fontWeight: Typography.extrabold,
-    color: Colors.textPrimary,
-    letterSpacing: -0.5,
-  },
-  webrtcPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: 'rgba(16, 185, 129, 0.12)',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: BorderRadius.full,
+    minWidth: 110,
+    height: 80,
+    borderRadius: 18,
+    backgroundColor: Colors.raised,
     borderWidth: 1,
-    borderColor: 'rgba(16, 185, 129, 0.25)',
-  },
-  webrtcPillText: {
-    fontSize: 9,
-    fontWeight: Typography.bold,
-    color: Colors.emerald,
-    letterSpacing: 0.5,
-  },
-  headerButton: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: 'rgba(6, 182, 212, 0.12)',
-    justifyContent: 'center',
+    borderColor: Colors.line,
     alignItems: 'center',
+    justifyContent: 'center',
+    gap: 7,
+  },
+  actionLabel: { fontFamily: Fonts.medium, fontSize: 13, color: Colors.cream },
+  historyCard: {
+    width: '100%',
+    borderRadius: 22,
+    backgroundColor: Colors.panel,
     borderWidth: 1,
-    borderColor: 'rgba(6, 182, 212, 0.3)',
+    borderColor: Colors.line,
+    paddingHorizontal: 22,
+    paddingBottom: 8,
   },
-  securityBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.md,
-    marginHorizontal: Spacing.xl,
-    marginTop: Spacing.sm,
-    marginBottom: Spacing.sm,
-    padding: Spacing.md,
-    backgroundColor: 'rgba(16, 185, 129, 0.08)',
-    borderRadius: BorderRadius.lg,
-    borderWidth: 1,
-    borderColor: 'rgba(16, 185, 129, 0.2)',
-  },
-  securityIconCircle: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: 'rgba(16, 185, 129, 0.16)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  securityTitle: {
-    fontSize: Typography.xs,
-    fontWeight: Typography.bold,
-    color: Colors.emerald,
-    letterSpacing: 0.4,
-    textTransform: 'uppercase',
-  },
-  securityText: {
-    fontSize: 11,
-    color: Colors.textSecondary,
-    lineHeight: 16,
-    marginTop: 2,
-  },
-  listContent: {
-    paddingHorizontal: Spacing.xl,
-    paddingBottom: 90,
-  },
-  listHeader: {
-    fontSize: Typography.xs,
-    fontWeight: Typography.bold,
-    color: Colors.textTertiary,
-    letterSpacing: 0.8,
-    textTransform: 'uppercase',
-    marginTop: Spacing.base,
-    marginBottom: Spacing.sm,
-  },
-  callItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: Spacing.md,
-  },
-  callAvatar: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: '#8B5CF6',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: Spacing.md,
-    shadowColor: '#8B5CF6',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 6,
-  },
-  callAvatarText: {
-    fontSize: Typography.base,
-    fontWeight: Typography.bold,
-    color: '#FFF',
-  },
-  callInfo: {
-    flex: 1,
-    gap: 4,
-  },
-  callName: {
-    fontSize: Typography.base,
-    fontWeight: Typography.semibold,
-    color: Colors.textPrimary,
-  },
-  callNameMissed: {
-    color: Colors.error,
-  },
-  callMeta: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  directionPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 3,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: BorderRadius.full,
-  },
-  callType: {
-    fontSize: 10,
-    fontWeight: Typography.bold,
-    textTransform: 'capitalize',
-  },
-  callTime: {
-    fontSize: Typography.xs,
-    color: Colors.textTertiary,
-  },
-  callDuration: {
-    fontSize: Typography.xs,
-    color: Colors.textTertiary,
-  },
-  callActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  callActionBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: 'rgba(6, 182, 212, 0.12)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(6, 182, 212, 0.25)',
-  },
-  separator: {
-    height: 1,
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
-    marginLeft: 64,
-  },
-  fab: {
-    position: 'absolute',
-    bottom: 24,
-    right: 20,
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: Colors.accent,
-    justifyContent: 'center',
-    alignItems: 'center',
-    shadowColor: Colors.accent,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.5,
-    shadowRadius: 16,
-    elevation: 10,
-  },
+  historyRow: { flexDirection: 'row', alignItems: 'center', gap: 14, paddingVertical: 14 },
 });

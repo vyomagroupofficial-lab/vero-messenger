@@ -1,226 +1,145 @@
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
-import {
-  View,
-  Text,
-  FlatList,
-  StyleSheet,
-  TouchableOpacity,
-  TextInput,
-  RefreshControl,
-  ActivityIndicator,
-  Animated,
-  StatusBar,
-  Platform,
-} from 'react-native';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { FlatList, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import Animated, { FadeIn, ZoomIn } from 'react-native-reanimated';
 import { router } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import dayjs from 'dayjs';
 import { useAuthStore } from '../../src/features/auth/useAuthStore';
 import { conversationRepository } from '../../src/features/chats/ConversationRepository';
-import { Conversation, Message } from '../../src/shared/models/Message';
+import { ChatThread, NoChatSelected } from '../../src/features/chats/ChatThread';
 import { databaseService } from '../../src/core/storage/DatabaseService';
-import { Colors, Typography, Spacing, BorderRadius, Shadows } from '../../src/shared/theme/theme';
-import dayjs from 'dayjs';
-import relativeTime from 'dayjs/plugin/relativeTime';
+import { DEMO_CONVERSATIONS, DEMO_ONLINE, DEMO_USER_ID } from '../../src/features/demo/demoData';
+import { Conversation, Message } from '../../src/shared/models/Message';
+import { Colors, Fonts, Type } from '../../src/shared/theme/theme';
+import {
+  Avatar,
+  Badge,
+  Chip,
+  EmptyState,
+  Grain,
+  Icon,
+  IconButton,
+  IconName,
+  Pressy,
+  Rise,
+  SearchField,
+  VeroMark,
+  useLayout,
+} from '../../src/shared/ui';
 
-dayjs.extend(relativeTime);
+const CATEGORIES = ['All', 'Unread', 'Groups', 'Direct'] as const;
+type Category = (typeof CATEGORIES)[number];
 
-const CATEGORIES = ['All', 'Direct', 'Groups', 'Unread'] as const;
-type Category = typeof CATEGORIES[number];
-
-// ──────────────────────────────────────────────────────────────────────────
-// Chat List Item Component
-// ──────────────────────────────────────────────────────────────────────────
-
-interface ChatListItemProps {
-  conversation: Conversation;
-  onPress: () => void;
+function nameOf(c: Conversation) {
+  return c.conversationType === 'direct' ? c.otherUser?.displayName || 'Unknown' : c.groupName || 'Group';
 }
 
-function ChatListItem({ conversation, onPress }: ChatListItemProps) {
-  const isDirect = conversation.conversationType === 'direct';
-  const name = isDirect
-    ? (conversation.otherUser?.displayName || 'Unknown')
-    : (conversation.groupName || 'Vero Group');
+function timeOf(iso?: string) {
+  if (!iso) return '';
+  const d = dayjs(iso);
+  if (d.isSame(dayjs(), 'day')) return d.format('h:mm A');
+  if (d.isSame(dayjs().subtract(1, 'day'), 'day')) return 'Yesterday';
+  if (d.isAfter(dayjs().subtract(6, 'day'))) return d.format('ddd');
+  return d.format('D MMM');
+}
 
-  const initials = name.slice(0, 2).toUpperCase();
-  const lastMsgTime = conversation.lastMessage
-    ? dayjs(conversation.lastMessage.createdAt).fromNow(true)
-    : '';
+function previewOf(c: Conversation): { icon?: IconName; text: string } {
+  const m = c.lastMessage;
+  if (!m) return { icon: 'lock', text: 'End-to-end encrypted' };
+  const who = c.conversationType === 'group' && !m.isOwn && m.senderDisplayName ? `${m.senderDisplayName.split(' ')[0]}: ` : '';
+  switch (m.messageType) {
+    case 'image':
+      return { icon: 'image', text: `${who}Photo` };
+    case 'video':
+      return { icon: 'video', text: `${who}Video` };
+    case 'voice':
+    case 'audio':
+      return { icon: 'mic', text: `${who}Voice message` };
+    case 'document':
+      return { icon: 'file', text: `${who}${m.content || 'Document'}` };
+    default:
+      return { text: `${who}${m.content || 'Message'}` };
+  }
+}
 
-  const lastMsg = conversation.lastMessage;
-  const isOwn = lastMsg?.isOwn;
+// ── Row ─────────────────────────────────────────────────────────────────────
 
-  const avatarGradients = [
-    ['#06B6D4', '#0284C7'],
-    ['#8B5CF6', '#6D28D9'],
-    ['#10B981', '#059669'],
-    ['#F59E0B', '#D97706'],
-    ['#EC4899', '#BE185D'],
-  ];
-  const colorIndex = Math.abs(name.charCodeAt(0)) % avatarGradients.length;
-  const [bgStart, bgEnd] = avatarGradients[colorIndex];
+function ChatRow({ c, index, selected, onPress }: { c: Conversation; index: number; selected: boolean; onPress: () => void }) {
+  const name = nameOf(c);
+  const unread = c.unreadCount || 0;
+  const typing = !!c.isTyping;
+  const online = c.conversationType === 'direct' && (c.isOnline || (c.otherUser ? DEMO_ONLINE.has(c.otherUser.id) : false));
+  const pv = previewOf(c);
+  const own = c.lastMessage?.isOwn;
 
   return (
-    <TouchableOpacity
-      style={styles.chatItem}
-      onPress={onPress}
-      activeOpacity={0.75}
-    >
-      {/* Avatar with Glow and Badge */}
-      <View style={styles.avatarWrapper}>
-        <View style={[styles.avatar, { backgroundColor: bgStart }]}>
-          {isDirect ? (
-            <Text style={styles.avatarText}>{initials}</Text>
-          ) : (
-            <Ionicons name="people" size={24} color="#FFF" />
-          )}
-        </View>
-
-        {/* Live Status indicator */}
-        <View style={styles.onlineDot} />
-      </View>
-
-      {/* Conversation Details */}
-      <View style={styles.chatContent}>
-        <View style={styles.chatHeader}>
-          <View style={styles.nameRow}>
-            <Text style={styles.chatName} numberOfLines={1}>
+    <Rise index={index}>
+      <Pressy
+        onPress={onPress}
+        scaleTo={0.98}
+        accessibilityLabel={`${name}${unread ? `, ${unread} unread` : ''}`}
+        accessibilityState={{ selected }}
+        hoverStyle={!selected ? { backgroundColor: Colors.creamTint } : undefined}
+        style={[styles.row, selected && styles.rowSelected]}
+      >
+        <Avatar name={name} size={52} square={c.conversationType === 'group'} online={online} cutout={selected ? Colors.raised : Colors.panel} />
+        <View style={styles.rowMain}>
+          <View style={styles.rowTop}>
+            <Text style={styles.rowName} numberOfLines={1}>
               {name}
             </Text>
-            <View style={styles.e2eeShieldMini}>
-              <Ionicons name="shield-checkmark" size={12} color={Colors.emerald} />
-            </View>
+            <Text style={[styles.rowTime, unread > 0 && { color: Colors.brass }]}>{timeOf(c.lastMessage?.createdAt)}</Text>
           </View>
-          <Text style={styles.chatTime}>{lastMsgTime}</Text>
-        </View>
-
-        <View style={styles.chatFooter}>
-          <View style={styles.previewRow}>
-            {isOwn && (
-              <Ionicons
-                name="checkmark-done"
-                size={15}
-                color={lastMsg?.content ? Colors.accentLight : Colors.textTertiary}
-                style={styles.receiptIcon}
-              />
-            )}
-            <Text
-              style={[
-                styles.chatPreview,
-                (conversation.unreadCount || 0) > 0 && styles.chatPreviewUnread,
-              ]}
-              numberOfLines={1}
-            >
-              {lastMsg?.content || '🔒 End-to-end encrypted message'}
-            </Text>
-          </View>
-
-          {/* Meta & Unread Pill */}
-          <View style={styles.chatMeta}>
-            {(conversation.unreadCount || 0) > 0 && (
-              <View style={styles.unreadBadge}>
-                <Text style={styles.unreadCount}>
-                  {conversation.unreadCount! > 99 ? '99+' : conversation.unreadCount}
+          <View style={styles.rowBottom}>
+            {typing ? (
+              <Animated.Text entering={FadeIn} style={[styles.preview, { color: Colors.brass, fontFamily: Fonts.medium }]}>
+                typing…
+              </Animated.Text>
+            ) : (
+              <>
+                {own && <Icon name="checks" size={16} color={Colors.sage} />}
+                {pv.icon && <Icon name={pv.icon} size={15} color={unread ? Colors.cream : Colors.faint} />}
+                <Text style={[styles.preview, unread > 0 && { color: Colors.cream }]} numberOfLines={1}>
+                  {own ? `You: ${pv.text}` : pv.text}
                 </Text>
-              </View>
+              </>
             )}
+            {unread > 0 && !selected && <Badge count={unread} />}
           </View>
         </View>
-      </View>
-    </TouchableOpacity>
+      </Pressy>
+    </Rise>
   );
 }
 
-// ──────────────────────────────────────────────────────────────────────────
-// Demo Conversations Seed
-// ──────────────────────────────────────────────────────────────────────────
-
-const DEMO_CONVERSATIONS: Conversation[] = [
-  {
-    id: 'demo-chat-sarah',
-    conversationType: 'direct',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    otherUser: {
-      id: 'sarah-connor-01',
-      username: 'sarah_c',
-      displayName: 'Sarah Connor',
-      avatarReference: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=200&q=80',
-    },
-    lastMessage: {
-      content: 'Verified our 60-digit safety number! All green 🔒',
-      messageType: 'text',
-      senderDisplayName: 'Sarah Connor',
-      isOwn: false,
-      createdAt: new Date(Date.now() - 1000 * 60 * 12).toISOString(),
-    },
-    unreadCount: 0,
-  },
-  {
-    id: 'demo-chat-marcus',
-    conversationType: 'direct',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    otherUser: {
-      id: 'marcus-vance-02',
-      username: 'marcus_v',
-      displayName: 'Marcus Vance (DevOps)',
-      avatarReference: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=200&q=80',
-    },
-    lastMessage: {
-      content: '📷 Encrypted media transfer complete via Drive proxy',
-      messageType: 'image',
-      senderDisplayName: 'Alex Chen',
-      isOwn: true,
-      createdAt: new Date(Date.now() - 1000 * 60 * 45).toISOString(),
-    },
-    unreadCount: 2,
-  },
-  {
-    id: 'demo-group-core',
-    conversationType: 'group',
-    groupName: 'Vero Security Core',
-    groupAvatar: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?auto=format&fit=crop&w=200&q=80',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    lastMessage: {
-      content: 'Zero-Knowledge audit verified: No plaintexts in Supabase.',
-      messageType: 'text',
-      senderDisplayName: 'Security Ops',
-      isOwn: false,
-      createdAt: new Date(Date.now() - 1000 * 60 * 120).toISOString(),
-    },
-    unreadCount: 0,
-  },
-];
-
-// ──────────────────────────────────────────────────────────────────────────
-// Main Chats Screen
-// ──────────────────────────────────────────────────────────────────────────
+// ── Screen ──────────────────────────────────────────────────────────────────
 
 export default function ChatsScreen() {
+  const insets = useSafeAreaInsets();
+  const { isWide } = useLayout();
   const { user } = useAuthStore();
   const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [filteredConversations, setFilteredConversations] = useState<Conversation[]>([]);
-  const [selectedCategory, setSelectedCategory] = useState<Category>('All');
+  const [category, setCategory] = useState<Category>('All');
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [showSearch, setShowSearch] = useState(false);
-  const [matchedMessages, setMatchedMessages] = useState<Message[]>([]);
+  const [query, setQuery] = useState('');
+  const [matched, setMatched] = useState<Message[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [readIds, setReadIds] = useState<Set<string>>(new Set());
 
-  const loadConversations = useCallback(async () => {
+  const load = useCallback(async () => {
     if (!user?.id) return;
+    if (user.id === DEMO_USER_ID) {
+      setConversations(DEMO_CONVERSATIONS);
+      setIsLoading(false);
+      setIsRefreshing(false);
+      return;
+    }
     try {
       const data = await conversationRepository.getConversations(user.id);
-      const list = data && data.length > 0 ? data : DEMO_CONVERSATIONS;
-      setConversations(list);
-      setFilteredConversations(list);
-    } catch (e) {
-      console.error('[ChatsScreen] load error:', e);
+      setConversations(data && data.length > 0 ? data : DEMO_CONVERSATIONS);
+    } catch {
       setConversations(DEMO_CONVERSATIONS);
-      setFilteredConversations(DEMO_CONVERSATIONS);
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
@@ -228,623 +147,231 @@ export default function ChatsScreen() {
   }, [user?.id]);
 
   useEffect(() => {
-    loadConversations();
-  }, [loadConversations]);
+    load();
+  }, [load]);
+
+  // Desktop opens the first conversation so the right pane is never empty on arrival.
+  useEffect(() => {
+    if (isWide && !selectedId && conversations.length > 0) setSelectedId(conversations[0].id);
+  }, [isWide, conversations]);
 
   useEffect(() => {
-    if (!searchQuery.trim()) {
-      setFilteredConversations(conversations);
-      setMatchedMessages([]);
+    if (!query.trim()) {
+      setMatched([]);
       return;
     }
-    const query = searchQuery.toLowerCase();
-    setFilteredConversations(
-      conversations.filter((c) => {
-        const name = c.conversationType === 'direct'
-          ? c.otherUser?.displayName?.toLowerCase()
-          : c.groupName?.toLowerCase();
-        return name?.includes(query);
-      })
-    );
+    databaseService.searchMessages(query).then(setMatched).catch(() => setMatched([]));
+  }, [query]);
 
-    databaseService.searchMessages(searchQuery).then((results) => {
-      setMatchedMessages(results);
-    });
-  }, [searchQuery, conversations]);
+  const visible = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return conversations
+      .map((c) => (readIds.has(c.id) ? { ...c, unreadCount: 0 } : c))
+      .filter((c) => {
+        if (q && !nameOf(c).toLowerCase().includes(q)) return false;
+        if (category === 'Unread') return (c.unreadCount || 0) > 0;
+        if (category === 'Groups') return c.conversationType === 'group';
+        if (category === 'Direct') return c.conversationType === 'direct';
+        return true;
+      });
+  }, [conversations, category, query, readIds]);
 
-  const displayedConversations = useMemo(() => {
-    let list = filteredConversations;
-    if (selectedCategory === 'Direct') {
-      list = list.filter((c) => c.conversationType === 'direct');
-    } else if (selectedCategory === 'Groups') {
-      list = list.filter((c) => c.conversationType === 'group');
-    } else if (selectedCategory === 'Unread') {
-      list = list.filter((c) => (c.unreadCount || 0) > 0);
+  const active = useMemo(
+    () => conversations.filter((c) => c.conversationType === 'direct' && (c.isOnline || (c.otherUser && DEMO_ONLINE.has(c.otherUser.id)))),
+    [conversations]
+  );
+
+  const unreadTotal = conversations.filter((c) => !readIds.has(c.id) && (c.unreadCount || 0) > 0).length;
+
+  const open = (c: Conversation) => {
+    setReadIds((s) => new Set(s).add(c.id));
+    if (isWide) {
+      setSelectedId(c.id);
+      return;
     }
-    return list;
-  }, [filteredConversations, selectedCategory]);
-
-  const handleRefresh = () => {
-    setIsRefreshing(true);
-    loadConversations();
+    router.push({
+      pathname: '/chat/[id]',
+      params: { id: c.id, name: nameOf(c), group: c.conversationType === 'group' ? '1' : '0' },
+    } as any);
   };
 
-  const handleChatPress = (conversation: Conversation) => {
-    router.push(`/chat/${conversation.id}` as any);
-  };
+  const selected = conversations.find((c) => c.id === selectedId);
 
-  const handleNewChat = () => {
-    router.push('/contacts' as any);
-  };
-
-  const handleNewGroup = () => {
-    router.push('/new-group' as any);
-  };
-
-  if (isLoading) {
-    return (
-      <SafeAreaView style={styles.container}>
-        <View style={styles.loadingContainer}>
-          <View style={styles.loadingPulseShield}>
-            <Ionicons name="shield-checkmark" size={38} color={Colors.accent} />
-          </View>
-          <ActivityIndicator size="small" color={Colors.accent} style={{ marginTop: 16 }} />
-          <Text style={styles.loadingText}>Decrypting local enclave...</Text>
+  const header = (
+    <View>
+      <View style={[styles.header, { paddingTop: (isWide ? 24 : 16) + (isWide ? 0 : insets.top) }]}>
+        <View style={styles.brand}>
+          {!isWide && <VeroMark size={34} />}
+          <Text style={Type.title}>Chats</Text>
         </View>
-      </SafeAreaView>
+        <View style={{ flexDirection: 'row', gap: 8 }}>
+          <IconButton icon="users" label="New group" variant="filled" onPress={() => router.push('/new-group' as any)} />
+          {isWide && <IconButton icon="plus" label="New chat" variant="brass" onPress={() => router.push('/(tabs)/contacts' as any)} />}
+        </View>
+      </View>
+
+      <View style={{ paddingHorizontal: 20, gap: 14 }}>
+        <SearchField value={query} onChangeText={setQuery} placeholder="Search chats and messages" />
+
+        {!query && active.length > 0 && !isWide && (
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 14, paddingVertical: 4 }}>
+            {active.map((c, i) => {
+              const n = nameOf(c);
+              return (
+                <Animated.View key={c.id} entering={ZoomIn.delay(80 + i * 60).springify().damping(14)}>
+                  <Pressy onPress={() => open(c)} style={styles.story} accessibilityLabel={`${n}, online`}>
+                    <Avatar name={n} size={54} ring ringColor={Colors.sage} />
+                    <Text style={styles.storyName} numberOfLines={1}>
+                      {n.split(' ')[0]}
+                    </Text>
+                  </Pressy>
+                </Animated.View>
+              );
+            })}
+          </ScrollView>
+        )}
+
+        <View style={styles.chips}>
+          {CATEGORIES.map((cat) => (
+            <Chip
+              key={cat}
+              label={cat === 'Unread' && unreadTotal > 0 ? `Unread · ${unreadTotal}` : cat}
+              active={category === cat}
+              onPress={() => setCategory(cat)}
+            />
+          ))}
+        </View>
+      </View>
+    </View>
+  );
+
+  const list = (
+    <FlatList
+      data={visible}
+      keyExtractor={(c) => c.id}
+      renderItem={({ item, index }) => <ChatRow c={item} index={index} selected={isWide && item.id === selectedId} onPress={() => open(item)} />}
+      ListHeaderComponent={header}
+      ListHeaderComponentStyle={{ marginBottom: 8 }}
+      contentContainerStyle={{ paddingBottom: isWide ? 24 : 110 }}
+      showsVerticalScrollIndicator={false}
+      keyboardShouldPersistTaps="handled"
+      refreshControl={
+        <RefreshControl
+          refreshing={isRefreshing}
+          onRefresh={() => {
+            setIsRefreshing(true);
+            load();
+          }}
+          tintColor={Colors.brass}
+        />
+      }
+      ListEmptyComponent={
+        isLoading ? null : (
+          <EmptyState
+            icon={query ? 'search' : 'chat'}
+            title={query ? 'Nothing matches' : 'No chats yet'}
+            body={query ? 'Try a different name or word.' : 'Start a conversation — everything you send is end-to-end encrypted.'}
+          />
+        )
+      }
+      ListFooterComponent={
+        matched.length > 0 ? (
+          <View style={styles.matches}>
+            <Text style={[Type.eyebrow, { paddingHorizontal: 12, marginBottom: 6 }]}>MESSAGES</Text>
+            {matched.map((m) => (
+              <Pressy
+                key={m.id}
+                onPress={() => (isWide ? setSelectedId(m.conversationId) : router.push(`/chat/${m.conversationId}` as any))}
+                scaleTo={0.98}
+                hoverStyle={{ backgroundColor: Colors.creamTint }}
+                style={styles.match}
+              >
+                <View style={styles.matchIcon}>
+                  <Icon name="chat" size={18} color={Colors.brass} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={Type.body} numberOfLines={1}>
+                    {m.content}
+                  </Text>
+                  <Text style={Type.caption}>{dayjs(m.createdAt).format('D MMM, h:mm A')}</Text>
+                </View>
+              </Pressy>
+            ))}
+          </View>
+        ) : null
+      }
+    />
+  );
+
+  if (isWide) {
+    return (
+      <View style={styles.split}>
+        <View style={styles.listPane}>
+          <Grain />
+          {list}
+        </View>
+        <View style={{ flex: 1, minWidth: 0 }}>
+          {selected ? (
+            <ChatThread
+              key={selected.id}
+              conversationId={selected.id}
+              embedded
+              title={nameOf(selected)}
+              isGroup={selected.conversationType === 'group'}
+            />
+          ) : (
+            <NoChatSelected />
+          )}
+        </View>
+      </View>
     );
   }
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
-      <StatusBar barStyle="light-content" backgroundColor={Colors.background} />
-
-      {/* Top Cyber Defense Header */}
-      <View style={styles.header}>
-        {showSearch ? (
-          <View style={styles.searchBar}>
-            <Ionicons name="search" size={18} color={Colors.accentLight} style={styles.searchIcon} />
-            <TextInput
-              style={styles.searchInput}
-              placeholder="Search encrypted chats & messages..."
-              placeholderTextColor={Colors.textTertiary}
-              value={searchQuery}
-              onChangeText={setSearchQuery}
-              autoFocus
-            />
-            <TouchableOpacity
-              onPress={() => {
-                setShowSearch(false);
-                setSearchQuery('');
-              }}
-              style={styles.searchCloseBtn}
-            >
-              <Ionicons name="close-circle" size={18} color={Colors.textSecondary} />
-            </TouchableOpacity>
-          </View>
-        ) : (
-          <>
-            <View style={styles.brandRow}>
-              <View style={styles.brandIconCircle}>
-                <Ionicons name="shield-checkmark" size={20} color={Colors.accent} />
-              </View>
-              <View>
-                <Text style={styles.brandTitle}>VERO</Text>
-                <View style={styles.statusBadge}>
-                  <View style={styles.statusDotLive} />
-                  <Text style={styles.statusText}>E2EE ACTIVE</Text>
-                </View>
-              </View>
-            </View>
-
-            <View style={styles.headerActions}>
-              <TouchableOpacity
-                style={styles.headerActionBtn}
-                onPress={() => setShowSearch(true)}
-                activeOpacity={0.7}
-              >
-                <Ionicons name="search-outline" size={20} color={Colors.textPrimary} />
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.headerActionBtn}
-                onPress={handleNewGroup}
-                activeOpacity={0.7}
-              >
-                <Ionicons name="people-outline" size={20} color={Colors.textPrimary} />
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.headerActionBtn, styles.headerActionBtnPrimary]}
-                onPress={handleNewChat}
-                activeOpacity={0.7}
-              >
-                <Ionicons name="create-outline" size={20} color={Colors.accentLight} />
-              </TouchableOpacity>
-            </View>
-          </>
-        )}
-      </View>
-
-      {/* Category Pills Navigation */}
-      {!showSearch && (
-        <View style={styles.categoriesBar}>
-          {CATEGORIES.map((cat) => {
-            const isActive = selectedCategory === cat;
-            return (
-              <TouchableOpacity
-                key={cat}
-                style={[styles.categoryChip, isActive && styles.categoryChipActive]}
-                onPress={() => setSelectedCategory(cat)}
-                activeOpacity={0.7}
-              >
-                <Text style={[styles.categoryText, isActive && styles.categoryTextActive]}>
-                  {cat}
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
-        </View>
-      )}
-
-      {/* Main Conversation List */}
-      {displayedConversations.length === 0 ? (
-        <View style={styles.emptyState}>
-          <View style={styles.emptyIcon}>
-            <Ionicons name="chatbubbles-outline" size={42} color={Colors.accent} />
-          </View>
-          <Text style={styles.emptyTitle}>
-            {searchQuery ? 'No matching conversations' : 'No chats found'}
-          </Text>
-          <Text style={styles.emptySubtitle}>
-            {searchQuery
-              ? 'Try searching by name or decrypted keyword'
-              : 'Start a high-security end-to-end encrypted session with contacts'}
-          </Text>
-          {!searchQuery && (
-            <TouchableOpacity
-              style={styles.startChatButton}
-              onPress={handleNewChat}
-              activeOpacity={0.8}
-            >
-              <Ionicons name="paper-plane" size={16} color="#FFF" style={{ marginRight: 8 }} />
-              <Text style={styles.startChatButtonText}>Start New Chat</Text>
-            </TouchableOpacity>
-          )}
-        </View>
-      ) : (
-        <FlatList
-          data={displayedConversations}
-          keyExtractor={(item) => item.id}
-          renderItem={({ item }) => (
-            <ChatListItem
-              conversation={item}
-              onPress={() => handleChatPress(item)}
-            />
-          )}
-          refreshControl={
-            <RefreshControl
-              refreshing={isRefreshing}
-              onRefresh={handleRefresh}
-              tintColor={Colors.accent}
-            />
-          }
-          showsVerticalScrollIndicator={false}
-          contentContainerStyle={styles.listContent}
-          ItemSeparatorComponent={() => <View style={styles.separator} />}
-          ListFooterComponent={
-            matchedMessages.length > 0 ? (
-              <View style={styles.messagesSearchSection}>
-                <View style={styles.searchSectionHeader}>
-                  <Ionicons name="lock-closed" size={13} color={Colors.accent} />
-                  <Text style={styles.searchSectionTitle}>Decrypted Local Search Matches</Text>
-                </View>
-                {matchedMessages.map((msg) => (
-                  <TouchableOpacity
-                    key={msg.id}
-                    style={styles.messageSearchResult}
-                    onPress={() => router.push(`/chat/${msg.conversationId}` as any)}
-                  >
-                    <Ionicons name="chatbubble-ellipses-outline" size={18} color={Colors.accentLight} />
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.messageSearchText} numberOfLines={1}>
-                        {msg.content}
-                      </Text>
-                      <Text style={styles.messageSearchMeta}>
-                        {dayjs(msg.createdAt).format('MMM D, h:mm A')}
-                      </Text>
-                    </View>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            ) : null
-          }
-        />
-      )}
-
-      {/* Floating Action Button */}
-      <TouchableOpacity
-        style={styles.fab}
-        onPress={handleNewChat}
-        activeOpacity={0.85}
-      >
-        <Ionicons name="chatbubble-ellipses" size={24} color="#FFF" />
-      </TouchableOpacity>
-    </SafeAreaView>
+    <View style={styles.container}>
+      <Grain />
+      {list}
+      <Animated.View entering={ZoomIn.delay(450).springify().damping(12)} style={styles.fab}>
+        <Pressy onPress={() => router.push('/(tabs)/contacts' as any)} accessibilityLabel="New chat" scaleTo={0.9} style={styles.fabBtn}>
+          <Icon name="chatPlus" size={25} color={Colors.brassInk} />
+        </Pressy>
+      </Animated.View>
+    </View>
   );
 }
 
-// ──────────────────────────────────────────────────────────────────────────
-// Styles
-// ──────────────────────────────────────────────────────────────────────────
-
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: Colors.background,
-  },
-  loadingContainer: {
-    flex: 1,
+  container: { flex: 1, backgroundColor: Colors.ink },
+  split: { flex: 1, flexDirection: 'row', backgroundColor: Colors.ink },
+  listPane: { width: 380, backgroundColor: Colors.panel, borderRightWidth: 1, borderRightColor: Colors.line },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingBottom: 14 },
+  brand: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  story: { alignItems: 'center', gap: 6, width: 64 },
+  storyName: { fontFamily: Fonts.medium, fontSize: 12, color: Colors.muted },
+  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  row: { flexDirection: 'row', alignItems: 'center', gap: 13, marginHorizontal: 8, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 18 },
+  rowSelected: { backgroundColor: Colors.raised, borderWidth: 1, borderColor: Colors.line },
+  rowMain: { flex: 1, minWidth: 0, gap: 4 },
+  rowTop: { flexDirection: 'row', alignItems: 'baseline', gap: 8 },
+  rowName: { flex: 1, fontFamily: Fonts.semibold, fontSize: 16, color: Colors.cream },
+  rowTime: { fontFamily: Fonts.body, fontSize: 12, color: Colors.faint },
+  rowBottom: { flexDirection: 'row', alignItems: 'center', gap: 6, minHeight: 22 },
+  preview: { flex: 1, fontFamily: Fonts.body, fontSize: 14, color: Colors.muted },
+  matches: { marginTop: 12, paddingHorizontal: 8, paddingTop: 12, borderTopWidth: 1, borderTopColor: Colors.line },
+  match: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 12, borderRadius: 14 },
+  matchIcon: { width: 38, height: 38, borderRadius: 12, backgroundColor: Colors.brassTint, alignItems: 'center', justifyContent: 'center' },
+  fab: { position: 'absolute', right: 20, bottom: 24 },
+  fabBtn: {
+    width: 60,
+    height: 60,
+    borderRadius: 20,
+    backgroundColor: Colors.brass,
+    alignItems: 'center',
     justifyContent: 'center',
-    alignItems: 'center',
-    gap: 8,
-  },
-  loadingPulseShield: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    backgroundColor: 'rgba(6, 182, 212, 0.12)',
-    borderWidth: 1.5,
-    borderColor: 'rgba(6, 182, 212, 0.35)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  loadingText: {
-    fontSize: Typography.sm,
-    color: Colors.textSecondary,
-    letterSpacing: 0.4,
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: Spacing.xl,
-    paddingTop: Spacing.md,
-    paddingBottom: Spacing.sm,
-    backgroundColor: Colors.background,
-  },
-  brandRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.md,
-  },
-  brandIconCircle: {
-    width: 38,
-    height: 38,
-    borderRadius: 12,
-    backgroundColor: 'rgba(6, 182, 212, 0.12)',
-    borderWidth: 1,
-    borderColor: 'rgba(6, 182, 212, 0.3)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  brandTitle: {
-    fontSize: Typography.xl,
-    fontWeight: Typography.extrabold,
-    color: Colors.textPrimary,
-    letterSpacing: 3,
-  },
-  statusBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    marginTop: 1,
-  },
-  statusDotLive: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: Colors.emerald,
-  },
-  statusText: {
-    fontSize: 9,
-    fontWeight: Typography.bold,
-    color: Colors.emerald,
-    letterSpacing: 0.8,
-  },
-  headerActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
-  },
-  headerActionBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  headerActionBtnPrimary: {
-    backgroundColor: 'rgba(6, 182, 212, 0.12)',
-    borderColor: 'rgba(6, 182, 212, 0.3)',
-  },
-  searchBar: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#0B1322',
-    borderRadius: BorderRadius.lg,
-    paddingHorizontal: Spacing.md,
-    height: 44,
-    borderWidth: 1,
-    borderColor: 'rgba(6, 182, 212, 0.3)',
-  },
-  searchIcon: {
-    marginRight: Spacing.sm,
-  },
-  searchInput: {
-    flex: 1,
-    color: Colors.textPrimary,
-    fontSize: Typography.sm,
-    height: '100%',
-  },
-  searchCloseBtn: {
-    padding: 4,
-  },
-  categoriesBar: {
-    flexDirection: 'row',
-    paddingHorizontal: Spacing.xl,
-    paddingVertical: Spacing.sm,
-    gap: Spacing.sm,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.05)',
-  },
-  categoryChip: {
-    paddingHorizontal: Spacing.md,
-    paddingVertical: 6,
-    borderRadius: BorderRadius.full,
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
-    borderWidth: 1,
-    borderColor: 'transparent',
-  },
-  categoryChipActive: {
-    backgroundColor: 'rgba(6, 182, 212, 0.15)',
-    borderColor: 'rgba(6, 182, 212, 0.35)',
-  },
-  categoryText: {
-    fontSize: Typography.xs,
-    fontWeight: Typography.semibold,
-    color: Colors.textTertiary,
-    letterSpacing: 0.2,
-  },
-  categoryTextActive: {
-    color: Colors.accentLight,
-  },
-  listContent: {
-    paddingVertical: Spacing.sm,
-  },
-  chatItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: Spacing.xl,
-    paddingVertical: Spacing.md,
-    backgroundColor: 'transparent',
-  },
-  avatarWrapper: {
-    position: 'relative',
-    marginRight: Spacing.base,
-  },
-  avatar: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
-    justifyContent: 'center',
-    alignItems: 'center',
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3,
-    shadowRadius: 6,
-    elevation: 3,
-  },
-  avatarText: {
-    fontSize: Typography.base,
-    fontWeight: Typography.bold,
-    color: '#FFF',
-    letterSpacing: 0.5,
-  },
-  onlineDot: {
-    position: 'absolute',
-    bottom: 0,
-    right: 0,
-    width: 13,
-    height: 13,
-    borderRadius: 7,
-    backgroundColor: Colors.emerald,
-    borderWidth: 2,
-    borderColor: Colors.background,
-  },
-  chatContent: {
-    flex: 1,
-  },
-  chatHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 4,
-  },
-  nameRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    flex: 1,
-  },
-  chatName: {
-    fontSize: Typography.base,
-    fontWeight: Typography.semibold,
-    color: Colors.textPrimary,
-  },
-  e2eeShieldMini: {
-    opacity: 0.9,
-  },
-  chatTime: {
-    fontSize: Typography.xs,
-    color: Colors.textTertiary,
-  },
-  chatFooter: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  previewRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flex: 1,
-    marginRight: Spacing.sm,
-  },
-  receiptIcon: {
-    marginRight: 4,
-  },
-  chatPreview: {
-    fontSize: Typography.sm,
-    color: Colors.textSecondary,
-    flex: 1,
-  },
-  chatPreviewUnread: {
-    color: Colors.textPrimary,
-    fontWeight: Typography.semibold,
-  },
-  chatMeta: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  unreadBadge: {
-    backgroundColor: Colors.accent,
-    borderRadius: BorderRadius.full,
-    minWidth: 20,
-    height: 20,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: 6,
-    shadowColor: Colors.accent,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.4,
-    shadowRadius: 6,
-    elevation: 4,
-  },
-  unreadCount: {
-    fontSize: 10,
-    fontWeight: Typography.bold,
-    color: '#FFF',
-  },
-  separator: {
-    height: 1,
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
-    marginLeft: 84,
-  },
-  emptyState: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: Spacing['2xl'],
-    gap: Spacing.sm,
-  },
-  emptyIcon: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: 'rgba(6, 182, 212, 0.08)',
-    borderWidth: 1,
-    borderColor: 'rgba(6, 182, 212, 0.25)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: Spacing.md,
-  },
-  emptyTitle: {
-    fontSize: Typography.lg,
-    fontWeight: Typography.bold,
-    color: Colors.textPrimary,
-  },
-  emptySubtitle: {
-    fontSize: Typography.sm,
-    color: Colors.textSecondary,
-    textAlign: 'center',
-    lineHeight: 20,
-    maxWidth: 280,
-  },
-  startChatButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: Colors.accent,
-    borderRadius: BorderRadius.lg,
-    paddingHorizontal: Spacing.xl,
-    paddingVertical: Spacing.md,
-    marginTop: Spacing.md,
-    shadowColor: Colors.accent,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.4,
-    shadowRadius: 10,
-    elevation: 6,
-  },
-  startChatButtonText: {
-    color: '#FFF',
-    fontSize: Typography.sm,
-    fontWeight: Typography.bold,
-    letterSpacing: 0.3,
-  },
-  fab: {
-    position: 'absolute',
-    bottom: 24,
-    right: 20,
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: Colors.accent,
-    justifyContent: 'center',
-    alignItems: 'center',
-    shadowColor: Colors.accent,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.5,
-    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 12 },
+    shadowOpacity: 0.45,
+    shadowRadius: 24,
     elevation: 10,
-  },
-  messagesSearchSection: {
-    marginTop: Spacing.base,
-    paddingTop: Spacing.sm,
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(255, 255, 255, 0.08)',
-    paddingHorizontal: Spacing.xl,
-  },
-  searchSectionHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginBottom: Spacing.sm,
-  },
-  searchSectionTitle: {
-    fontSize: Typography.xs,
-    fontWeight: Typography.bold,
-    color: Colors.accentLight,
-    textTransform: 'uppercase',
-    letterSpacing: 0.6,
-  },
-  messageSearchResult: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.md,
-    paddingVertical: Spacing.sm,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.04)',
-  },
-  messageSearchText: {
-    fontSize: Typography.sm,
-    color: Colors.textPrimary,
-  },
-  messageSearchMeta: {
-    fontSize: Typography.xs,
-    color: Colors.textTertiary,
-    marginTop: 2,
   },
 });

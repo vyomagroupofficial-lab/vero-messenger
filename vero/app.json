@@ -8,7 +8,9 @@
     "userInterfaceStyle": "dark",
     "scheme": "vero",
     "splash": {
-      "backgroundColor": "#050A14"
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0C0E0D"
     },
     "ios": {
       "supportsTablet": true,
@@ -16,7 +18,7 @@
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#050A14",
+        "backgroundColor": "#D6A657",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
@@ -45,7 +47,8 @@
         {
           "microphonePermission": "Vero accesses your microphone to record voice messages."
         }
-      ]
+      ],
+      "expo-font"
     ],
     "experiments": {
       "typedRoutes": true

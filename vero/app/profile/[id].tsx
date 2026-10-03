@@ -1,72 +1,114 @@
 import React, { useEffect, useState } from 'react';
-import {
-  View,
-  Text,
-  ScrollView,
-  StyleSheet,
-  TouchableOpacity,
-  Alert,
-  ActivityIndicator,
-} from 'react-native';
-import { useLocalSearchParams, router } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
-import { Colors, Typography, Spacing, BorderRadius } from '../../src/shared/theme/theme';
+import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import Animated, { FadeIn, ZoomIn } from 'react-native-reanimated';
+import { router, useLocalSearchParams } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { supabase } from '../../src/core/network/supabase';
 import { useAuthStore } from '../../src/features/auth/useAuthStore';
 import { conversationRepository } from '../../src/features/chats/ConversationRepository';
 import { callService } from '../../src/features/calls/CallService';
 import { databaseService } from '../../src/core/storage/DatabaseService';
+import { DEMO_CONTACTS, DEMO_ONLINE, DEMO_USER_ID, demoConversationFor } from '../../src/features/demo/demoData';
+import { Colors, Fonts, Type } from '../../src/shared/theme/theme';
+import {
+  Avatar,
+  Grain,
+  Hatch,
+  Icon,
+  IconButton,
+  IconName,
+  PhotoArt,
+  Pill,
+  Pressy,
+  Rise,
+  Toggle,
+  confirmAction,
+  notify,
+  useLayout,
+} from '../../src/shared/ui';
+
+const withTimeout = <T,>(p: Promise<T>, ms = 2000) => Promise.race([p, new Promise<T | null>((r) => setTimeout(() => r(null), ms))]);
+
+function Item({ icon, label, hint, hintColor, onPress, right, first, danger }: {
+  icon: IconName;
+  label: string;
+  hint?: string;
+  hintColor?: string;
+  onPress?: () => void;
+  right?: React.ReactNode;
+  first?: boolean;
+  danger?: boolean;
+}) {
+  const body = (
+    <View style={[styles.item, !first && styles.itemBorder]}>
+      <View style={[styles.itemIcon, danger && { backgroundColor: Colors.emberTint }]}>
+        <Icon name={icon} size={19} color={danger ? Colors.ember : Colors.brass} />
+      </View>
+      <View style={{ flex: 1, gap: 2 }}>
+        <Text style={[styles.itemLabel, danger && { color: Colors.ember }]}>{label}</Text>
+        {hint ? <Text style={[Type.caption, hintColor ? { color: hintColor } : null]}>{hint}</Text> : null}
+      </View>
+      {right ?? (onPress && !danger ? <Icon name="forwardChevron" size={18} color={Colors.faint} /> : null)}
+    </View>
+  );
+  return onPress ? (
+    <Pressy onPress={onPress} scaleTo={0.985} accessibilityLabel={label}>
+      {body}
+    </Pressy>
+  ) : (
+    body
+  );
+}
 
 export default function ProfileScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const insets = useSafeAreaInsets();
+  const { isWide } = useLayout();
+  const { id, name } = useLocalSearchParams<{ id: string; name?: string }>();
   const { user } = useAuthStore();
+  const demo = DEMO_CONTACTS.find((c) => c.id === id);
 
-  const [displayName, setDisplayName] = useState('Contact');
-  const [username, setUsername] = useState('user');
-  const [about, setAbout] = useState('🔐 Privacy is not a crime. Zero-knowledge is freedom.');
+  const [displayName, setDisplayName] = useState(demo?.displayName || name || 'Contact');
+  const [username, setUsername] = useState(demo?.username || 'user');
+  const [about, setAbout] = useState(demo?.about || '');
   const [isVerified, setIsVerified] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
+  const [muted, setMuted] = useState(false);
 
   useEffect(() => {
-    async function loadProfile() {
-      if (!id) return;
-      try {
-        const { data } = await supabase
-          .from('profiles')
-          .select('id, display_name, username, about')
-          .eq('id', id)
-          .single();
-
-        if (data) {
-          setDisplayName(data.display_name || 'Contact');
-          setUsername(data.username || 'user');
-          if (data.about) setAbout(data.about);
-        }
-
-        // Check verification status
-        const safetyInfo = await databaseService.getSafetyNumber(id);
-        if (safetyInfo) {
-          setIsVerified(safetyInfo.isVerified);
-        }
-      } catch (e) {
-        // Fallback demo info
-      } finally {
-        setIsLoading(false);
+    if (!id) return;
+    (async () => {
+      if (user?.id !== DEMO_USER_ID && !demo) {
+        try {
+          const res: any = await withTimeout(
+            supabase.from('profiles').select('id, display_name, username, about').eq('id', id).single() as any
+          );
+          const data = res?.data;
+          if (data) {
+            setDisplayName(data.display_name || 'Contact');
+            setUsername(data.username || 'user');
+            if (data.about) setAbout(data.about);
+          }
+        } catch {}
       }
-    }
-    loadProfile();
+      const safety = await withTimeout(databaseService.getSafetyNumber(id).catch(() => null), 1500);
+      if (safety) setIsVerified(safety.isVerified);
+    })();
   }, [id]);
 
-  const handleStartChat = async () => {
+  const online = !!id && DEMO_ONLINE.has(id);
+  const first = displayName.split(' ')[0];
+
+  const startChat = async () => {
     if (!user?.id || !id) return;
-    const res = await conversationRepository.createDirectConversation(user.id, id);
-    if (res) {
-      router.push(`/chat/${res.conversationId}` as any);
+    if (user.id === DEMO_USER_ID) {
+      const cid = demoConversationFor(id) || `demo-chat-${username}`;
+      router.push({ pathname: '/chat/[id]', params: { id: cid, name: displayName, group: '0' } } as any);
+      return;
     }
+    const res = await conversationRepository.createDirectConversation(user.id, id);
+    if (res) router.push({ pathname: '/chat/[id]', params: { id: res.conversationId, name: displayName, group: '0' } } as any);
   };
 
-  const handleStartCall = async (type: 'voice' | 'video') => {
+  const startCall = async (type: 'voice' | 'video') => {
     if (!user?.id || !id) return;
     const callId = await callService.startCall({
       peerId: id,
@@ -78,518 +120,173 @@ export default function ProfileScreen() {
     router.push(`/call/${callId}` as any);
   };
 
-  const handleOpenVerification = () => {
-    if (!id) return;
-    router.push(`/verify-safety-number?userId=${id}&displayName=${displayName}` as any);
-  };
+  const openVerify = () => id && router.push(`/verify-safety-number?userId=${id}&displayName=${encodeURIComponent(displayName)}` as any);
+  const openMedia = (i: number) =>
+    router.push({ pathname: '/media-viewer', params: { name: displayName, seed: `${id}-${i}`, scene: String(i), caption: '' } } as any);
 
-  const initials = displayName.slice(0, 2).toUpperCase();
+  const block = () =>
+    confirmAction({
+      title: `Block ${first}?`,
+      message: `${first} won’t be able to message or call you. They won’t be told.`,
+      confirmLabel: 'Block',
+      destructive: true,
+      onConfirm: () => notify(`${first} is blocked`),
+    });
+  const report = () =>
+    confirmAction({
+      title: `Report ${first}?`,
+      message: 'The last few messages from this chat are sent to Vero for review. They stay encrypted for everyone else.',
+      confirmLabel: 'Report',
+      destructive: true,
+      onConfirm: () => notify('Thanks — we’ll take a look'),
+    });
+
+  const actions: [IconName, string, () => void][] = [
+    ['chat', 'Message', startChat],
+    ['phone', 'Voice', () => startCall('voice')],
+    ['video', 'Video', () => startCall('video')],
+    [muted ? 'bellOff' : 'bell', muted ? 'Muted' : 'Mute', () => setMuted((m) => !m)],
+  ];
+
+  const hero = (
+    <View style={[styles.hero, isWide && styles.heroWide]}>
+      {isWide && <Hatch color="rgba(214,166,87,0.03)" />}
+      <Animated.View entering={ZoomIn.springify().damping(13)}>
+        <Avatar name={displayName} size={isWide ? 148 : 120} ring online={online} />
+      </Animated.View>
+      <Animated.View entering={FadeIn.delay(100)} style={{ alignItems: 'center', gap: 4 }}>
+        <Text style={[Type.title, { fontSize: isWide ? 34 : 28, textAlign: 'center' }]}>{displayName}</Text>
+        <Text style={Type.bodyMuted}>
+          @{username}
+          {online ? ' · online' : ''}
+        </Text>
+      </Animated.View>
+      {about ? (
+        <Animated.Text entering={FadeIn.delay(160)} style={[Type.body, { textAlign: 'center', color: '#D9D2C1', maxWidth: 340 }]}>
+          {about}
+        </Animated.Text>
+      ) : null}
+      <Animated.View entering={FadeIn.delay(200)}>
+        {isVerified ? <Pill icon="shieldCheck" label="Safety number verified" /> : <Pill icon="shield" label="Not verified yet" tone="brass" />}
+      </Animated.View>
+      <View style={styles.actions}>
+        {actions.map(([icon, label, fn], i) => (
+          <Rise key={label} index={i} delay={150} style={{ flex: 1 }}>
+            <Pressy onPress={fn} style={styles.action} scaleTo={0.94} hoverStyle={{ backgroundColor: Colors.field }} accessibilityLabel={label}>
+              <Icon name={icon} size={22} color={Colors.brass} />
+              <Text style={styles.actionLabel}>{label}</Text>
+            </Pressy>
+          </Rise>
+        ))}
+      </View>
+    </View>
+  );
+
+  const media = (
+    <Rise index={1} style={styles.panel}>
+      <View style={styles.panelHead}>
+        <Text style={Type.eyebrow}>SHARED MEDIA</Text>
+        <Pressy onPress={() => openMedia(0)} accessibilityRole="link">
+          <Text style={styles.seeAll}>See all</Text>
+        </Pressy>
+      </View>
+      <View style={styles.thumbs}>
+        {Array.from({ length: isWide ? 6 : 4 }, (_, i) => (
+          <Pressy key={i} onPress={() => openMedia(i)} scaleTo={0.94} style={styles.thumb} accessibilityLabel={`Open photo ${i + 1}`}>
+            <PhotoArt scene={i} width="100%" height="100%" city={false} />
+          </Pressy>
+        ))}
+      </View>
+    </Rise>
+  );
+
+  const privacy = (
+    <Rise index={2} style={[styles.panel, { paddingVertical: 4 }]}>
+      <Item
+        first
+        icon="shieldCheck"
+        label="Safety number"
+        hint={isVerified ? 'Verified' : 'Compare to make sure it’s really them'}
+        hintColor={isVerified ? Colors.sage : undefined}
+        onPress={openVerify}
+      />
+      <Item icon="timer" label="Disappearing messages" hint="Off" onPress={startChat} />
+      <Item icon="bell" label="Mute notifications" right={<Toggle label="Mute notifications" value={muted} onValueChange={setMuted} />} />
+    </Rise>
+  );
+
+  const danger = (
+    <Rise index={3} style={[styles.panel, { paddingVertical: 4 }]}>
+      <Item first icon="ban" label={`Block ${first}`} danger onPress={block} />
+      <Item icon="flag" label={`Report ${first}`} danger onPress={report} />
+    </Rise>
+  );
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
-        {/* Frosted Glass Cyber Header */}
-        <View style={styles.header}>
-          <TouchableOpacity style={styles.backBtn} onPress={() => router.back()} activeOpacity={0.7}>
-            <Ionicons name="arrow-back" size={20} color={Colors.textPrimary} />
-          </TouchableOpacity>
-          <Text style={styles.headerTitle}>Cryptographic Identity</Text>
-          <TouchableOpacity style={styles.moreBtn} activeOpacity={0.7}>
-            <Ionicons name="shield-outline" size={20} color={Colors.accent} />
-          </TouchableOpacity>
-        </View>
-
-        {isLoading ? (
-          <ActivityIndicator size="large" color={Colors.accent} style={{ marginTop: 40 }} />
+    <View style={styles.container}>
+      <Grain />
+      <View style={[styles.top, { paddingTop: insets.top + 8 }]}>
+        <IconButton icon="back" label="Back" onPress={() => (router.canGoBack() ? router.back() : router.replace('/(tabs)/chats'))} />
+        <IconButton icon="share" label="Share contact" onPress={() => notify('Share contact', `@${username}`)} />
+      </View>
+      <ScrollView contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + 40 }]} showsVerticalScrollIndicator={false}>
+        {isWide ? (
+          <View style={styles.wideRow}>
+            <View style={{ flex: 1, minWidth: 380 }}>{hero}</View>
+            <View style={{ flex: 1.3, minWidth: 420, gap: 18 }}>
+              {media}
+              {privacy}
+              {danger}
+            </View>
+          </View>
         ) : (
-          <>
-            {/* Cyber Hero Avatar Section */}
-            <View style={styles.avatarSection}>
-              <View style={styles.avatarHalo}>
-                <View style={styles.avatar}>
-                  <Text style={styles.avatarText}>{initials}</Text>
-                </View>
-                <View style={styles.onlineBadge}>
-                  <View style={styles.onlineInner} />
-                </View>
-              </View>
-
-              <View style={styles.nameRow}>
-                <Text style={styles.displayName}>{displayName}</Text>
-                {isVerified ? (
-                  <View style={styles.verifiedBadge}>
-                    <Ionicons name="shield-checkmark" size={14} color={Colors.online} />
-                    <Text style={styles.verifiedText}>VERIFIED</Text>
-                  </View>
-                ) : (
-                  <View style={styles.unverifiedBadge}>
-                    <Text style={styles.unverifiedText}>UNVERIFIED</Text>
-                  </View>
-                )}
-              </View>
-
-              <Text style={styles.username}>@{username} • Curve25519</Text>
-
-              {about ? (
-                <View style={styles.aboutCard}>
-                  <Ionicons name="finger-print-outline" size={14} color={Colors.accent} />
-                  <Text style={styles.about}>{about}</Text>
-                </View>
-              ) : null}
-            </View>
-
-            {/* Quick Action Matrix */}
-            <View style={styles.actionsContainer}>
-              <TouchableOpacity style={styles.actionBtn} onPress={handleStartChat} activeOpacity={0.8}>
-                <View style={[styles.actionIconWrap, { borderColor: 'rgba(6, 182, 212, 0.4)' }]}>
-                  <Ionicons name="chatbubble-ellipses-outline" size={22} color={Colors.accent} />
-                </View>
-                <Text style={styles.actionLabel}>Encrypted Chat</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={styles.actionBtn} onPress={() => handleStartCall('voice')} activeOpacity={0.8}>
-                <View style={[styles.actionIconWrap, { borderColor: 'rgba(139, 92, 246, 0.4)' }]}>
-                  <Ionicons name="call-outline" size={22} color="#8B5CF6" />
-                </View>
-                <Text style={[styles.actionLabel, { color: '#8B5CF6' }]}>P2P Voice</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={styles.actionBtn} onPress={() => handleStartCall('video')} activeOpacity={0.8}>
-                <View style={[styles.actionIconWrap, { borderColor: 'rgba(16, 185, 129, 0.4)' }]}>
-                  <Ionicons name="videocam-outline" size={22} color={Colors.online} />
-                </View>
-                <Text style={[styles.actionLabel, { color: Colors.online }]}>P2P Video</Text>
-              </TouchableOpacity>
-            </View>
-
-            {/* Cryptographic Verification Card */}
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>CRYPTOGRAPHIC VERIFICATION</Text>
-              <View style={styles.card}>
-                <TouchableOpacity
-                  style={styles.cardRowInteractive}
-                  onPress={handleOpenVerification}
-                  activeOpacity={0.7}
-                >
-                  <View style={styles.rowIconWrap}>
-                    <Ionicons name="qr-code-outline" size={22} color={Colors.accent} />
-                  </View>
-                  <View style={styles.rowContent}>
-                    <View style={styles.rowHeaderLine}>
-                      <Text style={styles.rowTitle}>Verify Safety Number</Text>
-                      {isVerified ? (
-                        <View style={styles.statusPillActive}>
-                          <Text style={styles.statusPillActiveText}>MATCH CONFIRMED</Text>
-                        </View>
-                      ) : (
-                        <View style={styles.statusPillPending}>
-                          <Text style={styles.statusPillPendingText}>COMPARE FINGERPRINT</Text>
-                        </View>
-                      )}
-                    </View>
-                    <Text style={styles.rowSub}>
-                      {isVerified
-                        ? '60-digit public key fingerprint verified via QR code'
-                        : 'Compare 60-digit safety numbers to prevent MITM attacks'}
-                    </Text>
-                  </View>
-                  <Ionicons name="chevron-forward" size={16} color={Colors.textTertiary} />
-                </TouchableOpacity>
-
-                <View style={styles.divider} />
-
-                <View style={styles.cardRow}>
-                  <View style={styles.rowIconWrap}>
-                    <Ionicons name="lock-closed" size={20} color={Colors.online} />
-                  </View>
-                  <View style={styles.rowContent}>
-                    <Text style={styles.rowTitle}>Cipher Suite</Text>
-                    <Text style={styles.rowSub}>Curve25519 • XSalsa20 • Poly1305 MAC</Text>
-                  </View>
-                  <View style={styles.badgePill}>
-                    <Text style={styles.badgePillText}>256-BIT</Text>
-                  </View>
-                </View>
-
-                <View style={styles.divider} />
-
-                <View style={styles.cardRow}>
-                  <View style={styles.rowIconWrap}>
-                    <Ionicons name="timer-outline" size={20} color="#F59E0B" />
-                  </View>
-                  <View style={styles.rowContent}>
-                    <Text style={styles.rowTitle}>Disappearing Messages</Text>
-                    <Text style={styles.rowSub}>Ephemeral self-destruct timers available</Text>
-                  </View>
-                  <Ionicons name="chevron-forward" size={16} color={Colors.textTertiary} />
-                </View>
-              </View>
-            </View>
-
-            {/* Media & Shared Links */}
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>SHARED ASSETS</Text>
-              <View style={styles.card}>
-                <TouchableOpacity style={styles.cardRow} activeOpacity={0.7}>
-                  <View style={styles.rowIconWrap}>
-                    <Ionicons name="images-outline" size={20} color={Colors.accent} />
-                  </View>
-                  <View style={styles.rowContent}>
-                    <Text style={styles.rowTitle}>Media, Files & Links</Text>
-                    <Text style={styles.rowSub}>Encrypted attachments stored in Google Drive</Text>
-                  </View>
-                  <Ionicons name="chevron-forward" size={16} color={Colors.textTertiary} />
-                </TouchableOpacity>
-              </View>
-            </View>
-
-            {/* Privacy Controls & Danger Zone */}
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>SECURITY & PRIVACY ACTIONS</Text>
-              <View style={styles.card}>
-                <TouchableOpacity
-                  style={styles.cardRow}
-                  activeOpacity={0.7}
-                  onPress={() =>
-                    Alert.alert(
-                      'Block Identity',
-                      `Block ${displayName}? All incoming sessions and calls will be rejected at the cryptographic handshake layer.`,
-                      [
-                        { text: 'Cancel', style: 'cancel' },
-                        { text: 'Block Identity', style: 'destructive' },
-                      ]
-                    )
-                  }
-                >
-                  <View style={[styles.rowIconWrap, { backgroundColor: 'rgba(239, 68, 68, 0.1)' }]}>
-                    <Ionicons name="ban-outline" size={20} color={Colors.error} />
-                  </View>
-                  <View style={styles.rowContent}>
-                    <Text style={[styles.rowTitle, { color: Colors.error }]}>Block {displayName}</Text>
-                    <Text style={styles.rowSub}>Prevent any incoming ratcheted handshakes</Text>
-                  </View>
-                </TouchableOpacity>
-
-                <View style={styles.divider} />
-
-                <TouchableOpacity
-                  style={styles.cardRow}
-                  activeOpacity={0.7}
-                  onPress={() =>
-                    Alert.alert(
-                      'Report Abuse',
-                      `Submit an encrypted diagnostic report for spam or malicious key rotation?`,
-                      [
-                        { text: 'Cancel', style: 'cancel' },
-                        { text: 'Report', style: 'destructive' },
-                      ]
-                    )
-                  }
-                >
-                  <View style={[styles.rowIconWrap, { backgroundColor: 'rgba(239, 68, 68, 0.1)' }]}>
-                    <Ionicons name="flag-outline" size={20} color={Colors.error} />
-                  </View>
-                  <View style={styles.rowContent}>
-                    <Text style={[styles.rowTitle, { color: Colors.error }]}>Report Contact</Text>
-                    <Text style={styles.rowSub}>Flag identity impersonation or abuse</Text>
-                  </View>
-                </TouchableOpacity>
-              </View>
-            </View>
-          </>
+          <View style={{ gap: 16 }}>
+            {hero}
+            {media}
+            {privacy}
+            {danger}
+          </View>
         )}
       </ScrollView>
-    </SafeAreaView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: Colors.background,
-  },
-  scrollContent: {
-    paddingBottom: Spacing['3xl'],
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: Spacing.base,
-    paddingVertical: Spacing.sm,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(6, 182, 212, 0.15)',
-    backgroundColor: 'rgba(8, 14, 26, 0.95)',
-  },
-  backBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: '#0E1726',
-    justifyContent: 'center',
-    alignItems: 'center',
+  container: { flex: 1, backgroundColor: Colors.ink },
+  top: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 8 },
+  scroll: { paddingHorizontal: 16, maxWidth: 1180, width: '100%', alignSelf: 'center' },
+  wideRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 22, paddingTop: 8 },
+  hero: { alignItems: 'center', gap: 12, paddingBottom: 6 },
+  heroWide: {
+    padding: 32,
+    paddingTop: 40,
+    borderRadius: 26,
+    backgroundColor: Colors.panel,
     borderWidth: 1,
-    borderColor: '#1E293B',
-  },
-  headerTitle: {
-    fontSize: Typography.base,
-    fontWeight: Typography.bold,
-    color: Colors.textPrimary,
-  },
-  moreBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: '#0E1726',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(6, 182, 212, 0.25)',
-  },
-  avatarSection: {
-    alignItems: 'center',
-    paddingVertical: Spacing['2xl'],
-    paddingHorizontal: Spacing.base,
-    backgroundColor: '#080E1A',
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(6, 182, 212, 0.12)',
-  },
-  avatarHalo: {
-    padding: 6,
-    borderRadius: 54,
-    backgroundColor: 'rgba(6, 182, 212, 0.08)',
-    borderWidth: 1.5,
-    borderColor: 'rgba(6, 182, 212, 0.35)',
-    position: 'relative',
-    marginBottom: Spacing.md,
-  },
-  avatar: {
-    width: 88,
-    height: 88,
-    borderRadius: 44,
-    backgroundColor: '#0284C7',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 2,
-    borderColor: 'rgba(255, 255, 255, 0.15)',
-    shadowColor: Colors.accent,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.5,
-    shadowRadius: 16,
-    elevation: 8,
-  },
-  avatarText: {
-    fontSize: Typography['3xl'],
-    fontWeight: Typography.extrabold,
-    color: Colors.white,
-    letterSpacing: -0.5,
-  },
-  onlineBadge: {
-    position: 'absolute',
-    bottom: 6,
-    right: 6,
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    backgroundColor: '#080E1A',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  onlineInner: {
-    width: 14,
-    height: 14,
-    borderRadius: 7,
-    backgroundColor: Colors.online,
-  },
-  nameRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 4,
-  },
-  displayName: {
-    fontSize: Typography['2xl'],
-    fontWeight: Typography.bold,
-    color: Colors.textPrimary,
-  },
-  verifiedBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: 'rgba(16, 185, 129, 0.15)',
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: BorderRadius.full,
-    borderWidth: 1,
-    borderColor: 'rgba(16, 185, 129, 0.35)',
-  },
-  verifiedText: {
-    fontSize: 9.5,
-    fontWeight: Typography.bold,
-    color: Colors.online,
-    letterSpacing: 0.5,
-  },
-  unverifiedBadge: {
-    backgroundColor: 'rgba(100, 116, 139, 0.2)',
-    paddingHorizontal: 7,
-    paddingVertical: 2,
-    borderRadius: BorderRadius.full,
-  },
-  unverifiedText: {
-    fontSize: 9.5,
-    fontWeight: Typography.semibold,
-    color: Colors.textTertiary,
-  },
-  username: {
-    fontSize: Typography.xs,
-    color: Colors.accent,
-    letterSpacing: 0.4,
-    marginBottom: Spacing.sm,
-  },
-  aboutCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: '#0E1726',
-    borderRadius: BorderRadius.full,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: 6,
-    borderWidth: 1,
-    borderColor: '#1E293B',
-    marginTop: 4,
-  },
-  about: {
-    fontSize: Typography.xs,
-    color: Colors.textSecondary,
-  },
-  actionsContainer: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    paddingVertical: Spacing.lg,
-    paddingHorizontal: Spacing.base,
-    backgroundColor: '#060B16',
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(6, 182, 212, 0.1)',
-  },
-  actionBtn: {
-    alignItems: 'center',
-    gap: 6,
-  },
-  actionIconWrap: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
-    backgroundColor: '#0E1726',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1.5,
-  },
-  actionLabel: {
-    fontSize: 11,
-    fontWeight: Typography.semibold,
-    color: Colors.accent,
-  },
-  section: {
-    paddingHorizontal: Spacing.base,
-    marginTop: Spacing.lg,
-  },
-  sectionTitle: {
-    fontSize: 10.5,
-    fontWeight: Typography.bold,
-    color: Colors.textSecondary,
-    letterSpacing: 0.8,
-    marginBottom: Spacing.sm,
-  },
-  card: {
-    backgroundColor: '#080E1A',
-    borderRadius: BorderRadius.xl,
-    borderWidth: 1,
-    borderColor: 'rgba(6, 182, 212, 0.15)',
+    borderColor: Colors.line,
     overflow: 'hidden',
+    gap: 16,
   },
-  cardRow: {
-    flexDirection: 'row',
+  actions: { flexDirection: 'row', gap: 8, width: '100%', marginTop: 8 },
+  action: {
+    height: 76,
+    borderRadius: 18,
+    backgroundColor: Colors.raised,
+    borderWidth: 1,
+    borderColor: Colors.line,
     alignItems: 'center',
-    padding: Spacing.base,
-    gap: Spacing.md,
-  },
-  cardRowInteractive: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: Spacing.base,
-    gap: Spacing.md,
-  },
-  rowIconWrap: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: 'rgba(6, 182, 212, 0.1)',
     justifyContent: 'center',
-    alignItems: 'center',
+    gap: 6,
   },
-  rowContent: {
-    flex: 1,
-  },
-  rowHeaderLine: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 2,
-  },
-  rowTitle: {
-    fontSize: Typography.sm,
-    fontWeight: Typography.semibold,
-    color: Colors.textPrimary,
-  },
-  rowSub: {
-    fontSize: 11,
-    color: Colors.textSecondary,
-    marginTop: 2,
-    lineHeight: 15,
-  },
-  statusPillActive: {
-    backgroundColor: 'rgba(16, 185, 129, 0.15)',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
-    borderWidth: 1,
-    borderColor: 'rgba(16, 185, 129, 0.3)',
-  },
-  statusPillActiveText: {
-    fontSize: 9,
-    fontWeight: Typography.bold,
-    color: Colors.online,
-  },
-  statusPillPending: {
-    backgroundColor: 'rgba(6, 182, 212, 0.15)',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
-    borderWidth: 1,
-    borderColor: 'rgba(6, 182, 212, 0.3)',
-  },
-  statusPillPendingText: {
-    fontSize: 9,
-    fontWeight: Typography.bold,
-    color: Colors.accent,
-  },
-  badgePill: {
-    backgroundColor: 'rgba(16, 185, 129, 0.12)',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: BorderRadius.full,
-    borderWidth: 1,
-    borderColor: 'rgba(16, 185, 129, 0.3)',
-  },
-  badgePillText: {
-    fontSize: 9,
-    fontWeight: Typography.bold,
-    color: Colors.online,
-  },
-  divider: {
-    height: 1,
-    backgroundColor: '#142036',
-    marginLeft: 58,
-  },
+  actionLabel: { fontFamily: Fonts.medium, fontSize: 12.5, color: Colors.cream },
+  panel: { backgroundColor: Colors.panel, borderRadius: 22, borderWidth: 1, borderColor: Colors.line, paddingHorizontal: 16, paddingVertical: 14 },
+  panelHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
+  seeAll: { fontFamily: Fonts.medium, fontSize: 13, color: Colors.brass },
+  thumbs: { flexDirection: 'row', gap: 8 },
+  thumb: { flex: 1, aspectRatio: 1, borderRadius: 14, overflow: 'hidden' },
+  item: { flexDirection: 'row', alignItems: 'center', gap: 14, minHeight: 62, paddingVertical: 8 },
+  itemBorder: { borderTopWidth: 1, borderTopColor: Colors.divider },
+  itemIcon: { width: 38, height: 38, borderRadius: 12, backgroundColor: Colors.raised, alignItems: 'center', justifyContent: 'center' },
+  itemLabel: { fontFamily: Fonts.medium, fontSize: 15.5, color: Colors.cream },
 });
-

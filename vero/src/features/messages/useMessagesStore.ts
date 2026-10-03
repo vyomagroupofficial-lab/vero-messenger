@@ -47,6 +47,7 @@ interface MessagesState {
   unsubscribeFromConversation: (conversationId: string) => void;
 
   appendMessage: (conversationId: string, message: Message) => void;
+  seedMessages: (conversationId: string, messages: Message[]) => void;
   setTyping: (conversationId: string, users: string[]) => void;
 }
 
@@ -213,6 +214,21 @@ export const useMessagesStore = create<MessagesState>((set, get) => ({
         },
       };
     });
+  },
+
+  seedMessages: (conversationId, messages) => {
+    set((state) => ({
+      conversations: {
+        ...state.conversations,
+        [conversationId]: {
+          typingUsers: state.conversations[conversationId]?.typingUsers ?? [],
+          isTyping: state.conversations[conversationId]?.isTyping ?? false,
+          messages,
+          isLoading: false,
+          hasMore: false,
+        },
+      },
+    }));
   },
 
   setTyping: (conversationId, users) => {

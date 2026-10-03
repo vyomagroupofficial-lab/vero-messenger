@@ -1,309 +1,287 @@
-import React, { useState } from 'react';
-import {
-  View,
-  Text,
-  FlatList,
-  StyleSheet,
-  TouchableOpacity,
-  TextInput,
-  StatusBar,
-} from 'react-native';
+import React, { useEffect, useMemo, useState } from 'react';
+import { ScrollView, SectionList, StyleSheet, Text, View } from 'react-native';
 import { router } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuthStore } from '../../src/features/auth/useAuthStore';
 import { conversationRepository } from '../../src/features/chats/ConversationRepository';
+import { callService } from '../../src/features/calls/CallService';
+import { DEMO_CONTACTS, DEMO_ONLINE, DEMO_USER_ID, demoConversationFor } from '../../src/features/demo/demoData';
 import { User } from '../../src/shared/models/Message';
-import { Colors, Typography, Spacing, BorderRadius } from '../../src/shared/theme/theme';
+import { Colors, Fonts, Type } from '../../src/shared/theme/theme';
+import {
+  Avatar,
+  EmptyState,
+  Grain,
+  Icon,
+  IconButton,
+  IconName,
+  Pressy,
+  Rise,
+  SearchField,
+  notify,
+  useLayout,
+} from '../../src/shared/ui';
 
-const SEED_CONTACTS: User[] = [
-  { id: 'sarah-connor-01', username: 'sarah_c', displayName: 'Sarah Connor (Security Lead)', about: 'X25519 Verified · 0x8a1...9b2' },
-  { id: 'marcus-vance-02', username: 'marcus_v', displayName: 'Marcus Vance', about: 'Core Protocol Engineer · 0x4f2...7c1' },
-  { id: 'elena-rostova-03', username: 'elena_r', displayName: 'Elena Rostova', about: 'Zero-Knowledge Cryptographer · 0x9e1...12a' },
-  { id: 'david-kim-04', username: 'david_k', displayName: 'David Kim', about: 'Vero Systems Auditor · 0x3d4...88f' },
-];
+function groupByLetter(users: User[]) {
+  const map = new Map<string, User[]>();
+  [...users]
+    .sort((a, b) => a.displayName.localeCompare(b.displayName))
+    .forEach((u) => {
+      const l = (u.displayName[0] || '#').toUpperCase();
+      map.set(l, [...(map.get(l) || []), u]);
+    });
+  return [...map.entries()].map(([title, data]) => ({ title, data }));
+}
+
+function QuickAction({ icon, title, sub, tone, onPress, index, wide }: {
+  icon: IconName;
+  title: string;
+  sub: string;
+  tone: 'brass' | 'pine' | 'raised';
+  onPress: () => void;
+  index: number;
+  wide: boolean;
+}) {
+  const bg = tone === 'brass' ? Colors.brass : tone === 'pine' ? Colors.pine : Colors.raised;
+  const fg = tone === 'brass' ? Colors.brassInk : tone === 'pine' ? Colors.cream : Colors.brass;
+  return (
+    <Rise index={index} style={wide ? { flex: 1, minWidth: 220 } : undefined}>
+      <Pressy
+        onPress={onPress}
+        scaleTo={0.97}
+        hoverStyle={{ backgroundColor: '#161917' }}
+        style={[styles.quick, wide && styles.quickWide]}
+        accessibilityLabel={title}
+      >
+        <View style={[styles.quickIcon, { backgroundColor: bg }, tone === 'raised' && { borderWidth: 1, borderColor: Colors.line2 }]}>
+          <Icon name={icon} size={22} color={fg} />
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={[Type.name, { fontSize: 15.5 }]}>{title}</Text>
+          <Text style={Type.caption}>{sub}</Text>
+        </View>
+        {!wide && <Icon name="forwardChevron" size={18} color={Colors.faint} />}
+      </Pressy>
+    </Rise>
+  );
+}
 
 export default function ContactsScreen() {
+  const insets = useSafeAreaInsets();
+  const { isWide, width } = useLayout();
   const { user } = useAuthStore();
-  const [searchQuery, setSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState<User[]>([]);
-  const [isSearching, setIsSearching] = useState(false);
+  const isDemo = user?.id === DEMO_USER_ID;
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState<User[]>([]);
 
-  const handleSearch = async (query: string) => {
-    setSearchQuery(query);
-    if (!query.trim() || !user?.id) {
-      setSearchResults([]);
+  useEffect(() => {
+    const q = query.trim();
+    if (!q || !user?.id) {
+      setResults([]);
       return;
     }
-    setIsSearching(true);
-    try {
-      const results = await conversationRepository.searchUsers(query, user.id);
-      setSearchResults(results);
-    } finally {
-      setIsSearching(false);
+    if (isDemo) {
+      const lq = q.toLowerCase();
+      setResults(DEMO_CONTACTS.filter((c) => c.displayName.toLowerCase().includes(lq) || c.username.toLowerCase().includes(lq)));
+      return;
     }
-  };
+    let live = true;
+    conversationRepository
+      .searchUsers(q, user.id)
+      .then((r) => live && setResults(r))
+      .catch(() => live && setResults([]));
+    return () => {
+      live = false;
+    };
+  }, [query, user?.id]);
 
-  const handleStartChat = async (otherUser: User) => {
+  const people = query ? results : DEMO_CONTACTS;
+  const sections = useMemo(() => groupByLetter(people), [people]);
+
+  const startChat = async (other: User) => {
     if (!user?.id) return;
-    const result = await conversationRepository.createDirectConversation(user.id, otherUser.id);
-    if (result) {
-      router.push(`/chat/${result.conversationId}` as any);
-    } else {
-      // Fallback for demo contacts
-      router.push(`/chat/demo-chat-${otherUser.username.split('_')[0]}` as any);
+    if (isDemo) {
+      const cid = demoConversationFor(other.id) || `demo-chat-${other.username}`;
+      router.push({ pathname: '/chat/[id]', params: { id: cid, name: other.displayName, group: '0' } } as any);
+      return;
     }
+    const res = await conversationRepository.createDirectConversation(user.id, other.id);
+    if (res) router.push({ pathname: '/chat/[id]', params: { id: res.conversationId, name: other.displayName, group: '0' } } as any);
+    else notify('Couldn’t start chat', 'Check your connection and try again.');
   };
 
-  const renderUser = ({ item }: { item: User }) => {
-    const initials = item.displayName.slice(0, 2).toUpperCase();
-    const avatarGradients = [
-      ['#06B6D4', '#0284C7'],
-      ['#8B5CF6', '#6D28D9'],
-      ['#10B981', '#059669'],
-      ['#F59E0B', '#D97706'],
-    ];
-    const colorIndex = Math.abs(item.displayName.charCodeAt(0)) % avatarGradients.length;
-    const [bgStart] = avatarGradients[colorIndex];
+  const call = async (other: User) => {
+    if (!user?.id) return;
+    const callId = await callService.startCall({
+      peerId: other.id,
+      peerName: other.displayName,
+      callType: 'voice',
+      currentUserId: user.id,
+      currentUserName: user.displayName || 'You',
+    });
+    router.push(`/call/${callId}` as any);
+  };
 
+  const openProfile = (u: User) => router.push(`/profile/${u.id}?name=${encodeURIComponent(u.displayName)}` as any);
+
+  const quick = (
+    <View style={[styles.quickRow, isWide && { flexDirection: 'row', flexWrap: 'wrap' }]}>
+      <QuickAction index={0} wide={isWide} icon="userPlus" title="New group" sub="Up to 1,000 people" tone="brass" onPress={() => router.push('/new-group' as any)} />
+      <QuickAction
+        index={1}
+        wide={isWide}
+        icon="qr"
+        title="New contact"
+        sub="By username or QR code"
+        tone="pine"
+        onPress={() => notify('Add a contact', 'Search for their username above, or scan their Vero QR code from Settings.')}
+      />
+      <QuickAction
+        index={2}
+        wide={isWide}
+        icon="link"
+        title="Invite to Vero"
+        sub="Share a private link"
+        tone="raised"
+        onPress={() => notify('Invite link copied', 'Send it to anyone you’d like to talk to privately.')}
+      />
+    </View>
+  );
+
+  const header = (
+    <View style={{ gap: 18, paddingBottom: 6 }}>
+      <View style={[styles.header, { paddingTop: (isWide ? 32 : 16) + (isWide ? 0 : insets.top) }, isWide && { alignItems: 'flex-end' }]}>
+        <View style={{ gap: 2 }}>
+          <Text style={isWide ? [Type.title, { fontSize: 40 }] : Type.title}>Contacts</Text>
+          <Text style={Type.caption}>
+            {DEMO_CONTACTS.length} people on Vero · {DEMO_CONTACTS.filter((c) => DEMO_ONLINE.has(c.id)).length} online now
+          </Text>
+        </View>
+        {isWide && (
+          <SearchField value={query} onChangeText={setQuery} placeholder="Search by name or username" style={{ width: 380 }} />
+        )}
+      </View>
+      {!isWide && (
+        <View style={{ paddingHorizontal: 20 }}>
+          <SearchField value={query} onChangeText={setQuery} placeholder="Search by name or username" />
+        </View>
+      )}
+      {!query && <View style={{ paddingHorizontal: isWide ? 0 : 20 }}>{quick}</View>}
+      {query ? (
+        <Text style={[Type.eyebrow, { paddingHorizontal: isWide ? 4 : 20 }]}>
+          {results.length} {results.length === 1 ? 'RESULT' : 'RESULTS'}
+        </Text>
+      ) : null}
+    </View>
+  );
+
+  if (isWide) {
+    const cols = Math.max(1, Math.floor((Math.min(width, 1400) - 80 - 80) / 330));
     return (
-      <TouchableOpacity
-        style={styles.userItem}
-        onPress={() => handleStartChat(item)}
-        activeOpacity={0.75}
-      >
-        <View style={[styles.avatar, { backgroundColor: bgStart }]}>
-          <Text style={styles.avatarText}>{initials}</Text>
-        </View>
-
-        <View style={styles.userInfo}>
-          <View style={styles.nameRow}>
-            <Text style={styles.displayName}>{item.displayName}</Text>
-            <Ionicons name="shield-checkmark" size={13} color={Colors.emerald} />
+      <View style={styles.container}>
+        <Grain />
+        <ScrollView contentContainerStyle={styles.wideScroll} showsVerticalScrollIndicator={false}>
+          <View style={styles.wideInner}>
+            {header}
+            {people.length === 0 ? (
+              <EmptyState icon="search" title="No one found" body="Try their full username." />
+            ) : (
+              <View style={[styles.grid, { marginTop: 12 }]}>
+                {[...people]
+                  .sort((a, b) => a.displayName.localeCompare(b.displayName))
+                  .map((c, i) => (
+                    <Rise key={c.id} index={i} style={{ width: `${100 / cols}%`, padding: 6 }}>
+                      <View style={styles.card}>
+                        <Pressy onPress={() => openProfile(c)} scaleTo={0.98} style={styles.cardWho} accessibilityLabel={`${c.displayName} profile`}>
+                          <Avatar name={c.displayName} size={52} online={DEMO_ONLINE.has(c.id)} cutout={Colors.panel} />
+                          <View style={{ flex: 1, minWidth: 0 }}>
+                            <Text style={Type.name} numberOfLines={1}>
+                              {c.displayName}
+                            </Text>
+                            <Text style={Type.caption} numberOfLines={1}>
+                              {c.about || `@${c.username}`}
+                            </Text>
+                          </View>
+                        </Pressy>
+                        <IconButton icon="chat" label={`Message ${c.displayName}`} size={40} color={Colors.muted} onPress={() => startChat(c)} />
+                        <IconButton icon="phone" label={`Call ${c.displayName}`} size={40} color={Colors.muted} onPress={() => call(c)} />
+                      </View>
+                    </Rise>
+                  ))}
+              </View>
+            )}
           </View>
-          <Text style={styles.username}>@{item.username}</Text>
-          {item.about && <Text style={styles.userBio}>{item.about}</Text>}
-        </View>
-
-        <View style={styles.chatIconWrapper}>
-          <Ionicons name="chatbubble-ellipses" size={17} color={Colors.accentLight} />
-        </View>
-      </TouchableOpacity>
+        </ScrollView>
+      </View>
     );
-  };
-
-  const displayedList = searchQuery ? searchResults : SEED_CONTACTS;
+  }
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
-      <StatusBar barStyle="light-content" backgroundColor={Colors.background} />
-
-      {/* Header */}
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>Contacts & Directory</Text>
-      </View>
-
-      {/* Search Bar */}
-      <View style={styles.searchSection}>
-        <View style={styles.searchBar}>
-          <Ionicons name="search" size={18} color={Colors.accentLight} />
-          <TextInput
-            style={styles.searchInput}
-            placeholder="Search by username or identity key..."
-            placeholderTextColor={Colors.textTertiary}
-            value={searchQuery}
-            onChangeText={handleSearch}
-            autoCapitalize="none"
-          />
-          {searchQuery ? (
-            <TouchableOpacity onPress={() => { setSearchQuery(''); setSearchResults([]); }}>
-              <Ionicons name="close-circle" size={18} color={Colors.textSecondary} />
-            </TouchableOpacity>
-          ) : null}
-        </View>
-      </View>
-
-      {/* New Group Action Banner */}
-      {!searchQuery && (
-        <TouchableOpacity
-          style={styles.newGroupBtn}
-          onPress={() => router.push('/new-group' as any)}
-          activeOpacity={0.8}
-        >
-          <View style={styles.newGroupIcon}>
-            <Ionicons name="people" size={22} color={Colors.purpleLight} />
-          </View>
-          <View style={styles.newGroupText}>
-            <Text style={styles.newGroupTitle}>Create Encrypted Group</Text>
-            <Text style={styles.newGroupSubtitle}>Pairwise sender keys & admin roles</Text>
-          </View>
-          <Ionicons name="chevron-forward" size={18} color={Colors.textTertiary} />
-        </TouchableOpacity>
-      )}
-
-      {/* Directory Contacts List */}
-      <FlatList
-        data={displayedList}
-        keyExtractor={(item) => item.id}
-        renderItem={renderUser}
-        contentContainerStyle={styles.listContent}
-        ItemSeparatorComponent={() => <View style={styles.separator} />}
+    <View style={styles.container}>
+      <Grain />
+      <SectionList
+        sections={sections}
+        keyExtractor={(u) => u.id}
+        stickySectionHeadersEnabled={false}
+        ListHeaderComponent={header}
+        keyboardShouldPersistTaps="handled"
+        renderSectionHeader={({ section }) => <Text style={[styles.letter, { paddingHorizontal: 20 }]}>{section.title}</Text>}
+        renderItem={({ item, index }) => (
+          <Rise index={index}>
+            <View style={styles.row}>
+              <Pressy onPress={() => startChat(item)} onLongPress={() => openProfile(item)} scaleTo={0.98} style={styles.cardWho} accessibilityLabel={`Message ${item.displayName}`}>
+                <Avatar name={item.displayName} size={50} online={DEMO_ONLINE.has(item.id)} />
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={Type.name} numberOfLines={1}>
+                    {item.displayName}
+                  </Text>
+                  <Text style={Type.caption} numberOfLines={1}>
+                    {item.about || `@${item.username}`}
+                  </Text>
+                </View>
+              </Pressy>
+              <IconButton icon="phone" label={`Call ${item.displayName}`} size={42} color={Colors.brass} onPress={() => call(item)} />
+            </View>
+          </Rise>
+        )}
+        ListEmptyComponent={<EmptyState icon="search" title="No one found" body="Try their full username." />}
+        contentContainerStyle={{ paddingBottom: 40 }}
         showsVerticalScrollIndicator={false}
-        ListHeaderComponent={
-          <Text style={styles.resultsHeader}>
-            {searchQuery
-              ? `${searchResults.length} matching result${searchResults.length !== 1 ? 's' : ''}`
-              : 'Verified Encrypted Directory'}
-          </Text>
-        }
       />
-    </SafeAreaView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: Colors.background,
-  },
-  header: {
-    paddingHorizontal: Spacing.xl,
-    paddingTop: Spacing.md,
-    paddingBottom: Spacing.sm,
-    backgroundColor: Colors.background,
-  },
-  headerTitle: {
-    fontSize: Typography['2xl'],
-    fontWeight: Typography.extrabold,
-    color: Colors.textPrimary,
-    letterSpacing: -0.5,
-  },
-  searchSection: {
-    paddingHorizontal: Spacing.xl,
-    paddingVertical: Spacing.sm,
-  },
-  searchBar: {
+  container: { flex: 1, backgroundColor: Colors.ink },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 20, paddingHorizontal: 20 },
+  quickRow: { gap: 10 },
+  quick: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#0B1322',
-    borderRadius: BorderRadius.lg,
-    paddingHorizontal: Spacing.md,
-    height: 46,
-    gap: Spacing.sm,
+    gap: 14,
+    padding: 12,
+    borderRadius: 18,
+    backgroundColor: Colors.panel,
     borderWidth: 1,
-    borderColor: 'rgba(6, 182, 212, 0.25)',
+    borderColor: Colors.line,
   },
-  searchInput: {
-    flex: 1,
-    color: Colors.textPrimary,
-    fontSize: Typography.sm,
-  },
-  newGroupBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginHorizontal: Spacing.xl,
-    marginTop: Spacing.xs,
-    marginBottom: Spacing.sm,
-    padding: Spacing.md,
-    backgroundColor: 'rgba(139, 92, 246, 0.08)',
-    borderRadius: BorderRadius.xl,
-    borderWidth: 1,
-    borderColor: 'rgba(139, 92, 246, 0.25)',
-  },
-  newGroupIcon: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: 'rgba(139, 92, 246, 0.18)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: Spacing.md,
-  },
-  newGroupText: {
-    flex: 1,
-  },
-  newGroupTitle: {
-    fontSize: Typography.base,
-    fontWeight: Typography.semibold,
-    color: Colors.textPrimary,
-  },
-  newGroupSubtitle: {
-    fontSize: Typography.xs,
-    color: Colors.textSecondary,
-    marginTop: 2,
-  },
-  listContent: {
-    paddingHorizontal: Spacing.xl,
-    paddingBottom: 90,
-  },
-  resultsHeader: {
-    fontSize: Typography.xs,
-    fontWeight: Typography.bold,
-    color: Colors.textTertiary,
-    marginTop: Spacing.base,
-    marginBottom: Spacing.sm,
-    letterSpacing: 0.8,
-    textTransform: 'uppercase',
-  },
-  userItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: Spacing.md,
-  },
-  avatar: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: Spacing.md,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3,
-    shadowRadius: 6,
-  },
-  avatarText: {
-    fontSize: Typography.base,
-    fontWeight: Typography.bold,
-    color: '#FFF',
-  },
-  userInfo: {
-    flex: 1,
-  },
-  nameRow: {
+  quickWide: { padding: 16, borderRadius: 20 },
+  quickIcon: { width: 46, height: 46, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
+  letter: { fontFamily: Fonts.display, fontSize: 20, color: Colors.brass, paddingTop: 18, paddingBottom: 6 },
+  row: { flexDirection: 'row', alignItems: 'center', gap: 14, paddingHorizontal: 20, paddingVertical: 8 },
+  wideScroll: { paddingHorizontal: 40, paddingBottom: 48 },
+  wideInner: { width: '100%', maxWidth: 1240, alignSelf: 'center' },
+  grid: { flexDirection: 'row', flexWrap: 'wrap', marginHorizontal: -6 },
+  card: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    marginBottom: 2,
-  },
-  displayName: {
-    fontSize: Typography.base,
-    fontWeight: Typography.semibold,
-    color: Colors.textPrimary,
-  },
-  username: {
-    fontSize: Typography.xs,
-    color: Colors.textTertiary,
-    marginBottom: 2,
-  },
-  userBio: {
-    fontSize: 11,
-    color: Colors.emerald,
-    letterSpacing: 0.2,
-  },
-  chatIconWrapper: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: 'rgba(6, 182, 212, 0.12)',
-    justifyContent: 'center',
-    alignItems: 'center',
+    padding: 12,
+    borderRadius: 20,
+    backgroundColor: Colors.panel,
     borderWidth: 1,
-    borderColor: 'rgba(6, 182, 212, 0.25)',
+    borderColor: Colors.line,
   },
-  separator: {
-    height: 1,
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
-    marginLeft: 64,
-  },
+  cardWho: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 12 },
 });

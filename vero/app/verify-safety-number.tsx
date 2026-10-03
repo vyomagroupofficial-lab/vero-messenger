@@ -1,401 +1,262 @@
-import React, { useEffect, useState } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  ScrollView,
-  Alert,
-  Share,
-  Clipboard,
-  StatusBar,
-} from 'react-native';
-import { useLocalSearchParams, router } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
-import { Colors, Typography, Spacing, BorderRadius } from '../src/shared/theme/theme';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Clipboard, ScrollView, Share, StyleSheet, Text, View } from 'react-native';
+import Animated, { Easing, FadeIn, FadeInDown, ZoomIn, useAnimatedStyle, useSharedValue, withRepeat, withTiming } from 'react-native-reanimated';
+import Svg, { Path, Rect } from 'react-native-svg';
+import { router, useLocalSearchParams } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { cryptoManager } from '../src/core/crypto/CryptoManager';
 import { databaseService } from '../src/core/storage/DatabaseService';
+import { useAuthStore } from '../src/features/auth/useAuthStore';
+import { Colors, Fonts, Type } from '../src/shared/theme/theme';
+import { Avatar, Button, Grain, Icon, IconButton, VeroMark, notify, useLayout } from '../src/shared/ui';
+
+const DEMO_NUMBER = '37042 81196 55830 20917 64458 09273 71605 38841 92510 46087 13369 58724';
+const withTimeout = <T,>(p: Promise<T>, ms = 1500) => Promise.race([p, new Promise<null>((r) => setTimeout(() => r(null), ms))]);
+
+/** A QR-style matrix derived from the safety number, with real finder squares. */
+function qrPath(seedText: string) {
+  const n = 29;
+  let seed = 7;
+  for (let i = 0; i < seedText.length; i++) seed = (seed * 31 + seedText.charCodeAt(i)) % 233280;
+  const rnd = () => {
+    seed = (seed * 9301 + 49297) % 233280;
+    return seed / 233280;
+  };
+  const finder = (x: number, y: number) => `M${x} ${y}h7v7h-7zM${x + 1} ${y + 1}v5h5v-5zM${x + 2} ${y + 2}h3v3h-3z`;
+  const skip = (x: number, y: number) =>
+    (x < 8 && y < 8) || (x > n - 9 && y < 8) || (x < 8 && y > n - 9) || (x > 10 && x < 18 && y > 10 && y < 18);
+  let d = '';
+  for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) if (!skip(x, y) && rnd() > 0.52) d += `M${x} ${y}h1v1h-1z`;
+  return finder(0, 0) + finder(n - 7, 0) + finder(0, n - 7) + d;
+}
+
+function QrCard({ value, size }: { value: string; size: number }) {
+  const d = useMemo(() => qrPath(value), [value]);
+  const scan = useSharedValue(0);
+  useEffect(() => {
+    scan.value = withRepeat(withTiming(1, { duration: 2400, easing: Easing.bezier(0.6, 0, 0.4, 1) }), -1, true);
+  }, []);
+  const line = useAnimatedStyle(() => ({ transform: [{ translateY: scan.value * (size - 6) }] }));
+  const logo = Math.round(size * 0.17);
+  return (
+    <Animated.View entering={ZoomIn.springify().damping(15)} style={styles.qr}>
+      <View style={{ width: size, height: size }}>
+        <Svg width={size} height={size} viewBox="0 0 29 29">
+          <Rect width={29} height={29} fill={Colors.cream} />
+          <Path d={d} fill={Colors.ink} />
+        </Svg>
+        <Animated.View pointerEvents="none" style={[styles.scan, line]} />
+        <View style={[styles.qrLogo, { width: logo, height: logo, marginLeft: -logo / 2, marginTop: -logo / 2 }]}>
+          <VeroMark size={logo} />
+        </View>
+      </View>
+    </Animated.View>
+  );
+}
 
 export default function VerifySafetyNumberScreen() {
-  const { userId, displayName, publicKey } = useLocalSearchParams<{
-    userId: string;
-    displayName: string;
-    publicKey?: string;
-  }>();
+  const insets = useSafeAreaInsets();
+  const { isWide } = useLayout();
+  const { user } = useAuthStore();
+  const { userId, displayName, publicKey } = useLocalSearchParams<{ userId: string; displayName: string; publicKey?: string }>();
+  const name = displayName || 'this contact';
+  const first = name.split(' ')[0];
 
-  const [safetyNumber, setSafetyNumber] = useState<string>('45210 99823 10452 77312 88124 00192 34109 65521 11842 59021 84729 44012');
-  const [isVerified, setIsVerified] = useState<boolean>(false);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
-  const [copied, setCopied] = useState<boolean>(false);
+  const [safetyNumber, setSafetyNumber] = useState(DEMO_NUMBER);
+  const [verified, setVerified] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
-    async function load() {
-      if (!userId) return;
-
-      const saved = await databaseService.getSafetyNumber(userId);
+    if (!userId) return;
+    (async () => {
+      const saved: any = await withTimeout(databaseService.getSafetyNumber(userId).catch(() => null));
       if (saved) {
         setSafetyNumber(saved.safetyNumber);
-        setIsVerified(saved.isVerified);
-      } else {
-        try {
-          const myPublicKey = await cryptoManager.getIdentityPublicKey();
-          const peerKey = publicKey || 'PeerIdentityPublicKeyPlaceholderMockKey12345';
-          if (myPublicKey) {
-            const num = await cryptoManager.generateSafetyNumber(myPublicKey, peerKey);
-            setSafetyNumber(num);
-            await databaseService.saveSafetyNumber(userId, num);
-          }
-        } catch (e) {
-          const demoNumber = '45210 99823 10452 77312 88124 00192 34109 65521 11842 59021 84729 44012';
-          setSafetyNumber(demoNumber);
-          await databaseService.saveSafetyNumber(userId, demoNumber);
-        }
+        setVerified(saved.isVerified);
+        return;
       }
-      setIsLoading(false);
-    }
-    load();
+      try {
+        const mine: any = await withTimeout(cryptoManager.getIdentityPublicKey());
+        if (mine) {
+          const num = await cryptoManager.generateSafetyNumber(mine, publicKey || 'PeerIdentityPublicKeyPlaceholderMockKey12345');
+          setSafetyNumber(num);
+          databaseService.saveSafetyNumber(userId, num).catch(() => {});
+        }
+      } catch {
+        databaseService.saveSafetyNumber(userId, DEMO_NUMBER).catch(() => {});
+      }
+    })();
   }, [userId, publicKey]);
 
-  const toggleVerified = async () => {
-    const newState = !isVerified;
-    setIsVerified(newState);
-    if (userId) {
-      await databaseService.setSafetyNumberVerified(userId, newState);
-    }
-    if (newState) {
-      Alert.alert(
-        'Marked as Verified',
-        `You have marked ${displayName || 'this contact'} as verified. You will be alerted if their encryption keys ever change.`
-      );
-    }
+  const toggle = async () => {
+    const next = !verified;
+    setVerified(next);
+    if (userId) databaseService.setSafetyNumberVerified(userId, next).catch(() => {});
   };
 
-  const handleCopy = () => {
+  const copy = () => {
     Clipboard.setString(safetyNumber);
     setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    setTimeout(() => setCopied(false), 1800);
   };
 
-  const handleShare = async () => {
+  const share = async () => {
     try {
-      await Share.share({
-        message: `Vero E2EE Safety Number with ${displayName || 'contact'}:\n\n${safetyNumber}`,
-      });
-    } catch (e) {
-      // Ignored
-    }
+      await Share.share({ message: `Our Vero safety number:\n\n${safetyNumber}` });
+    } catch {}
   };
 
-  const numberBlocks = safetyNumber.split(/\s+/);
+  const blocks = safetyNumber.split(/\s+/);
+  const back = () => (router.canGoBack() ? router.back() : router.replace('/(tabs)/chats'));
+
+  const pair = (
+    <View style={styles.pair}>
+      <Avatar name={user?.displayName || 'You'} size={isWide ? 54 : 44} />
+      <View style={styles.pairLine} />
+      <View style={[styles.pairLock, verified && { backgroundColor: Colors.sageTint, borderColor: Colors.sageLine }]}>
+        <Icon name={verified ? 'shieldCheck' : 'lock'} size={20} color={verified ? Colors.sage : Colors.brass} />
+      </View>
+      <View style={styles.pairLine} />
+      <Avatar name={name} size={isWide ? 54 : 44} />
+    </View>
+  );
+
+  const numbers = (
+    <View style={styles.grid}>
+      {blocks.map((b, i) => (
+        <Animated.View key={`${b}-${i}`} entering={FadeInDown.delay(200 + i * 35).duration(400)} style={{ width: '25%', padding: 3 }}>
+          <View style={[styles.block, verified && { borderColor: 'rgba(134,192,159,0.25)' }]}>
+            <Text style={[styles.blockText, !isWide && { fontSize: 16 }]}>{b}</Text>
+          </View>
+        </Animated.View>
+      ))}
+    </View>
+  );
+
+  const verifyBtn = (
+    <Button
+      label={verified ? 'Verified' : 'Mark as verified'}
+      icon={verified ? 'shieldCheck' : undefined}
+      variant={verified ? 'sage' : 'primary'}
+      onPress={toggle}
+      style={isWide ? { alignSelf: 'flex-start', paddingHorizontal: 28 } : undefined}
+    />
+  );
+
+  const secondary = (
+    <View style={{ flexDirection: 'row', gap: 10, flexWrap: 'wrap' }}>
+      <Button label={copied ? 'Copied' : 'Copy number'} icon={copied ? 'check' : 'copy'} variant="secondary" size="md" onPress={copy} style={!isWide ? { flex: 1 } : undefined} />
+      <Button
+        label="Scan code"
+        icon="scan"
+        variant="secondary"
+        size="md"
+        onPress={() => notify(`Scan ${first}’s code`, `Open this screen on ${first}’s phone and point your camera at their code.`)}
+        style={!isWide ? { flex: 1 } : undefined}
+      />
+    </View>
+  );
+
+  if (isWide) {
+    return (
+      <View style={styles.container}>
+        <Grain />
+        <View style={styles.wideTop}>
+          <Button label={`Back to ${first}`} icon="back" variant="ghost" size="md" onPress={back} />
+          <Button label="Share" icon="share" variant="ghost" size="md" onPress={share} />
+        </View>
+        <ScrollView contentContainerStyle={styles.wideBody}>
+          <View style={{ alignItems: 'center', gap: 26, width: 380 }}>
+            {pair}
+            <QrCard value={safetyNumber} size={300} />
+          </View>
+          <View style={{ flex: 1, minWidth: 380, maxWidth: 520, gap: 22 }}>
+            <Animated.View entering={FadeIn} style={{ gap: 10 }}>
+              <Text style={[Type.eyebrow, { color: Colors.brass }]}>SAFETY NUMBER</Text>
+              <Text style={[Type.hero, { fontSize: 42, lineHeight: 46 }]}>Make sure it’s really {first}.</Text>
+              <Text style={[Type.bodyMuted, { fontSize: 15.5, lineHeight: 24 }]}>
+                Compare these numbers with {first} in person, or scan each other’s code. If they match, your chat is end-to-end encrypted with no one in between.
+              </Text>
+            </Animated.View>
+            {numbers}
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+              {verifyBtn}
+              <Text style={Type.caption}>{verified ? 'Tap again to clear' : 'Only if the numbers match'}</Text>
+            </View>
+            {secondary}
+          </View>
+        </ScrollView>
+      </View>
+    );
+  }
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
-      <StatusBar barStyle="light-content" backgroundColor={Colors.background} />
-
-      {/* Header */}
+    <View style={[styles.container, { paddingTop: insets.top }]}>
+      <Grain />
       <View style={styles.header}>
-        <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
-          <Ionicons name="arrow-back" size={22} color={Colors.textPrimary} />
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>Verify Safety Number</Text>
-        <TouchableOpacity style={styles.backBtn} onPress={handleShare}>
-          <Ionicons name="share-outline" size={22} color={Colors.textPrimary} />
-        </TouchableOpacity>
+        <IconButton icon="back" label="Back" onPress={back} />
+        <Text style={[Type.name, { flex: 1, textAlign: 'center' }]}>Safety number</Text>
+        <IconButton icon="share" label="Share" onPress={share} />
       </View>
-
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        {/* Verification Status Banner */}
-        <View
-          style={[
-            styles.statusBanner,
-            isVerified ? styles.statusBannerVerified : styles.statusBannerUnverified,
-          ]}
-        >
-          <Ionicons
-            name={isVerified ? 'shield-checkmark' : 'shield-outline'}
-            size={28}
-            color={isVerified ? Colors.emerald : Colors.warning}
-          />
-          <View style={styles.bannerText}>
-            <Text style={[styles.bannerTitle, isVerified && { color: Colors.emerald }]}>
-              {isVerified ? 'Cryptographically Verified' : 'Fingerprint Unverified'}
-            </Text>
-            <Text style={styles.bannerSubtitle}>
-              {isVerified
-                ? 'Identity confirmed. Zero man-in-the-middle interception risk.'
-                : 'Compare this 60-digit fingerprint with their device to confirm encryption.'}
-            </Text>
-          </View>
-        </View>
-
-        {/* QR Code Matrix Simulation Card */}
-        <View style={styles.qrCard}>
-          <View style={styles.qrMatrixFrame}>
-            <Ionicons name="qr-code" size={140} color={Colors.accentLight} />
-          </View>
-          <Text style={styles.qrHint}>Scan QR code on peer device for instant zero-knowledge pairing</Text>
-        </View>
-
-        {/* 60-Digit Monospace Grid */}
-        <View style={styles.codeCard}>
-          <View style={styles.codeHeader}>
-            <Text style={styles.codeTitle}>60-Digit Numeric Fingerprint</Text>
-            <TouchableOpacity style={styles.copyBtn} onPress={handleCopy} activeOpacity={0.7}>
-              <Ionicons
-                name={copied ? 'checkmark' : 'copy-outline'}
-                size={14}
-                color={copied ? Colors.emerald : Colors.accentLight}
-              />
-              <Text style={[styles.copyBtnText, copied && { color: Colors.emerald }]}>
-                {copied ? 'Copied' : 'Copy'}
-              </Text>
-            </TouchableOpacity>
-          </View>
-
-          <View style={styles.blocksGrid}>
-            {numberBlocks.map((block, i) => (
-              <View key={i} style={styles.blockChip}>
-                <Text style={styles.blockText}>{block}</Text>
-              </View>
-            ))}
-          </View>
-
-          <Text style={styles.codeHint}>
-            This number is unique to your pairwise X25519 session with {displayName || 'this contact'}. If the numbers match on both phones, your encryption is 100% secure.
-          </Text>
-        </View>
-
-        {/* Verification Action Button */}
-        <TouchableOpacity
-          style={[
-            styles.verifyButton,
-            isVerified ? styles.verifyButtonActive : styles.verifyButtonInactive,
-          ]}
-          onPress={toggleVerified}
-          activeOpacity={0.85}
-        >
-          <Ionicons
-            name={isVerified ? 'checkmark-circle' : 'shield-checkmark'}
-            size={22}
-            color="#FFF"
-          />
-          <Text style={styles.verifyButtonText}>
-            {isVerified ? 'Marked as Verified (Tap to Revoke)' : 'Mark as Verified'}
-          </Text>
-        </TouchableOpacity>
-
-        {/* Technical Explainer */}
-        <View style={styles.explainerCard}>
-          <View style={styles.explainerRow}>
-            <Ionicons name="key" size={18} color={Colors.accentLight} />
-            <Text style={styles.explainerHeading}>Zero-Knowledge Guarantee</Text>
-          </View>
-          <Text style={styles.explainerBody}>
-            Derived directly via Libsodium SHA-512 over both identity public keys. Plaintexts are strictly held in device Secure Enclave and SQLite.
-          </Text>
+      <ScrollView contentContainerStyle={{ padding: 20, paddingBottom: insets.bottom + 32, alignItems: 'center', gap: 20 }}>
+        {pair}
+        <QrCard value={safetyNumber} size={200} />
+        <Animated.View entering={FadeIn.delay(100)} style={{ alignItems: 'center', gap: 6 }}>
+          <Text style={[Type.h2, { textAlign: 'center' }]}>Make sure it’s really {first}</Text>
+          <Text style={[Type.bodyMuted, { textAlign: 'center' }]}>Compare these numbers in person, or scan each other’s code.</Text>
+        </Animated.View>
+        {numbers}
+        <View style={{ width: '100%', gap: 10 }}>
+          {verifyBtn}
+          {secondary}
         </View>
       </ScrollView>
-    </SafeAreaView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: Colors.background,
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: Spacing.xl,
-    paddingVertical: Spacing.md,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.08)',
-    backgroundColor: Colors.background,
-  },
-  backBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  headerTitle: {
-    fontSize: Typography.lg,
-    fontWeight: Typography.bold,
-    color: Colors.textPrimary,
-  },
-  content: {
-    padding: Spacing.xl,
-    gap: Spacing.lg,
-    paddingBottom: 60,
-  },
-  statusBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: Spacing.lg,
-    borderRadius: BorderRadius.xl,
-    gap: Spacing.md,
+  container: { flex: 1, backgroundColor: Colors.ink },
+  header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, paddingVertical: 6 },
+  wideTop: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 32, paddingTop: 24 },
+  wideBody: { flexGrow: 1, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'center', gap: 64, padding: 40 },
+  pair: { flexDirection: 'row', alignItems: 'center', gap: 10, width: '100%', paddingHorizontal: 24 },
+  pairLine: { flex: 1, height: 2, borderRadius: 1, backgroundColor: 'rgba(214,166,87,0.35)' },
+  pairLock: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    backgroundColor: Colors.raised,
     borderWidth: 1,
-  },
-  statusBannerVerified: {
-    backgroundColor: 'rgba(16, 185, 129, 0.08)',
-    borderColor: 'rgba(16, 185, 129, 0.3)',
-  },
-  statusBannerUnverified: {
-    backgroundColor: 'rgba(245, 158, 11, 0.08)',
-    borderColor: 'rgba(245, 158, 11, 0.3)',
-  },
-  bannerText: {
-    flex: 1,
-  },
-  bannerTitle: {
-    fontSize: Typography.base,
-    fontWeight: Typography.bold,
-    color: Colors.textPrimary,
-  },
-  bannerSubtitle: {
-    fontSize: Typography.xs,
-    color: Colors.textSecondary,
-    marginTop: 2,
-    lineHeight: 16,
-  },
-  qrCard: {
-    backgroundColor: '#0A1222',
-    padding: Spacing.lg,
-    borderRadius: BorderRadius.xl,
-    borderWidth: 1,
-    borderColor: 'rgba(6, 182, 212, 0.2)',
-    alignItems: 'center',
-    gap: Spacing.md,
-  },
-  qrMatrixFrame: {
-    padding: Spacing.md,
-    backgroundColor: '#070D18',
-    borderRadius: BorderRadius.lg,
-    borderWidth: 1,
-    borderColor: 'rgba(6, 182, 212, 0.3)',
-  },
-  qrHint: {
-    fontSize: Typography.xs,
-    color: Colors.textTertiary,
-    textAlign: 'center',
-  },
-  codeCard: {
-    backgroundColor: '#0A1222',
-    padding: Spacing.lg,
-    borderRadius: BorderRadius.xl,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-    gap: Spacing.md,
-  },
-  codeHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  codeTitle: {
-    fontSize: Typography.sm,
-    fontWeight: Typography.semibold,
-    color: Colors.textSecondary,
-  },
-  copyBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: 'rgba(6, 182, 212, 0.12)',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: BorderRadius.md,
-    borderWidth: 1,
-    borderColor: 'rgba(6, 182, 212, 0.25)',
-  },
-  copyBtnText: {
-    fontSize: Typography.xs,
-    fontWeight: Typography.bold,
-    color: Colors.accentLight,
-  },
-  blocksGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'space-between',
-    gap: 8,
-  },
-  blockChip: {
-    width: '31%',
-    backgroundColor: '#070D18',
-    paddingVertical: 8,
-    borderRadius: BorderRadius.md,
-    borderWidth: 1,
-    borderColor: 'rgba(6, 182, 212, 0.18)',
-    alignItems: 'center',
-  },
-  blockText: {
-    fontFamily: 'monospace',
-    fontSize: Typography.sm,
-    fontWeight: Typography.bold,
-    color: Colors.accentLight,
-    letterSpacing: 1,
-  },
-  codeHint: {
-    fontSize: Typography.xs,
-    color: Colors.textTertiary,
-    textAlign: 'center',
-    lineHeight: 17,
-  },
-  verifyButton: {
-    flexDirection: 'row',
+    borderColor: Colors.line,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: Spacing.sm,
-    paddingVertical: Spacing.base,
-    borderRadius: BorderRadius.lg,
   },
-  verifyButtonInactive: {
-    backgroundColor: Colors.accent,
-    shadowColor: Colors.accent,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.4,
-    shadowRadius: 10,
-    elevation: 6,
+  qr: {
+    padding: 18,
+    borderRadius: 26,
+    backgroundColor: Colors.cream,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 28 },
+    shadowOpacity: 0.45,
+    shadowRadius: 60,
+    elevation: 14,
   },
-  verifyButtonActive: {
-    backgroundColor: Colors.emerald,
-    shadowColor: Colors.emerald,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.4,
-    shadowRadius: 10,
-    elevation: 6,
+  scan: {
+    position: 'absolute',
+    left: -6,
+    right: -6,
+    top: 0,
+    height: 3,
+    borderRadius: 2,
+    backgroundColor: Colors.brass,
+    shadowColor: Colors.brass,
+    shadowOpacity: 0.8,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 0 },
   },
-  verifyButtonText: {
-    fontSize: Typography.base,
-    fontWeight: Typography.bold,
-    color: '#FFF',
-  },
-  explainerCard: {
-    backgroundColor: '#091220',
-    padding: Spacing.base,
-    borderRadius: BorderRadius.lg,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-    gap: Spacing.xs,
-  },
-  explainerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.xs,
-  },
-  explainerHeading: {
-    fontSize: Typography.sm,
-    fontWeight: Typography.semibold,
-    color: Colors.textPrimary,
-  },
-  explainerBody: {
-    fontSize: Typography.xs,
-    color: Colors.textSecondary,
-    lineHeight: 18,
-  },
+  qrLogo: { position: 'absolute', left: '50%', top: '50%', borderRadius: 8, borderWidth: 3, borderColor: Colors.cream, overflow: 'hidden' },
+  grid: { flexDirection: 'row', flexWrap: 'wrap', width: '100%', marginHorizontal: -3 },
+  block: { paddingVertical: 10, borderRadius: 12, backgroundColor: Colors.raised, borderWidth: 1, borderColor: Colors.line, alignItems: 'center' },
+  blockText: { fontFamily: Fonts.mono, fontSize: 20, letterSpacing: 1.4, color: Colors.cream },
 });
