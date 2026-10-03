@@ -130,5 +130,5 @@ development build.
 npm run typecheck           # TypeScript
 npm test                    # crypto + payload + receipt unit tests
 ./scripts/test-db.sh        # schema/RLS/RPC tests (needs a local PostgreSQL; PGHOST/PGPORT/PGUSER)
-npx deno check supabase/functions/*/index.ts
+(cd supabase/functions && npx deno check --no-lock */index.ts)
 ```
