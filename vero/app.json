@@ -1,0 +1,54 @@
+{
+  "expo": {
+    "name": "Vero",
+    "slug": "vero",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "scheme": "vero",
+    "splash": {
+      "backgroundColor": "#050A14"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.vero.messenger"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#050A14",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false,
+      "package": "com.vero.messenger"
+    },
+    "web": {
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      "expo-camera",
+      "expo-notifications",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Vero accesses your photos to send encrypted media.",
+          "cameraPermission": "Vero accesses your camera to take photos and videos."
+        }
+      ],
+      [
+        "expo-av",
+        {
+          "microphonePermission": "Vero accesses your microphone to record voice messages."
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
