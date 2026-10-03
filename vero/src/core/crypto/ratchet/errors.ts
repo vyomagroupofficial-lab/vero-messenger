@@ -85,3 +85,11 @@ export class ControlMessageHandled extends Error {
 export function isSessionBroken(e: unknown): boolean {
   return e instanceof SessionNotFoundError || e instanceof SessionMismatchError || e instanceof PreKeyNotFoundError;
 }
+
+/** None of the other recipients' devices could be reached securely (no prekeys published / invalid bundles). */
+export class NoReachableDevicesError extends Error {
+  constructor() {
+    super("The recipient's devices haven't published encryption keys yet (they may need to update Vero).");
+    this.name = 'NoReachableDevicesError';
+  }
+}

@@ -28,7 +28,16 @@ import {
   TooManySkippedMessagesError,
   UntrustedIdentityError,
 } from './errors';
-import { HEADER_LEN, RatchetState, initAlice, initBob, ratchetDecrypt, ratchetEncrypt, canSend } from './doubleRatchet';
+import {
+  HEADER_LEN,
+  RatchetState,
+  canSend,
+  decodeHeader,
+  initAlice,
+  initBob,
+  ratchetDecrypt,
+  ratchetEncrypt,
+} from './doubleRatchet';
 import { KeyPairB64, PreKeyBundle } from './keys';
 import { PreKeyHeader, x3dhInitiate, x3dhRespond } from './x3dh';
 
@@ -218,10 +227,21 @@ export async function decryptSlot(
 
   if (sessions.length === 0) throw new SessionNotFoundError();
 
+  // Try the sessions that already know the sender's ratchet key first; only
+  // they can tell a replay or a forged/tampered message apart from a session
+  // that is simply out of sync.
+  const header = decodeHeader(sodium, unb64(sodium, slot.h, HEADER_LEN));
+  const knows = (s: SessionState) =>
+    s.ratchet.dhr === header.dh ||
+    s.ratchet.skipped.some((k) => k.dh === header.dh) ||
+    (s.ratchet.old ?? []).includes(header.dh);
+  const candidates = sessions.filter((s) => s.remoteIdentityKey === deps.remoteIdentityKey);
+  const ordered = [...candidates.filter(knows), ...candidates.filter((s) => !knows(s))];
+
   let duplicate = false;
   let tooMany = false;
-  for (const s of sessions) {
-    if (s.remoteIdentityKey !== deps.remoteIdentityKey) continue;
+  let tampered = false;
+  for (const s of ordered) {
     try {
       const out = decryptWith(sodium, s, slot, binding, now);
       // A reply in this session: the initiator stops sending X3DH headers.
@@ -229,10 +249,12 @@ export async function decryptSlot(
       return { payload: out.payload, record: promote(rec, confirmed) };
     } catch (e) {
       if (e instanceof DuplicateMessageError) duplicate = true;
-      if (e instanceof TooManySkippedMessagesError) tooMany = true;
+      else if (e instanceof TooManySkippedMessagesError) tooMany = true;
+      else if (knows(s)) tampered = true;
     }
   }
   if (duplicate) throw new DuplicateMessageError();
+  if (tampered) throw new DecryptionError('Message failed authentication (tampered or corrupted)');
   if (tooMany) throw new TooManySkippedMessagesError();
   throw new SessionMismatchError();
 }
