@@ -64,13 +64,13 @@ reset role;
 select pg_temp.check((select value from app_config where key = 'TENOR_API_KEY') = 'tenor-secret',
   'config value unchanged after hostile writes');
 
--- Vault secrets take precedence over app_config when Vault is present.
-create schema vault;
-create view vault.decrypted_secrets as select 'TENOR_API_KEY'::text as name, 'from-vault'::text as decrypted_secret;
+-- Vault secrets take precedence over app_config when Vault is present
+-- (Vault stand-in from supabase_stubs.sql).
+do $$ begin perform vault.create_secret('from-vault', 'TENOR_API_KEY'); end $$;
 set role service_role;
 select pg_temp.check(get_app_secret('TENOR_API_KEY') = 'from-vault', 'Vault secret wins over app_config');
 reset role;
-drop schema vault cascade;
+delete from vault.secrets where name = 'TENOR_API_KEY';
 
 -- ── GIF rate limit ──────────────────────────────────────────────────────────
 set role authenticated;

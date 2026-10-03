@@ -14,7 +14,8 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.vero.messenger",
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSFaceIDUsageDescription": "Vero uses Face ID to unlock the app when app lock is on."
       }
     },
     "android": {
@@ -51,6 +52,12 @@
       "expo-secure-store",
       "expo-sqlite",
       "expo-video",
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Vero uses Face ID to unlock the app when app lock is on."
+        }
+      ],
       [
         "expo-audio",
         {

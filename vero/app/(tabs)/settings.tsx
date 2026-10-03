@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -23,7 +23,9 @@ import { databaseService } from '../../src/core/storage/DatabaseService';
 import { friendlyError } from '../../src/core/network/supabase';
 import { mediaRepository } from '../../src/features/media/MediaRepository';
 import { useSettingsStore } from '../../src/features/settings/useSettingsStore';
-import { registerForPush, unregisterPush } from '../../src/features/notifications/pushRegistration';
+import { updatePrivacySettings } from '../../src/features/settings/settingsSync';
+import { useAppLockStore } from '../../src/features/settings/appLock';
+import { useBackupStatus } from '../../src/features/backup/useBackupStore';
 import { Colors, Typography, Spacing, BorderRadius } from '../../src/shared/theme/theme';
 
 interface SettingItem {
@@ -83,8 +85,6 @@ function SettingSection({ title, items }: { title: string; items: SettingItem[] 
   );
 }
 
-type LinkedDevice = Awaited<ReturnType<typeof authRepository.listDevices>>[number];
-
 export default function SettingsScreen() {
   const user = useAuthStore((s) => s.user);
   const deviceId = useAuthStore((s) => s.deviceId);
@@ -92,13 +92,13 @@ export default function SettingsScreen() {
   const logout = useAuthStore((s) => s.logout);
   const updateProfile = useAuthStore((s) => s.updateProfile);
   const settings = useSettingsStore();
+  const appLockOn = useAppLockStore((s) => s.enabled);
+  const backup = useBackupStatus(user?.id);
 
   const [showKeysModal, setShowKeysModal] = useState(false);
-  const [showDevicesModal, setShowDevicesModal] = useState(false);
   const [showAuditModal, setShowAuditModal] = useState(false);
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [publicKey, setPublicKey] = useState<string | null>(null);
-  const [devices, setDevices] = useState<LinkedDevice[] | null>(null);
   const [draftName, setDraftName] = useState('');
   const [draftAbout, setDraftAbout] = useState('');
   const [saving, setSaving] = useState(false);
@@ -106,40 +106,6 @@ export default function SettingsScreen() {
   useEffect(() => {
     if (user && !isDemo) void cryptoManager.getIdentityPublicKey(user.id).then(setPublicKey);
   }, [user?.id, isDemo]);
-
-  const loadDevices = useCallback(async () => {
-    setDevices(null);
-    try {
-      setDevices(await authRepository.listDevices());
-    } catch (e) {
-      setDevices([]);
-      Alert.alert('Could not load devices', friendlyError(e));
-    }
-  }, []);
-
-  const activeDevices = devices?.filter((d) => !d.revokedAt) ?? [];
-
-  const handleRevoke = (device: LinkedDevice) => {
-    Alert.alert(
-      'Unlink device',
-      `Unlink "${device.deviceLabel}"? New messages will no longer be encrypted for it and it will be signed out of encryption.`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Unlink',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await authRepository.revokeDevice(device.id);
-              await loadDevices();
-            } catch (e) {
-              Alert.alert('Could not unlink device', friendlyError(e));
-            }
-          },
-        },
-      ]
-    );
-  };
 
   const handleLogout = () => {
     Alert.alert(
@@ -206,11 +172,8 @@ export default function SettingsScreen() {
     ]);
   };
 
-  const toggleNotifications = async (enabled: boolean) => {
-    settings.set({ notifications: enabled });
-    if (!deviceId || isDemo) return;
-    if (enabled) await registerForPush(deviceId);
-    else await unregisterPush(deviceId).catch(() => undefined);
+  const savePrivacy = (patch: Parameters<typeof updatePrivacySettings>[0]) => {
+    updatePrivacySettings(patch).catch((e) => Alert.alert('Could not save', friendlyError(e)));
   };
 
   const openProfileEditor = () => {
@@ -260,7 +223,7 @@ export default function SettingsScreen() {
               value: 'If off, others only see that messages were delivered',
               toggle: true,
               toggleValue: settings.readReceipts,
-              onToggle: (v) => settings.set({ readReceipts: v }),
+              onToggle: (v) => savePrivacy({ readReceipts: v }),
               iconColor: Colors.teal,
             },
             {
@@ -269,18 +232,36 @@ export default function SettingsScreen() {
               value: 'Let others see when you are typing',
               toggle: true,
               toggleValue: settings.typingIndicators,
-              onToggle: (v) => settings.set({ typingIndicators: v }),
+              onToggle: (v) => savePrivacy({ typingIndicators: v }),
               iconColor: Colors.purple,
             },
             {
-              icon: 'notifications-outline',
-              label: 'Notifications',
-              value: 'Push alerts never include message content',
-              toggle: true,
-              toggleValue: settings.notifications,
-              onToggle: (v) => void toggleNotifications(v),
+              icon: 'eye-off-outline',
+              label: 'Last seen, online, notifications',
+              value: 'Default message timer, notification previews, app lock',
+              onPress: () => router.push('/settings/privacy'),
               iconColor: Colors.warning,
             },
+            {
+              icon: 'lock-closed-outline',
+              label: 'App lock',
+              value: appLockOn ? 'On' : 'Off',
+              onPress: () => router.push('/settings/privacy'),
+              iconColor: Colors.accent,
+            },
+            ...(isDemo
+              ? []
+              : [
+                  {
+                    icon: 'cloud-upload-outline' as const,
+                    label: 'Chat backup',
+                    value: backup.methods.length
+                      ? `End-to-end encrypted · last ${backup.lastBackupAt ? dayjs(backup.lastBackupAt).format('D MMM, HH:mm') : 'never'}`
+                      : 'Off',
+                    onPress: () => router.push('/backup'),
+                    iconColor: Colors.emerald,
+                  },
+                ]),
           ]}
         />
 
@@ -294,10 +275,7 @@ export default function SettingsScreen() {
                     icon: 'phone-portrait-outline' as const,
                     label: 'Linked devices',
                     value: 'See and unlink devices that can read your messages',
-                    onPress: () => {
-                      setShowDevicesModal(true);
-                      void loadDevices();
-                    },
+                    onPress: () => router.push('/settings/devices'),
                     iconColor: Colors.accent,
                   },
                   {
@@ -417,53 +395,6 @@ export default function SettingsScreen() {
               <Text style={styles.closeBtnText}>Done</Text>
             </TouchableOpacity>
           </View>
-        </Pressable>
-      </Modal>
-
-      {/* Linked devices */}
-      <Modal visible={showDevicesModal} transparent animationType="slide" onRequestClose={() => setShowDevicesModal(false)}>
-        <Pressable style={styles.modalBackdrop} onPress={() => setShowDevicesModal(false)}>
-          <Pressable style={styles.sheet} onPress={() => undefined}>
-            <View style={styles.sheetHandle} />
-            <Text style={styles.sheetTitle}>Linked devices</Text>
-            {devices === null ? (
-              <ActivityIndicator color={Colors.accent} style={{ marginVertical: 20 }} />
-            ) : (
-              <ScrollView style={{ maxHeight: 320 }}>
-                {activeDevices.map((d) => (
-                  <View key={d.id} style={styles.deviceRow}>
-                    <View style={styles.deviceIcon}>
-                      <Ionicons name="phone-portrait" size={24} color={Colors.accent} />
-                    </View>
-                    <View style={styles.deviceInfo}>
-                      <Text style={styles.deviceName}>
-                        {d.deviceLabel}
-                        {d.id === deviceId ? ' (this device)' : ''}
-                      </Text>
-                      <Text style={styles.deviceIdText}>
-                        Added {dayjs(d.createdAt).format('MMM D, YYYY')} · last active {dayjs(d.lastSeenAt).format('MMM D')}
-                      </Text>
-                    </View>
-                    {d.id !== deviceId && (
-                      <TouchableOpacity onPress={() => handleRevoke(d)}>
-                        <Ionicons name="close-circle-outline" size={22} color={Colors.error} />
-                      </TouchableOpacity>
-                    )}
-                  </View>
-                ))}
-              </ScrollView>
-            )}
-            <View style={styles.noticeBox}>
-              <Ionicons name="information-circle" size={16} color={Colors.accent} />
-              <Text style={styles.noticeText}>
-                Each device has its own key. Messages are encrypted separately for every linked device, so a new
-                device can't read messages sent before it was linked.
-              </Text>
-            </View>
-            <TouchableOpacity style={styles.closeBtn} onPress={() => setShowDevicesModal(false)}>
-              <Text style={styles.closeBtnText}>Done</Text>
-            </TouchableOpacity>
-          </Pressable>
         </Pressable>
       </Modal>
 

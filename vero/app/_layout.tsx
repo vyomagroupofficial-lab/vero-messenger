@@ -8,8 +8,8 @@ import { callService } from '../src/features/calls/CallService';
 import { startInbox, useChatsStore } from '../src/features/chats/useChatsStore';
 import { closeAllConversationChannels } from '../src/features/messages/useMessagesStore';
 import { userChannel } from '../src/core/network/realtime';
-import { registerForPush } from '../src/features/notifications/pushRegistration';
-import { useSettingsStore } from '../src/features/settings/useSettingsStore';
+import { AppLockGate } from '../src/features/settings/AppLockGate';
+import { useAccountServices } from '../src/features/settings/useAccountServices';
 import { Colors } from '../src/shared/theme/theme';
 
 export default function RootLayout() {
@@ -22,7 +22,10 @@ export default function RootLayout() {
     void initialize();
   }, [initialize]);
 
-  // Per-session lifecycle: realtime inbox, incoming calls, push registration.
+  // Push, privacy settings, presence, mutes, backups (src/features/settings/useAccountServices.ts).
+  useAccountServices(userId, deviceId, isDemo);
+
+  // Per-session lifecycle: realtime inbox, incoming calls.
   useEffect(() => {
     if (!userId || !deviceId) return;
     let stopInbox: (() => void) | null = null;
@@ -30,7 +33,6 @@ export default function RootLayout() {
       void userChannel.start(userId);
       stopInbox = startInbox();
       callService.start();
-      if (useSettingsStore.getState().notifications) void registerForPush(deviceId);
     }
     const unsubscribeCalls = callService.subscribe((call) => {
       if (call && call.status === 'ringing' && !call.isInitiator) {
@@ -51,6 +53,7 @@ export default function RootLayout() {
     <GestureHandlerRootView style={styles.root}>
       <StatusBar style="light" />
       <View style={styles.appShell}>
+        <AppLockGate>
         <Stack
           screenOptions={{
             headerShown: false,
@@ -72,6 +75,7 @@ export default function RootLayout() {
             options={{ animation: 'fade', presentation: 'fullScreenModal' }}
           />
         </Stack>
+        </AppLockGate>
       </View>
     </GestureHandlerRootView>
   );

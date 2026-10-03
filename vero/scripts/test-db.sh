@@ -15,7 +15,7 @@ for t in supabase/tests/*_test.sql; do
   psql -q -v ON_ERROR_STOP=1 -d postgres -c "create database $DB" >/dev/null
   psql -q -v ON_ERROR_STOP=1 -d "$DB" -f supabase/tests/supabase_stubs.sql >/dev/null
   for f in supabase/migrations/*.sql; do
-    psql -q -v ON_ERROR_STOP=1 -d "$DB" -f "$f" >/dev/null
+    PGOPTIONS="-c client_min_messages=warning" psql -q -v ON_ERROR_STOP=1 -d "$DB" -f "$f" >/dev/null
   done
   psql -q -v ON_ERROR_STOP=1 -d "$DB" -f "$t" 2>&1 | sed 's/^psql:[^ ]* NOTICE:  //'
   psql -q -d postgres -c "drop database if exists $DB" >/dev/null

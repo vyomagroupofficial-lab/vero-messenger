@@ -11,6 +11,7 @@ import {
   User,
   messagePreview,
 } from '../../shared/models/Message';
+import { applyDefaultDisappearing } from '../settings/defaultDisappearing';
 
 function toUser(p: any): User {
   return {
@@ -98,6 +99,7 @@ class ConversationRepository {
   async createDirectConversation(otherUserId: string): Promise<string> {
     const { data, error } = await supabase.rpc('create_direct_conversation', { p_other_user_id: otherUserId });
     if (error) throw error;
+    await applyDefaultDisappearing(data as string);
     return data as string;
   }
 
@@ -107,6 +109,7 @@ class ConversationRepository {
       p_member_ids: memberIds,
     });
     if (error) throw error;
+    await applyDefaultDisappearing(data as string);
     return data as string;
   }
 
