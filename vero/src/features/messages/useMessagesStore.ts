@@ -256,6 +256,7 @@ export const useMessagesStore = create<MessagesState>((set, get) => {
         void supabase.removeChannel(channel);
         delete channels[conversationId];
       }
+      patch(conversationId, () => ({ focusMessageId: null }));
       void useChatsStore.getState().refreshLocal();
     },
 
@@ -287,7 +288,7 @@ export const useMessagesStore = create<MessagesState>((set, get) => {
       const result = await messageRepository.send(session, conversationId, payload, opts, (local) =>
         get().upsert(conversationId, local)
       );
-      if (payload.t !== 'reaction') get().upsert(conversationId, result);
+      if (payload.t !== 'reaction' && payload.t !== 'edit') get().upsert(conversationId, result);
       void useChatsStore.getState().refreshLocal();
       return result;
     },

@@ -317,10 +317,7 @@ class DatabaseService {
     return this.safe('getUnreadCounts', {}, async (db) => {
       const rows = await db.getAllAsync<{ conversation_id: string; n: number }>(
         `SELECT conversation_id, COUNT(*) AS n FROM messages
-         WHERE is_read = 0 AND is_own = 0 AND deleted_at IS NULL AND revoked_at IS NULL
-           AND message_type != 'system' AND (expires_at IS NULL OR expires_at > ?)
-         GROUP BY conversation_id`,
-        [new Date().toISOString()]
+         WHERE is_read = 0 AND is_own = 0 AND deleted_at IS NULL GROUP BY conversation_id`
       );
       return Object.fromEntries(rows.map((r) => [r.conversation_id, r.n]));
     });

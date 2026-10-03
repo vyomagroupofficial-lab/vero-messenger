@@ -12,7 +12,7 @@ import {
   User,
 } from '../../shared/models/Message';
 import { computeStatus } from '../messages/status';
-import { previewBody, previewLine, sortConversations } from './chatList';
+import { computeUnreadCount, previewBody, previewLine, sortConversations } from './chatList';
 
 interface ChatPrefs {
   pinnedAt: string | null;
@@ -103,17 +103,22 @@ class ConversationRepository {
         this.appliedReadMarks.set(c.id, mark);
       }
     }
-    const [lastMessages, unread] = await Promise.all([
+    const [lastMessages, unreadCandidates] = await Promise.all([
       databaseService.getLastMessages(),
-      databaseService.getUnreadCounts(),
+      messagingStore.getUnreadCandidates(),
     ]);
+    const nowIso = new Date().toISOString();
     return sortConversations(
       list.map((c) => {
         const last = lastMessages[c.id];
         const isOwn = last?.senderUserId === currentUserId;
         return {
           ...c,
-          unreadCount: unread[c.id] || 0,
+          unreadCount: computeUnreadCount(
+            unreadCandidates[c.id] ?? [],
+            c.members.find((m) => m.id === currentUserId)?.lastReadAt,
+            nowIso
+          ),
           lastMessage: last
             ? {
                 content: previewBody({ ...last, isOwn }),

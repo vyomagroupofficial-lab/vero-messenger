@@ -255,6 +255,32 @@ class MessagingStore {
     });
   }
 
+  /**
+   * Messages from others not yet marked read on this device, per conversation.
+   * The chat list counts the ones after the account's read watermark
+   * (computeUnreadCount), so reading on another device clears them here too.
+   */
+  getUnreadCandidates(): Promise<Record<string, Pick<Message, 'isOwn' | 'messageType' | 'createdAt' | 'deletedAt' | 'revokedAt' | 'expiresAt'>[]>> {
+    return safe('getUnreadCandidates', {}, async (db) => {
+      const rows = await db.getAllAsync<any>(
+        `SELECT conversation_id, message_type, created_at, deleted_at, revoked_at, expires_at FROM messages
+         WHERE is_read = 0 AND is_own = 0 AND deleted_at IS NULL`
+      );
+      const out: Record<string, Pick<Message, 'isOwn' | 'messageType' | 'createdAt' | 'deletedAt' | 'revokedAt' | 'expiresAt'>[]> = {};
+      for (const r of rows) {
+        (out[r.conversation_id] ??= []).push({
+          isOwn: false,
+          messageType: r.message_type,
+          createdAt: r.created_at,
+          deletedAt: r.deleted_at,
+          revokedAt: r.revoked_at,
+          expiresAt: r.expires_at,
+        });
+      }
+      return out;
+    });
+  }
+
   /** Newest message from someone else, per conversation (for auto-unarchive). */
   getLastIncomingTimes(): Promise<Record<string, string>> {
     return safe('getLastIncomingTimes', {}, async (db) => {

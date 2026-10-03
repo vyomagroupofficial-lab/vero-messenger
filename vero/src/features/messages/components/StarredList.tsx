@@ -6,7 +6,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useFocusEffect } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import dayjs from 'dayjs';
 import { messagingStore } from '../../../core/storage/messagingStore';
 import { currentSession } from '../../../core/session';
@@ -17,6 +17,7 @@ import { useChatsStore } from '../../chats/useChatsStore';
 import { openMessage } from '../../search/components/GlobalMessageResults';
 import { setStarred } from '../messageActions';
 import { selfSync } from '../selfSync';
+import { useMessagesStore } from '../useMessagesStore';
 import { ForwardedLabel } from './MessageLabels';
 
 export function StarredList({ conversationId }: { conversationId?: string }) {
@@ -60,7 +61,15 @@ export function StarredList({ conversationId }: { conversationId?: string }) {
         return (
           <TouchableOpacity
             style={styles.row}
-            onPress={() => openMessage(item.conversationId, item.id)}
+            onPress={() => {
+              if (conversationId && router.canGoBack()) {
+                // Opened from that chat's menu: go back to it instead of stacking a second copy.
+                void useMessagesStore.getState().jumpTo(item.conversationId, item.id);
+                router.back();
+              } else {
+                openMessage(item.conversationId, item.id);
+              }
+            }}
             onLongPress={() => void unstar(item)}
             accessibilityHint="Long-press to unstar"
           >
