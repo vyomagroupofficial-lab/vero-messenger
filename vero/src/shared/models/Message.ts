@@ -1,5 +1,5 @@
 /**
- * Vero Message & Conversation Models
+ * Vero message & conversation models (client side, decrypted view).
  */
 
 export interface User {
@@ -10,125 +10,97 @@ export interface User {
   about?: string | null;
 }
 
-export interface Device {
-  id: string;
-  userId: string;
-  deviceLabel: string;
-  identityPublicKey: string;
-  registrationId: number;
-  createdAt: string;
-  lastSeenAt: string;
-  revokedAt?: string | null;
-}
-
-export type MessageType = 'text' | 'image' | 'video' | 'audio' | 'voice' | 'document' | 'call' | 'system';
-export type MessageStatus = 'draft' | 'encrypting' | 'queued' | 'uploading_media' | 'sending' | 'sent' | 'delivered' | 'read' | 'played' | 'failed';
+/** What the UI renders. The server only knows the coarse ServerMessageType. */
+export type MessageType = 'text' | 'image' | 'video' | 'voice' | 'document' | 'system' | 'unavailable';
+export type ServerMessageType = 'text' | 'media' | 'reaction' | 'system';
+export type MessageStatus = 'sending' | 'sent' | 'delivered' | 'read' | 'failed';
 
 export interface MediaAttachment {
   mediaId: string;
-  mimeTypeHint: string;
-  encryptedObjectId: string;
-  thumbnailObjectId?: string | null;
-  encryptedSize: number;
-  // These are stored locally only, never sent to server
+  objectId: string;
+  /** Per-file key + nonce. Only ever travel inside the E2EE payload. */
+  key: string;
+  nonce: string;
+  hash: string;
+  mimeType: string;
+  size: number;
+  fileName?: string;
+  width?: number;
+  height?: number;
+  durationMs?: number;
+  /** Decrypted (or original, for the sender) local file. Device-local only. */
   localUri?: string;
-  // Media key (encrypted in the message envelope, decrypted locally)
-  mediaKey?: string;
-  mediaIv?: string;
-  sha256?: string;
+}
+
+export interface MessageReaction {
+  emoji: string;
+  userId: string;
 }
 
 export interface Message {
   id: string;
   conversationId: string;
   senderDeviceId: string;
-  senderUserId?: string;       // Resolved locally from device lookup
-  senderProfile?: User;        // Resolved locally
-  
-  // Decrypted content (NEVER stored in Supabase plaintext)
-  content?: string;            // Decrypted message text
+  senderUserId: string;
+  senderName?: string;
+  content?: string;
   messageType: MessageType;
   media?: MediaAttachment;
   replyToMessageId?: string | null;
-  replyToMessage?: Message;    // Resolved locally
-
-  // Timestamps
+  replyPreview?: string | null;
   createdAt: string;
   expiresAt?: string | null;
   deletedAt?: string | null;
-
-  // Status (local tracking)
   status: MessageStatus;
-  isOwn: boolean;              // Is this message sent by the current user?
-  
-  // Reactions (stored as encrypted event envelopes)
+  isOwn: boolean;
   reactions?: MessageReaction[];
-
-  // Edit history
-  editedAt?: string;
-  isEdited?: boolean;
-}
-
-export interface MessageReaction {
-  emoji: string;
-  userId: string;
-  username?: string;
-  createdAt: string;
 }
 
 export type ConversationType = 'direct' | 'group';
 
+export interface ConversationMember extends User {
+  role: 'member' | 'admin' | 'owner';
+  lastDeliveredAt?: string | null;
+  lastReadAt?: string | null;
+}
+
 export interface Conversation {
   id: string;
   conversationType: ConversationType;
-  
-  // For direct chats: the other participant
   otherUser?: User;
-  
-  // For group chats
-  groupName?: string;
-  groupAvatar?: string | null;
-  memberCount?: number;
-  
-  // Last message preview (decrypted locally)
+  groupName?: string | null;
+  members: ConversationMember[];
   lastMessage?: {
     content?: string;
     messageType: MessageType;
-    senderDisplayName?: string;
+    senderName?: string;
     createdAt: string;
     isOwn: boolean;
   };
-  
-  // Metadata
   unreadCount: number;
-  isTyping?: boolean;
-  typingUsers?: string[];     // display names of typing users
-  
-  // Presence (direct chats only)
-  isOnline?: boolean;
-  lastSeen?: string | null;
-  
   createdAt: string;
   updatedAt: string;
-
-  // Security
-  encryptionVerified?: boolean;
-  safetyNumber?: string;
 }
 
-export interface PresenceState {
-  userId: string;
-  status: 'online' | 'offline';
-  lastSeen?: string;
+export function conversationTitle(c: Pick<Conversation, 'conversationType' | 'otherUser' | 'groupName'>): string {
+  return c.conversationType === 'direct'
+    ? c.otherUser?.displayName || 'Unknown'
+    : c.groupName || 'Group';
 }
 
-export interface CallSession {
-  id: string;
-  conversationId: string;
-  callType: 'voice' | 'video';
-  status: 'ringing' | 'active' | 'ended' | 'missed' | 'rejected';
-  initiatorUserId: string;
-  startedAt?: string;
-  endedAt?: string;
-  duration?: number;  // seconds
+export function messagePreview(type: MessageType, content?: string): string {
+  switch (type) {
+    case 'image':
+      return content ? `📷 ${content}` : '📷 Photo';
+    case 'video':
+      return content ? `🎥 ${content}` : '🎥 Video';
+    case 'voice':
+      return '🎤 Voice message';
+    case 'document':
+      return `📄 ${content || 'Document'}`;
+    case 'unavailable':
+      return '🔒 Encrypted message';
+    default:
+      return content || '';
+  }
 }
