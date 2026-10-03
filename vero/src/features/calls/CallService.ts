@@ -49,14 +49,7 @@ import { prefetchIceServers } from './iceServers';
 import type { StreamLike } from './mediaTypes';
 import type { PeerConnectionState } from './PeerSession';
 import { mediaAdapter } from './webrtc';
-import {
-  dismissCallNotifications,
-  listenForCallNotificationResponses,
-  setupCallNotifications,
-  type CallNotificationResponse,
-  type CallPushData,
-} from './callNotifications';
-import { registerCallNotificationTask } from './callNotificationTask';
+import { callIdFromPushData, callNotificationAction, dismissCallNotifications } from './callNotifications';
 
 export type { CallType, CallStatus, CallEndReason } from './callStateMachine';
 export { callStatusLabel, isCallFinished } from './callStateMachine';
@@ -258,10 +251,7 @@ class CallService {
     this.unsubs = [
       userChannel.on('call.invite', (p) => this.onInvite(p)),
       userChannel.on('call.status', (p) => this.onServerStatus(p)),
-      listenForCallNotificationResponses((r) => void this.onNotificationResponse(r)),
     ];
-    void setupCallNotifications();
-    void registerCallNotificationTask();
     void this.checkPendingInvite();
     void this.syncCallHistory();
   }
@@ -389,9 +379,18 @@ class CallService {
     }, 1000);
   }
 
+  /**
+   * Wakes the callee's / group members' devices (send-push, type 'call').
+   * When the database sends call pushes itself (090_cross_feature_wiring:
+   * pg_net + Vault configured) it marks push_sent_at and we skip this.
+   */
   private async sendPush(callId: string) {
     try {
-      await supabase.functions.invoke('call-push', { body: { callId } });
+      await new Promise((r) => setTimeout(r, 1500));
+      if (this.call?.id !== callId || isCallFinished(this.call.status)) return;
+      const { data } = await supabase.from('call_sessions').select('push_sent_at').eq('id', callId).maybeSingle();
+      if (data?.push_sent_at) return;
+      await supabase.functions.invoke('send-push', { body: { type: 'call', call_id: callId } });
     } catch {
       // Push is best effort (the callee may be online and ringing already).
     }
@@ -1108,39 +1107,49 @@ class CallService {
     });
   }
 
-  /** Taps on the incoming-call notification (app in background / closed). */
-  private async onNotificationResponse(r: CallNotificationResponse) {
+  /**
+   * Taps on an incoming-call notification (app in background / closed).
+   * Called by the notification router (src/features/notifications) for
+   * `data.type === 'call'`. The push payload is only used for the call id.
+   */
+  async handleNotificationResponse(actionIdentifier: string, data: unknown): Promise<void> {
+    const callId = callIdFromPushData(data);
     const session = currentSession();
-    if (!session || session.isDemo) return;
-    const d: CallPushData = r.data;
-    if (r.action === 'decline') {
-      void dismissCallNotifications(d.callId);
-      if (this.call?.id === d.callId) {
+    if (!callId || !session || session.isDemo) return;
+    const action = callNotificationAction(actionIdentifier);
+    void dismissCallNotifications(callId);
+
+    if (action === 'decline') {
+      if (this.call?.id === callId) {
         await this.rejectCall();
-      } else if (!d.isGroup) {
-        await supabase.rpc('update_call_status', { p_call_id: d.callId, p_status: 'rejected' });
+      } else {
+        const row = await this.fetchCallRow(callId);
+        // Group invites need no server call: declining just doesn't join.
+        if (row && !row.is_group && row.status === 'ringing') {
+          await supabase.rpc('update_call_status', { p_call_id: callId, p_status: 'rejected' });
+        }
       }
-      this.handled.add(d.callId);
+      this.handled.add(callId);
       return;
     }
-    if (this.call?.id !== d.callId) {
-      // Trust the server, not the push payload: is the call still ringing / live?
-      const row = await this.fetchCallRow(d.callId);
+
+    if (this.call?.id !== callId) {
+      // Trust the server, not the push: is the call still ringing / live?
+      const row = await this.fetchCallRow(callId);
       const live = row && (row.is_group ? row.status === 'active' : row.status === 'ringing');
       if (!live) return;
+      await this.loadNames([row.caller_id]);
       if (row.is_group) {
         const { data: conv } = await supabase.from('conversations').select('group_name').eq('id', row.conversation_id).maybeSingle();
-        await this.loadNames([row.caller_id]);
         this.onGroupInvite({
           call_id: row.id,
           conversation_id: row.conversation_id,
           caller_id: row.caller_id,
           caller_name: this.names.get(row.caller_id),
-          group_name: conv?.group_name ?? d.groupName,
+          group_name: conv?.group_name ?? null,
           call_type: row.call_type,
         });
       } else {
-        await this.loadNames([row.caller_id]);
         this.onInvite({
           call_id: row.id,
           conversation_id: row.conversation_id,
@@ -1152,7 +1161,7 @@ class CallService {
         });
       }
     }
-    if (r.action === 'accept') await this.acceptCall();
+    if (action === 'answer') await this.acceptCall();
   }
 
   /** Adds calls this device missed while offline (answered elsewhere, missed, cancelled) to the local log. */

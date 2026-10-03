@@ -391,6 +391,48 @@ select pg_temp.as_user('f0000000-0000-4000-8000-000000000008');
 select pg_temp.check((select count(*) from join_group_call(pg_temp.id('g3'), pg_temp.id('x8'))) = 8,
   'a seat frees up when someone leaves');
 
+-- ── Push targets (090 wiring of 005's get_call_push_targets) ─────────────────
+select pg_temp.as_user(:alice);
+insert into push_tokens (device_id, token, platform) values (pg_temp.id('alice_dev'), 'ExponentPushToken[alice]', 'ios');
+select pg_temp.as_user(:bob);
+insert into push_tokens (device_id, token, platform) values (pg_temp.id('bob_dev1'), 'ExponentPushToken[bob]', 'ios');
+select pg_temp.as_user(:carol);
+insert into push_tokens (device_id, token, platform) values (pg_temp.id('carol_dev'), 'ExponentPushToken[carol]', 'android');
+select pg_temp.as_user(:dave);
+insert into push_tokens (device_id, token, platform) values (pg_temp.id('dave_dev'), 'ExponentPushToken[dave]', 'android');
+select pg_temp.as_user(:alice);
+insert into ids values ('pg', create_group_conversation('Push group', array[:bob, :carol, :dave]::uuid[]));
+select pg_temp.as_user(:dave);
+insert into blocks (blocked_user_id) values (:alice);
+select pg_temp.as_user(:alice);
+insert into ids values ('pgc', start_group_call(pg_temp.id('pg'), 'voice', pg_temp.id('alice_dev')));
+select count(*) from join_group_call(pg_temp.id('pgc'), pg_temp.id('alice_dev'));
+insert into ids values ('pdc', start_direct_call(pg_temp.id('dm'), 'video', pg_temp.id('alice_dev')));
+reset role;
+set role service_role;
+select pg_temp.check((select array_agg(device_id order by device_id) from get_call_push_targets(pg_temp.id('pgc'), :alice))
+  = (select array_agg(id order by id) from ids where name in ('bob_dev1', 'carol_dev')),
+  'group call push rings members (not the caller, not someone who blocked them)');
+select pg_temp.check((select count(*) from get_call_push_targets(pg_temp.id('pgc'), :bob)) = 0,
+  'only the caller may trigger the group call push');
+select pg_temp.check((select array_agg(device_id) from get_call_push_targets(pg_temp.id('pdc'), :alice))
+  = array[pg_temp.id('bob_dev1')], '1:1 call push still rings only the callee');
+select pg_temp.check((select push_sent_at is null from call_sessions where id = pg_temp.id('pgc')),
+  'without pg_net/Vault the database does not claim the push (the app asks send-push)');
+reset role;
+set role authenticated;
+select pg_temp.as_user(:carol);
+select count(*) from join_group_call(pg_temp.id('pgc'), pg_temp.id('carol_dev'));
+select pg_temp.as_user(:bob);
+select mute_conversation(pg_temp.id('pg'), now() + interval '1 hour');
+reset role;
+set role service_role;
+select pg_temp.check((select count(*) from get_call_push_targets(pg_temp.id('pgc'), :alice)) = 0,
+  'people already in the call and members who muted the group are not rung');
+reset role;
+set role authenticated;
+select pg_temp.as_user(:alice);
+
 -- Service-role-only helpers
 select pg_temp.expect_fail($$select get_turn_config()$$);
 select pg_temp.expect_fail($$select expire_stale_calls()$$);
