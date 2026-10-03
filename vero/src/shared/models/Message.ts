@@ -2,6 +2,8 @@
  * Vero message & conversation models (client side, decrypted view).
  */
 
+import type { ExtensionMessageType, MessageExt } from './payloadExtensions';
+
 export interface User {
   id: string;
   username: string;
@@ -11,7 +13,7 @@ export interface User {
 }
 
 /** What the UI renders. The server only knows the coarse ServerMessageType. */
-export type MessageType = 'text' | 'image' | 'video' | 'voice' | 'document' | 'system' | 'unavailable';
+export type MessageType = 'text' | 'image' | 'video' | 'voice' | 'document' | 'system' | 'unavailable' | ExtensionMessageType;
 export type ServerMessageType = 'text' | 'media' | 'reaction' | 'system';
 export type MessageStatus = 'sending' | 'sent' | 'delivered' | 'read' | 'failed';
 
@@ -54,6 +56,8 @@ export interface Message {
   status: MessageStatus;
   isOwn: boolean;
   reactions?: MessageReaction[];
+  /** Sticker / GIF / payment card / bot data (see payloadExtensions.ts). */
+  ext?: MessageExt;
 }
 
 export type ConversationType = 'direct' | 'group';
