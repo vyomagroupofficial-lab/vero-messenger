@@ -11,4 +11,7 @@ psql -q -v ON_ERROR_STOP=1 -d "$DB" -f supabase/tests/supabase_stubs.sql >/dev/n
 for f in supabase/migrations/*.sql; do
   psql -q -v ON_ERROR_STOP=1 -d "$DB" -f "$f" >/dev/null
 done
-psql -q -v ON_ERROR_STOP=1 -d "$DB" -f supabase/tests/rls_test.sql 2>&1 | sed 's/^psql:[^ ]* NOTICE:  //'
+# rls_test.sql first (it counts rows from a clean slate), then every other *_test.sql.
+for t in supabase/tests/rls_test.sql $(ls supabase/tests/*_test.sql | grep -v '/rls_test.sql$'); do
+  psql -q -v ON_ERROR_STOP=1 -d "$DB" -f "$t" 2>&1 | sed 's/^psql:[^ ]* NOTICE:  //'
+done

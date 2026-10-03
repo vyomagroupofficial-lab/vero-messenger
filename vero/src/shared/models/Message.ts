@@ -18,18 +18,33 @@ export type MessageStatus = 'sending' | 'sent' | 'delivered' | 'read' | 'failed'
 export interface MediaAttachment {
   mediaId: string;
   objectId: string;
-  /** Per-file key + nonce. Only ever travel inside the E2EE payload. */
+  /**
+   * Attachment encryption format. Absent/1: single-shot XChaCha20-Poly1305
+   * (`nonce` is the AEAD nonce). 2: chunked secretstream (`nonce` is the
+   * secretstream header, `chunkSize` the plaintext chunk size).
+   */
+  v?: 1 | 2;
+  chunkSize?: number;
+  /** Per-file key + nonce/header. Only ever travel inside the E2EE payload. */
   key: string;
   nonce: string;
+  /** hex BLAKE2b-256 of the ciphertext */
   hash: string;
   mimeType: string;
+  /** Plaintext size in bytes. */
   size: number;
   fileName?: string;
   width?: number;
   height?: number;
   durationMs?: number;
+  /** Voice notes: peaks 0..100 (see features/media/waveform). */
+  waveform?: number[];
+  /** Images/videos: tiny JPEG preview (base64), shown blurred while downloading. */
+  thumb?: string;
   /** Decrypted (or original, for the sender) local file. Device-local only. */
   localUri?: string;
+  /** Voice notes: when this device first played it. Device-local only. */
+  playedAt?: string;
 }
 
 export interface MessageReaction {
