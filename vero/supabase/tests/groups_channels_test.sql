@@ -498,6 +498,12 @@ select pg_temp.check((select follower_count from channels where id = pg_temp.id(
 select pg_temp.as_user(:owner);
 select delete_channel(pg_temp.id('ch'));
 select pg_temp.check((select count(*) from channels where id = pg_temp.id('ch')) = 0, 'the owner deletes a channel');
+reset role;
+select pg_temp.check((select count(*) from realtime.messages where topic = 'channel:' || pg_temp.id('ch') and event = 'post.deleted') = 0
+                     and exists (select 1 from realtime.messages where topic = 'channel:' || pg_temp.id('ch') and event = 'channel.deleted'),
+  'deleting a channel sends one channel.deleted, not one event per post');
+set role authenticated;
+select pg_temp.as_user(:owner);
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- COMMUNITIES

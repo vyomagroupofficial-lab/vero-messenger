@@ -1257,7 +1257,8 @@ begin
     else
       perform realtime.send(public.channel_post_json(new), 'post.updated', 'channel:' || new.channel_id::text, true);
     end if;
-  else
+  elsif coalesce(current_setting('vero.deleting_channel', true), '') <> old.channel_id::text then
+    -- (skipped when the whole channel is being deleted: one channel.deleted suffices)
     perform realtime.send(jsonb_build_object('id', old.id), 'post.deleted', 'channel:' || old.channel_id::text, true);
   end if;
   return null;
@@ -1469,7 +1470,9 @@ begin
   end if;
   perform realtime.send(jsonb_build_object('channel_id', p_channel_id), 'channel.deleted',
                         'channel:' || p_channel_id::text, true);
+  perform set_config('vero.deleting_channel', p_channel_id::text, true);
   delete from public.channels where id = p_channel_id;
+  perform set_config('vero.deleting_channel', '', true);
 end;
 $$;
 
