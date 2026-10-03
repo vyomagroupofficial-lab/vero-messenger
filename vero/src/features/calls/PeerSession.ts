@@ -1,12 +1,13 @@
 /**
- * One WebRTC peer connection for a call (platform independent; the platform
- * specifics live in webrtc.native.ts / webrtc.web.ts).
+ * One WebRTC peer connection to ONE remote device (platform independent; the
+ * platform specifics live in webrtc.native.ts / webrtc.web.ts). PeerMesh
+ * keeps one of these per remote device in a call.
  *
  * Negotiation follows the W3C "perfect negotiation" pattern so offers from
- * both sides can't deadlock (glare):
- *   - the caller is the *impolite* peer: on an offer collision it ignores the
- *     incoming offer and keeps its own;
- *   - the callee is *polite*: it rolls back its own offer and answers.
+ * both sides can't deadlock (glare). Which side is polite is decided by the
+ * mesh from the two device ids, so both ends always agree:
+ *   - impolite: on an offer collision it ignores the incoming offer;
+ *   - polite: it rolls back its own offer and answers.
  * ICE restarts are driven by the impolite peer; the polite one asks for one
  * with a `restart` signal, which avoids most collisions in the first place.
  *
@@ -19,37 +20,59 @@ import type {
   MediaAdapter,
   PeerConfig,
   PeerLike,
+  SenderLike,
   SessionDescriptionInit,
+  StatsReportLike,
   StreamLike,
   TrackLike,
 } from './mediaTypes';
 import type { CandidatePayload, SdpPayload } from './signalingCrypto';
 
-export type MediaConnectionState = 'connected' | 'interrupted' | 'failed';
+export type PeerConnectionState = 'connecting' | 'connected' | 'interrupted' | 'failed';
 export type OutgoingSignal = 'offer' | 'answer' | 'candidates' | 'restart';
+export type MediaKind = 'audio' | 'video';
 
-export interface MediaSessionOptions {
+export interface PeerSessionOptions {
   adapter: MediaAdapter;
-  /** Callee = polite. */
+  remoteDeviceId: string;
   polite: boolean;
   config: PeerConfig;
+  /** Stream our tracks are announced in (one per call, so the remote groups them). */
   localStream: StreamLike;
+  tracks: { audio: TrackLike | null; video: TrackLike | null };
   send(type: OutgoingSignal, data: unknown): void;
   onRemoteStream(stream: StreamLike): void;
-  onConnectionChange(state: MediaConnectionState): void;
+  onConnectionChange(state: PeerConnectionState): void;
   /** Overridable for tests. */
   timers?: { setTimeout: typeof setTimeout; clearTimeout: typeof clearTimeout };
 }
 
-const MAX_ICE_RESTARTS = 3;
+export const MAX_ICE_RESTARTS = 3;
 const DISCONNECT_GRACE_MS = 3000;
 const RESTART_CHECK_MS = 8000;
 const CANDIDATE_BATCH_MS = 120;
 
-export class MediaSession {
+/** Highest audio level (0..1) in a stats report: inbound = what we hear from the peer. */
+export function audioLevelFromStats(report: StatsReportLike, direction: 'inbound' | 'outbound'): number {
+  let level = 0;
+  report.forEach((s: any) => {
+    if (!s || typeof s.audioLevel !== 'number') return;
+    const isAudio = s.kind === 'audio' || s.mediaType === 'audio';
+    const match =
+      direction === 'inbound'
+        ? (s.type === 'inbound-rtp' && isAudio) || (s.type === 'track' && s.remoteSource === true && isAudio)
+        : (s.type === 'media-source' && isAudio) || (s.type === 'track' && s.remoteSource === false && isAudio);
+    if (match) level = Math.max(level, Math.min(1, Math.max(0, s.audioLevel)));
+  });
+  return level;
+}
+
+export class PeerSession {
+  readonly remoteDeviceId: string;
   private readonly pc: PeerLike;
-  private readonly opts: MediaSessionOptions;
-  private readonly t: NonNullable<MediaSessionOptions['timers']>;
+  private readonly opts: PeerSessionOptions;
+  private readonly t: NonNullable<PeerSessionOptions['timers']>;
+  private readonly senders = new Map<MediaKind, SenderLike>();
   private makingOffer = false;
   private ignoreOffer = false;
   private renegotiatePending = false;
@@ -63,9 +86,11 @@ export class MediaSession {
   private everConnected = false;
   private remoteStream: StreamLike | null = null;
   private closed = false;
+  private state: PeerConnectionState = 'connecting';
 
-  constructor(opts: MediaSessionOptions) {
+  constructor(opts: PeerSessionOptions) {
     this.opts = opts;
+    this.remoteDeviceId = opts.remoteDeviceId;
     this.t = opts.timers ?? { setTimeout, clearTimeout };
     this.pc = opts.adapter.createPeer(opts.config, {
       onIceCandidate: (c) => this.onLocalCandidate(c),
@@ -75,7 +100,10 @@ export class MediaSession {
       },
       onIceConnectionStateChange: (s) => this.onIceState(s),
     });
-    for (const track of opts.localStream.getTracks()) this.pc.addTrack(track, opts.localStream);
+    for (const kind of ['audio', 'video'] as const) {
+      const track = opts.tracks[kind];
+      if (track) this.senders.set(kind, this.pc.addTrack(track, opts.localStream));
+    }
   }
 
   get peer(): PeerLike {
@@ -84,6 +112,14 @@ export class MediaSession {
 
   get polite(): boolean {
     return this.opts.polite;
+  }
+
+  get connectionState(): PeerConnectionState {
+    return this.state;
+  }
+
+  get isClosed(): boolean {
+    return this.closed;
   }
 
   // ── Offers / answers ──────────────────────────────────────────────────────
@@ -106,20 +142,6 @@ export class MediaSession {
     } finally {
       this.makingOffer = false;
     }
-  }
-
-  /** Re-sends our pending offer (the peer may have missed it). */
-  resendOffer(): boolean {
-    const local = this.pc.localDescription;
-    if (this.pc.signalingState === 'have-local-offer' && local?.sdp) {
-      this.opts.send('offer', { type: 'offer', sdp: local.sdp });
-      return true;
-    }
-    return false;
-  }
-
-  hasRemoteDescription(): boolean {
-    return !!this.pc.remoteDescription;
   }
 
   async handleOffer(desc: SdpPayload): Promise<void> {
@@ -160,6 +182,7 @@ export class MediaSession {
   private afterStable() {
     if (this.restartPending) {
       this.restartPending = false;
+      this.renegotiatePending = false; // an ICE-restart offer carries every change too
       void this.negotiate(true);
     } else if (this.renegotiatePending) {
       this.renegotiatePending = false;
@@ -208,6 +231,12 @@ export class MediaSession {
 
   // ── Connection monitoring / ICE restart ───────────────────────────────────
 
+  private setState(state: PeerConnectionState) {
+    if (this.state === state || this.closed) return;
+    this.state = state;
+    this.opts.onConnectionChange(state);
+  }
+
   private onIceState(state: string) {
     if (this.closed) return;
     if (state === 'connected' || state === 'completed') {
@@ -215,9 +244,9 @@ export class MediaSession {
       this.clearTimer('restartCheckTimer');
       this.restartAttempts = 0;
       this.everConnected = true;
-      this.opts.onConnectionChange('connected');
+      this.setState('connected');
     } else if (state === 'disconnected') {
-      this.opts.onConnectionChange('interrupted');
+      if (this.everConnected) this.setState('interrupted');
       // "disconnected" often heals by itself within a second or two.
       if (!this.disconnectTimer) {
         this.disconnectTimer = this.t.setTimeout(() => {
@@ -227,7 +256,7 @@ export class MediaSession {
         }, DISCONNECT_GRACE_MS);
       }
     } else if (state === 'failed') {
-      if (this.everConnected) this.opts.onConnectionChange('interrupted');
+      if (this.everConnected) this.setState('interrupted');
       this.restartIce();
     }
   }
@@ -236,7 +265,7 @@ export class MediaSession {
   restartIce(): void {
     if (this.closed || this.restartCheckTimer) return;
     if (this.restartAttempts >= MAX_ICE_RESTARTS) {
-      this.opts.onConnectionChange('failed');
+      this.setState('failed');
       return;
     }
     this.restartAttempts++;
@@ -251,33 +280,60 @@ export class MediaSession {
 
   /** The polite peer asked us (impolite) to restart ICE. */
   onRestartRequested(): void {
-    if (this.closed) return;
-    if (this.opts.polite) {
-      // Shouldn't happen; restarting from both sides would collide.
-      return;
-    }
+    if (this.closed || this.opts.polite) return; // restarting from both sides would collide
     void this.negotiate(true);
   }
 
   // ── Tracks ────────────────────────────────────────────────────────────────
 
   private onRemoteTrack(track: TrackLike, streams: StreamLike[]) {
-    const stream = streams[0] ?? this.remoteStream;
-    if (!stream) return;
+    let stream = streams[0] ?? this.remoteStream;
+    if (!stream) stream = this.opts.adapter.createStream([track]);
     if (!stream.getTracks().some((t) => t.id === track.id)) stream.addTrack(track);
     this.remoteStream = stream;
     this.opts.onRemoteStream(stream);
   }
 
-  /** Adds a new local track (voice -> video upgrade) and renegotiates. */
-  async addLocalTrack(track: TrackLike): Promise<void> {
-    this.opts.localStream.addTrack(track);
-    this.pc.addTrack(track, this.opts.localStream);
+  /**
+   * Sends `track` as our audio / video (null stops sending, e.g. camera off).
+   * Swapping tracks (camera <-> screen, front <-> back) uses replaceTrack and
+   * needs no renegotiation; the first video track in a voice call adds a
+   * transceiver and renegotiates.
+   */
+  async setTrack(kind: MediaKind, track: TrackLike | null): Promise<void> {
+    if (this.closed) return;
+    const sender = this.senders.get(kind);
+    if (sender) {
+      if (sender.track !== track) await sender.replaceTrack(track);
+      return;
+    }
+    if (!track) return;
+    this.senders.set(kind, this.pc.addTrack(track, this.opts.localStream));
     await this.negotiate(false);
   }
 
   getRemoteStream(): StreamLike | null {
     return this.remoteStream;
+  }
+
+  /** Audio level (0..1) of what we receive from this peer. */
+  async getRemoteAudioLevel(): Promise<number> {
+    if (this.closed) return 0;
+    try {
+      return audioLevelFromStats(await this.pc.getStats(), 'inbound');
+    } catch {
+      return 0;
+    }
+  }
+
+  /** Audio level (0..1) of our own microphone as sent to this peer. */
+  async getLocalAudioLevel(): Promise<number> {
+    if (this.closed) return 0;
+    try {
+      return audioLevelFromStats(await this.pc.getStats(), 'outbound');
+    } catch {
+      return 0;
+    }
   }
 
   close(): void {

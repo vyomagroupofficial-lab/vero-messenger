@@ -6,9 +6,19 @@
  * build (`npx expo run:android`, EAS Build), never in Expo Go. They're loaded
  * lazily so the rest of the app still runs in Expo Go; calls then report a
  * clear "needs a development build" error instead of crashing at import.
+ *
+ * Screen sharing
+ *   Android: getDisplayMedia() asks for MediaProjection consent; the library
+ *     runs its own `mediaProjection` foreground service (permissions added by
+ *     plugins/withVeroCalls.js).
+ *   iOS: needs a Broadcast Upload Extension (not part of this repo yet, see
+ *     README "Calls"). Sharing is offered only when the build declares one
+ *     (Info.plist RTCScreenSharingExtension, set by the config plugin's
+ *     `iosScreenShareExtension` option).
  */
 
-import { NativeModules } from 'react-native';
+import { NativeModules, Platform } from 'react-native';
+import Constants from 'expo-constants';
 import type {
   AudioRouter,
   CameraFacing,
@@ -16,8 +26,11 @@ import type {
   PeerConfig,
   PeerHandlers,
   PeerLike,
+  ScreenShareSupport,
   StreamLike,
+  TrackLike,
 } from './mediaTypes';
+import { showIosScreenSharePicker } from './screenSharePicker';
 
 type WebRTCModule = typeof import('react-native-webrtc');
 type InCallManagerModule = typeof import('react-native-incall-manager').default;
@@ -56,9 +69,8 @@ function inCallManager(): InCallManagerModule | null {
 const audio: AudioRouter = {
   supportsSpeakerToggle: true,
   startOutgoing(kind) {
-    const m = inCallManager();
     // '_DTMF_' = the standard ringback tone generated natively (no bundled file needed).
-    m?.start({ media: kind, auto: true, ringback: '_DTMF_' });
+    inCallManager()?.start({ media: kind, auto: true, ringback: '_DTMF_' });
   },
   startRingtone() {
     // Plays the system ringtone and vibrates; seconds is Android only.
@@ -88,6 +100,12 @@ const audio: AudioRouter = {
   },
 };
 
+function iosScreenShareExtension(): string | null {
+  const plist = (Constants.expoConfig?.ios?.infoPlist ?? {}) as Record<string, unknown>;
+  const ext = plist.RTCScreenSharingExtension;
+  return typeof ext === 'string' && ext ? ext : null;
+}
+
 export const mediaAdapter: MediaAdapter = {
   unavailableReason() {
     try {
@@ -105,7 +123,7 @@ export const mediaAdapter: MediaAdapter = {
       iceTransportPolicy: config.iceTransportPolicy ?? 'all',
       bundlePolicy: 'max-bundle',
       rtcpMuxPolicy: 'require',
-    });
+    } as any);
     pc.addEventListener('icecandidate', (e: any) => {
       handlers.onIceCandidate(e.candidate ? (e.candidate.toJSON?.() ?? e.candidate) : null);
     });
@@ -115,30 +133,86 @@ export const mediaAdapter: MediaAdapter = {
     return pc as PeerLike;
   },
 
+  createStream(tracks: TrackLike[]): StreamLike {
+    const { MediaStream } = lib();
+    return new MediaStream(tracks as any) as unknown as StreamLike;
+  },
+
   async getUserMedia({ audio: wantAudio, video, facing }): Promise<StreamLike> {
     const { mediaDevices } = lib();
-    const stream: any = await mediaDevices.getUserMedia({
-      audio: wantAudio,
-      video: video ? { facingMode: facing, width: 1280, height: 720, frameRate: 30 } : false,
-    });
+    let stream: any;
+    try {
+      stream = await mediaDevices.getUserMedia({
+        audio: wantAudio,
+        video: video ? { facingMode: facing, width: 1280, height: 720, frameRate: 30 } : false,
+      } as any);
+    } catch (e) {
+      const msg = (e as Error)?.message ?? '';
+      if (/permission/i.test(msg)) {
+        throw new Error(
+          video
+            ? 'Camera and microphone permission are needed for video calls. Enable them in Settings.'
+            : 'Microphone permission is needed for calls. Enable it in Settings.'
+        );
+      }
+      throw e;
+    }
     // react-native-webrtc silently drops a kind whose permission was denied.
     if (wantAudio && stream.getAudioTracks().length === 0) {
       stream.getTracks().forEach((t: any) => t.stop());
       throw new Error('Microphone permission is needed for calls. Enable it in Settings.');
     }
+    if (video && stream.getVideoTracks().length === 0 && !wantAudio) {
+      throw new Error('Camera permission is needed. Enable it in Settings.');
+    }
     return stream as StreamLike;
   },
 
-  async switchCamera(stream: StreamLike, _peer, current: CameraFacing): Promise<CameraFacing> {
-    const track: any = stream.getVideoTracks()[0];
-    if (!track) return current;
-    const next: CameraFacing = current === 'user' ? 'environment' : 'user';
-    if (typeof track._switchCamera === 'function') {
-      track._switchCamera();
-    } else {
-      await track.applyConstraints({ facingMode: next });
+  screenShareSupport(): ScreenShareSupport {
+    if (this.unavailableReason()) return { supported: false, reason: this.unavailableReason() ?? undefined };
+    if (Platform.OS === 'android') {
+      return Number(Platform.Version) >= 21
+        ? { supported: true }
+        : { supported: false, reason: 'Screen sharing needs Android 5 or later.' };
     }
-    return next;
+    if (Platform.OS === 'ios') {
+      return iosScreenShareExtension()
+        ? { supported: true }
+        : {
+            supported: false,
+            reason: 'Screen sharing on iPhone needs a Broadcast Upload Extension, which this build does not include yet.',
+          };
+    }
+    return { supported: false, reason: 'Screen sharing is not available on this device.' };
+  },
+
+  async getDisplayMedia(): Promise<StreamLike> {
+    const support = this.screenShareSupport();
+    if (!support.supported) throw new Error(support.reason || 'Screen sharing is not available.');
+    const { mediaDevices } = lib();
+    // iOS: the user starts the broadcast from the system picker; the extension
+    // then streams frames to the app through the shared App Group.
+    if (Platform.OS === 'ios') showIosScreenSharePicker();
+    try {
+      return (await mediaDevices.getDisplayMedia({ video: true } as any)) as unknown as StreamLike;
+    } catch (e) {
+      const msg = (e as Error)?.message ?? '';
+      if (/denied|cancel|permission/i.test(msg)) throw new Error('Screen sharing was cancelled.');
+      throw e;
+    }
+  },
+
+  async switchCamera(track: TrackLike, current: CameraFacing) {
+    const next: CameraFacing = current === 'user' ? 'environment' : 'user';
+    const t: any = track;
+    if (typeof t.applyConstraints === 'function') {
+      await t.applyConstraints({ facingMode: next });
+    } else if (typeof t._switchCamera === 'function') {
+      t._switchCamera();
+    } else {
+      return { facing: current };
+    }
+    return { facing: next };
   },
 
   attachRemoteAudio() {
@@ -148,10 +222,19 @@ export const mediaAdapter: MediaAdapter = {
   audio,
 };
 
-/** For <VideoSurface/>: the RTCView component (null when unavailable). */
+/** For <CallVideoView/>: the RTCView component (null when unavailable). */
 export function nativeRTCView(): any {
   try {
     return lib().RTCView;
+  } catch {
+    return null;
+  }
+}
+
+/** For the iOS broadcast picker (rendered only when an extension is configured). */
+export function nativeScreenCapturePickerView(): any {
+  try {
+    return (lib() as any).ScreenCapturePickerView ?? null;
   } catch {
     return null;
   }

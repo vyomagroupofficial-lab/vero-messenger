@@ -154,7 +154,8 @@ export function transition(call: CallState, event: CallEvent, now: number = Date
       return { call };
 
     case 'MEDIA_ERROR': {
-      const report: ServerCallStatus = s === 'calling' ? 'cancelled' : s === 'ringing' ? 'rejected' : 'failed';
+      // Caller: nobody needs to ring any more. Callee: the caller sees "Couldn't connect".
+      const report: ServerCallStatus = s === 'calling' ? 'cancelled' : 'failed';
       return { call: end(call, 'failed', 'media_error', now, event.message), report };
     }
 

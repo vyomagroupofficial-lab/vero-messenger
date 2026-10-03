@@ -183,12 +183,13 @@ test('connection never recovers -> ended (connection lost), never connected -> f
   assert.equal(callStatusLabel(never.call), "Couldn't connect");
 });
 
-test('media error before answering cancels / declines', () => {
+test('media error cancels (caller) / fails the call (callee)', () => {
   const caller = transition(outgoing(), { type: 'MEDIA_ERROR', message: 'Microphone permission denied' });
   assert.equal(caller.report, 'cancelled');
   assert.equal(callStatusLabel(caller.call), 'Microphone permission denied');
   const callee = transition(incoming(), { type: 'MEDIA_ERROR' });
-  assert.equal(callee.report, 'rejected');
+  assert.equal(callee.report, 'failed');
+  assert.equal(callee.call.status, 'failed');
 });
 
 test('finished calls ignore further events', () => {

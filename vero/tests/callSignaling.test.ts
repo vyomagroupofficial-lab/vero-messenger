@@ -9,7 +9,10 @@ import {
   SignalReplayGuard,
   parseSdpPayload,
   parseCandidates,
+  createSignalCodec,
+  type PeerIdentity,
   type SealedSignal,
+  type SignalCodec,
 } from '../src/features/calls/signalingCrypto';
 
 let sodium: Sodium;
@@ -145,4 +148,87 @@ test('payload validators', () => {
   assert.equal(c.length, 1);
   assert.equal(c[0].sdpMid, '0');
   assert.deepEqual(parseCandidates('nope'), []);
+});
+
+// ── createSignalCodec: what CallEngine uses (KeyDirectory-resolved keys) ─────
+
+function codecFor(
+  me: { deviceId: string; secretKey: string },
+  directory: Record<string, PeerIdentity | null>,
+  callId = CALL
+): SignalCodec {
+  return createSignalCodec({
+    callId,
+    myDeviceId: me.deviceId,
+    sessionId: `sid-${me.deviceId}`,
+    withSecretKey: async (fn) => fn(sodium, me.secretKey),
+    resolveDevice: async (id) => directory[id] ?? null,
+  });
+}
+
+function directory(): Record<string, PeerIdentity | null> {
+  return {
+    'caller-dev': { deviceId: 'caller-dev', userId: 'alice', publicKey: caller.publicKey },
+    'callee-dev': { deviceId: 'callee-dev', userId: 'bob', publicKey: callee.publicKey },
+    'callee-dev-2': { deviceId: 'callee-dev-2', userId: 'bob', publicKey: calleeOtherDevice.publicKey },
+    'revoked-dev': null,
+  };
+}
+
+test('codec: seal -> open authenticates the sender device and its user', async () => {
+  const a = codecFor({ deviceId: 'caller-dev', secretKey: caller.secretKey }, directory());
+  const b = codecFor({ deviceId: 'callee-dev', secretKey: callee.secretKey }, directory());
+  const sealed = await a.seal('callee-dev', 'offer', offer);
+  const opened = await b.open(sealed);
+  assert.ok(opened);
+  assert.equal(opened.from.deviceId, 'caller-dev');
+  assert.equal(opened.from.userId, 'alice');
+  assert.equal(opened.message.type, 'offer');
+  assert.deepEqual(opened.message.data, offer);
+});
+
+test('codec: signals for other devices are skipped, duplicates dropped', async () => {
+  const a = codecFor({ deviceId: 'caller-dev', secretKey: caller.secretKey }, directory());
+  const b = codecFor({ deviceId: 'callee-dev', secretKey: callee.secretKey }, directory());
+  const b2 = codecFor({ deviceId: 'callee-dev-2', secretKey: calleeOtherDevice.secretKey }, directory());
+  const sealed = await a.seal('callee-dev', 'candidates', { candidates: [] });
+  assert.equal(await b2.open(sealed), null, 'group broadcast: not addressed to me');
+  assert.ok(await b.open(sealed));
+  assert.equal(await b.open(sealed), null, 'replayed copy is dropped');
+});
+
+test('codec: unknown / revoked sender devices are rejected', async () => {
+  const dir = directory();
+  const b = codecFor({ deviceId: 'callee-dev', secretKey: callee.secretKey }, dir);
+  // Mallory's device isn't in the key directory at all.
+  const m = codecFor({ deviceId: 'mallory-dev', secretKey: mallory.secretKey }, { 'callee-dev': dir['callee-dev'] });
+  await assert.rejects(b.open(await m.seal('callee-dev', 'offer', offer)), /unknown or revoked/);
+  // A revoked device (directory returns null) is rejected the same way.
+  const r = codecFor({ deviceId: 'revoked-dev', secretKey: mallory.secretKey }, { 'callee-dev': dir['callee-dev'] });
+  await assert.rejects(b.open(await r.seal('callee-dev', 'offer', offer)), /unknown or revoked/);
+});
+
+test('codec: impersonating a known device with another key is rejected', async () => {
+  // Mallory claims to be "caller-dev" but only has her own secret key.
+  const m = codecFor({ deviceId: 'caller-dev', secretKey: mallory.secretKey }, { 'callee-dev': directory()['callee-dev'] });
+  const b = codecFor({ deviceId: 'callee-dev', secretKey: callee.secretKey }, directory());
+  await assert.rejects(b.open(await m.seal('callee-dev', 'offer', offer)), SignalAuthError);
+});
+
+test('codec: tampering, cross-call replay and self-addressed loops are rejected', async () => {
+  const a = codecFor({ deviceId: 'caller-dev', secretKey: caller.secretKey }, directory());
+  const b = codecFor({ deviceId: 'callee-dev', secretKey: callee.secretKey }, directory());
+  const sealed = await a.seal('callee-dev', 'answer', { type: 'answer', sdp: 'x' });
+  const bytes = sodium.from_base64(sealed.c);
+  bytes[3] ^= 0x10;
+  await assert.rejects(b.open({ ...sealed, c: sodium.to_base64(bytes) }), SignalAuthError);
+  const other = codecFor({ deviceId: 'callee-dev', secretKey: callee.secretKey }, directory(), OTHER_CALL);
+  await assert.rejects(other.open(sealed), /another call/);
+  await assert.rejects(b.open({ ...sealed, from: 'callee-dev' }), /this device/);
+  await assert.rejects(b.open({ hello: 'world' }), /Malformed/);
+});
+
+test('codec: cannot seal to a device without a pinned key', async () => {
+  const a = codecFor({ deviceId: 'caller-dev', secretKey: caller.secretKey }, directory());
+  await assert.rejects(a.seal('nobody', 'offer', offer), /Unknown recipient/);
 });

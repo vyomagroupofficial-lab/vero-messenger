@@ -27,14 +27,13 @@ export const SIGNAL_VERSION = 1 as const;
 
 export type SignalType =
   | 'ringing' // callee device -> caller device: "I'm ringing"
-  | 'ready' // answering device -> caller device: accepted, send me the offer
   | 'offer'
   | 'answer'
   | 'candidates'
-  | 'media' // mic / camera state for the peer's UI
-  | 'restart'; // polite peer asks the impolite one for an ICE restart
+  | 'restart' // polite peer asks the impolite one for an ICE restart
+  | 'bye'; // this device is leaving the call (faster than waiting for the server)
 
-const SIGNAL_TYPES: readonly SignalType[] = ['ringing', 'ready', 'offer', 'answer', 'candidates', 'media', 'restart'];
+const SIGNAL_TYPES: readonly SignalType[] = ['ringing', 'offer', 'answer', 'candidates', 'restart', 'bye'];
 
 /** What travels over the `call:<id>` broadcast channel. */
 export interface SealedSignal {
@@ -223,4 +222,83 @@ export function parseCandidates(data: unknown): CandidatePayload[] {
       sdpMid: typeof c.sdpMid === 'string' ? c.sdpMid : null,
       sdpMLineIndex: typeof c.sdpMLineIndex === 'number' ? c.sdpMLineIndex : null,
     }));
+}
+
+// ── Codec: sealing / opening bound to one call and this device ─────────────
+
+/** A remote device as resolved through KeyDirectory (pinned key). */
+export interface PeerIdentity {
+  deviceId: string;
+  userId: string;
+  publicKey: string;
+}
+
+export interface OpenedSignal {
+  from: PeerIdentity;
+  message: SignalMessage;
+}
+
+export interface SignalCodec {
+  readonly sessionId: string;
+  seal(toDeviceId: string, type: SignalType, data: unknown): Promise<SealedSignal>;
+  /**
+   * Opens a payload received on call:<id>. Returns null for signals addressed
+   * to another device and for duplicates; throws SignalAuthError for anything
+   * forged, tampered with, replayed from another call or sent by an unknown /
+   * revoked device.
+   */
+  open(raw: unknown): Promise<OpenedSignal | null>;
+}
+
+export interface SignalCodecDeps {
+  callId: string;
+  myDeviceId: string;
+  /** Runs `fn` with this device's identity secret key (CryptoManager.withIdentitySecretKey). */
+  withSecretKey<T>(fn: (sodium: Sodium, secretKey: string) => T): Promise<T>;
+  /** Pinned public key + owner of a device; null if unknown or revoked. */
+  resolveDevice(deviceId: string): Promise<PeerIdentity | null>;
+  /** Random id for this call session (seq restarts at 1 per session). */
+  sessionId: string;
+}
+
+export function createSignalCodec(deps: SignalCodecDeps): SignalCodec {
+  let seq = 0;
+  const guard = new SignalReplayGuard();
+
+  return {
+    sessionId: deps.sessionId,
+
+    async seal(toDeviceId, type, data) {
+      const peer = await deps.resolveDevice(toDeviceId);
+      if (!peer) throw new SignalAuthError('Unknown recipient device');
+      const message: SignalMessage = { type, data, sid: deps.sessionId, seq: ++seq };
+      return deps.withSecretKey((sodium, sk) =>
+        sealSignal(sodium, { callId: deps.callId, fromDeviceId: deps.myDeviceId, toDeviceId }, message, sk, peer.publicKey)
+      );
+    },
+
+    async open(raw) {
+      if (!isSealedSignal(raw)) throw new SignalAuthError('Malformed signal');
+      if (raw.to !== deps.myDeviceId) return null; // someone else's (group calls broadcast to all)
+      if (raw.call !== deps.callId) throw new SignalAuthError('Signal belongs to another call');
+      if (raw.from === deps.myDeviceId) throw new SignalAuthError('Signal claims to come from this device');
+      const sender = await deps.resolveDevice(raw.from);
+      if (!sender) throw new SignalAuthError('Signal from an unknown or revoked device');
+      const message = await deps.withSecretKey((sodium, sk) =>
+        openSignal(
+          sodium,
+          raw,
+          {
+            callId: deps.callId,
+            myDeviceId: deps.myDeviceId,
+            senderDeviceId: sender.deviceId,
+            senderPublicKey: sender.publicKey,
+          },
+          sk
+        )
+      );
+      if (!guard.accept(sender.deviceId, message)) return null;
+      return { from: sender, message };
+    },
+  };
 }

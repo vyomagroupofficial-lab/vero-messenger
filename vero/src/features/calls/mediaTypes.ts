@@ -2,7 +2,8 @@
  * Minimal structural types shared by the WebRTC platform adapters
  * (webrtc.native.ts = react-native-webrtc, webrtc.web.ts = browser WebRTC).
  * Both libraries implement the W3C API; these types cover only what Vero uses
- * so the call logic is platform independent.
+ * so the call logic (and its unit tests, which use fakes) is platform
+ * independent.
  */
 
 export interface IceServer {
@@ -34,6 +35,8 @@ export interface TrackLike {
   enabled: boolean;
   readonly readyState?: string;
   stop(): void;
+  addEventListener?(type: 'ended', listener: () => void): void;
+  removeEventListener?(type: 'ended', listener: () => void): void;
 }
 
 export interface StreamLike {
@@ -43,6 +46,8 @@ export interface StreamLike {
   getVideoTracks(): TrackLike[];
   addTrack(track: TrackLike): void;
   removeTrack(track: TrackLike): void;
+  /** react-native-webrtc only: the URL an RTCView renders. */
+  toURL?(): string;
 }
 
 export interface SenderLike {
@@ -55,6 +60,11 @@ export interface PeerHandlers {
   onTrack(track: TrackLike, streams: StreamLike[]): void;
   onConnectionStateChange(state: string): void;
   onIceConnectionStateChange(state: string): void;
+}
+
+/** Iterable stats (RTCStatsReport is a Map on both platforms). */
+export interface StatsReportLike {
+  forEach(cb: (value: any) => void): void;
 }
 
 export interface PeerLike {
@@ -70,6 +80,7 @@ export interface PeerLike {
   addIceCandidate(candidate: IceCandidateInit): Promise<void>;
   addTrack(track: TrackLike, stream: StreamLike): SenderLike;
   getSenders(): SenderLike[];
+  getStats(): Promise<StatsReportLike>;
   close(): void;
 }
 
@@ -89,14 +100,29 @@ export interface AudioRouter {
   stop(): void;
 }
 
+export interface ScreenShareSupport {
+  supported: boolean;
+  /** User-facing reason when unsupported. */
+  reason?: string;
+}
+
 export interface MediaAdapter {
   /** null when real-time media works here; otherwise a user-facing reason. */
   unavailableReason(): string | null;
   createPeer(config: PeerConfig, handlers: PeerHandlers): PeerLike;
+  /** An empty stream that local tracks are grouped in (one stream id per call). */
+  createStream(tracks: TrackLike[]): StreamLike;
   getUserMedia(options: { audio: boolean; video: boolean; facing: CameraFacing }): Promise<StreamLike>;
-  /** Switches the camera of the local video track in place; returns the new facing. */
-  switchCamera(stream: StreamLike, peer: PeerLike | null, current: CameraFacing): Promise<CameraFacing>;
-  /** Plays remote audio where the platform doesn't do it automatically (web). */
-  attachRemoteAudio(stream: StreamLike | null): void;
+  screenShareSupport(): ScreenShareSupport;
+  /** Asks the user what to share and returns a stream with one video track. */
+  getDisplayMedia(): Promise<StreamLike>;
+  /**
+   * Flips the camera. Returns the facing now in use and, when the platform had
+   * to create a new track (web), that track: the caller must swap it into
+   * every peer connection.
+   */
+  switchCamera(track: TrackLike, current: CameraFacing): Promise<{ facing: CameraFacing; replacement?: TrackLike }>;
+  /** Plays a remote participant's audio where the platform doesn't do it automatically (web). */
+  attachRemoteAudio(key: string, stream: StreamLike | null): void;
   readonly audio: AudioRouter;
 }

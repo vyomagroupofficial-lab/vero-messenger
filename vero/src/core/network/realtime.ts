@@ -10,8 +10,8 @@ import { supabase } from './supabase';
 
 export type BroadcastHandler = (payload: any) => void;
 
-/** Server-sent events on the personal user:<id> topic (story.* from 008_stories.sql). */
-const USER_EVENTS = ['inbox.message', 'call.invite', 'story.new', 'story.deleted', 'story.viewed'] as const;
+/** Server-sent events on the personal user:<id> topic (call.status from 002_calls.sql, story.* from 008_stories.sql). */
+const USER_EVENTS = ['inbox.message', 'call.invite', 'call.status', 'story.new', 'story.deleted', 'story.viewed'] as const;
 export type UserEvent = (typeof USER_EVENTS)[number];
 
 export function privateChannel(topic: string): RealtimeChannel {
