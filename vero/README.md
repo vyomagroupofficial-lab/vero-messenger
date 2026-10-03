@@ -28,7 +28,7 @@ src/
     messages/              Send/receive/decrypt, receipts, reactions, timers
     chats/                 Conversation list, directory, groups, blocks/reports
     media/                 Chunked encrypt -> signed upload, signed download -> decrypt; voice notes
-    calls/                 Call signalling (ringing/answer/history)
+    calls/                 1:1 + group WebRTC calls (mesh), sealed signalling, screen sharing
     notifications/         Push registration, notification taps, muted chats
     settings/              Privacy settings (synced + enforced), app lock, settings screens
     presence/              Online status (Realtime Presence) and last seen
@@ -254,6 +254,109 @@ links instead (they open the app if installed, or the web build otherwise):
 3. Optionally deploy the web export (`npx expo export --platform web`) there
    with an SPA fallback so `/join/<token>` renders the join screen in a browser.
 
+## Calls
+
+Code: `src/features/calls/` (logic, `useCall()`, `<CallVideoView/>`,
+`<GroupCallGrid/>`, `<CallControls/>`, `<GroupCallButton/>`), wired into
+`app/call/[id].tsx` and the group chat header. Schema:
+`supabase/migrations/002_calls.sql` (tests `supabase/tests/calls_test.sql`),
+push wiring in `090_cross_feature_wiring.sql`, TURN in
+`supabase/functions/turn-credentials`.
+
+**Media.** WebRTC: `react-native-webrtc` on iOS/Android, the browser's own
+`RTCPeerConnection` / `getUserMedia` / `getDisplayMedia` on web and desktop
+(`webrtc.native.ts` / `webrtc.web.ts`). Audio routing, ringtone, ringback and
+proximity on phones use `react-native-incall-manager`. Both are native
+modules: **calls need a development build** (`npx expo run:android`,
+`npx expo run:ios` or EAS Build); in Expo Go the call screen says so instead
+of crashing. Permissions and background modes come from
+`plugins/withVeroCalls.js` (microphone, camera, Bluetooth, foreground
+services incl. `mediaProjection`, iOS `audio` + `voip` background modes).
+
+**Topology.** Full mesh: one `RTCPeerConnection` per remote *device*
+(`PeerMesh`), perfect negotiation (politeness from the two device ids, so
+glare resolves itself), trickle ICE in small batches, ICE restart on
+failure (up to 3 times) with "Reconnecting…" in between. A 1:1 call is a
+mesh of two. Group calls are limited to **8 people** (each phone uploads its
+media once per peer, so bigger calls need an SFU); the server enforces the
+limit in `join_group_call` and the UI says "This call is full".
+
+**Signalling is end-to-end sealed.** Every offer / answer / ICE batch is
+`crypto_box`ed from this device's identity key to the recipient device's
+pinned key (KeyDirectory, trust on first use, covered by safety numbers),
+bound to `call id | from device | to device`, numbered against replays, and
+broadcast on the private `call:<id>` topic. Unknown, revoked or impersonating
+devices and tampered payloads are rejected; a device must also be a call
+participant (the answering device for 1:1, a `call_participants` row for
+groups). So the server can't swap the DTLS fingerprints in the SDP to sit in
+the middle of the media. What the server *does* see: who calls whom / which
+group, when, call type, outcome, which device answered, who is in a group
+call and their mute / camera / screen-share flags.
+
+**1:1 flow.** `start_direct_call` -> `call.invite` on the callee's
+`user:<id>` (+ push). Every callee device rings; the first `answer_call`
+wins and every other device shows "Answered on another device". Decline,
+busy (already in a call), caller cancel before answer (the callee logs a
+missed call), 45 s timeout (missed) and hang-up all go through
+`update_call_status`, which broadcasts `call.status` to both users and
+`call:<id>` instantly. Heartbeats every 20 s; `expire_stale_calls()` (pg_cron
+every minute, and lazily from the RPCs) cleans up calls whose apps died.
+History is kept for both sides on the server (RLS) and synced into the local
+call log.
+
+**Group flow.** The call button in a group chat starts a voice or video call
+(or joins the live one, shown with a green dot). Members get an invite on
+their user topic and a push; they can join or leave while it's live; the
+last one out ends it. Joining from a second device moves you. The grid shows
+every participant with mute / camera indicators and highlights the active
+speaker (WebRTC audio levels); a shared screen is shown large.
+
+**Controls** (`useCall()` / `<CallControls/>`): mute (disables the mic
+track), camera on/off (really releases the camera), flip camera, speaker /
+earpiece (phones), screen share. Turning video on in a voice call adds a
+track and renegotiates; camera <-> screen swaps use `replaceTrack`.
+
+**Screen sharing.** Web/desktop: `getDisplayMedia`. Android:
+react-native-webrtc's MediaProjection flow (system consent dialog + its
+`mediaProjection` foreground service). iOS needs a **Broadcast Upload
+Extension** with an App Group, which this repo doesn't include yet; the JS
+side is ready and enabled only when the build declares one
+(`["./plugins/withVeroCalls", { "iosScreenShareExtension": "<bundle id>",
+"iosAppGroup": "group.<...>" }]`), otherwise the button explains why it's
+unavailable. Mobile browsers can't share their screen.
+
+**TURN.** Clients use Google STUN plus whatever `turn-credentials` returns
+(cached); if it fails they fall back to STUN only, which works on most but
+not all networks (strict NATs / some carriers need TURN). Configure one of:
+- Cloudflare Realtime TURN: `TURN_CLOUDFLARE_KEY_ID` + `TURN_CLOUDFLARE_API_TOKEN`
+- any TURN server: `TURN_URLS` (comma separated), `TURN_USERNAME`, `TURN_CREDENTIAL`
+
+as function secrets, or with SQL only, in Vault (read via the
+service-role-only `get_turn_config()`):
+`select vault.create_secret('<value>', 'vero_turn_cloudflare_key_id');` (also
+`vero_turn_cloudflare_api_token`, `vero_turn_urls`, `vero_turn_username`,
+`vero_turn_credential`). `EXPO_PUBLIC_CALL_RELAY_ONLY=true` forces all media
+through TURN so peers never learn each other's IP address.
+
+**Incoming calls when the app is in the background / closed** use the shared
+push stack: the database sends a `call` push from an insert trigger when
+pg_net + Vault are configured (see Setup), otherwise the caller's app asks
+`send-push`. Group calls ring every member not already in the call (muted
+groups don't ring). The notification ("Incoming voice call", with the
+caller's name only if previews are on) has Answer / Decline buttons; Answer
+opens the app and answers, Decline rejects via `update_call_status`. Upgrade
+path: CallKit + PushKit on iOS and a self-managed ConnectionService /
+full-screen intent on Android for a real lock-screen ringing UI (the `voip`
+background mode is already declared for that; App Review expects PushKit to
+be used with it).
+
+**Not verified yet:** calls between two real phones (native WebRTC, audio
+routing, Bluetooth, MediaProjection, push while the app is killed). The web
+media path was verified in headless Chromium (`scripts/calls-browser-check.mjs`:
+real peer connections, sealed signalling, 3-way mesh, renegotiation, screen
+share, glare, leave); the call logic, signalling crypto and SQL are covered by
+unit and database tests.
+
 ## Security status (be honest with users)
 
 Done:
@@ -269,6 +372,9 @@ Done:
 - Push notifications contain no content ("New message"; the sender's name only
   if the recipient turns on previews)
 - Disappearing messages (server-side hard delete plus local purge)
+- Voice / video calls, 1:1 and groups of up to 8, with screen sharing: media is
+  DTLS-SRTP peer-to-peer and all signalling (SDP, ICE) is sealed device-to-device
+  (see "Calls")
 - Privacy settings enforced (read receipts, typing, last seen, online)
 - App lock (biometrics / device passcode) and app-switcher cover
 - End-to-end encrypted backups (recovery key and/or passphrase)
@@ -308,8 +414,9 @@ Limits of the forward secrecy we have (be precise):
 Not done yet (roadmap):
 - **MLS / sender keys for large groups**, header encryption, and sealed sender
   (the server still sees which device sent each message).
-- **Call media.** Signalling works (invite, ring, accept, decline, history);
-  audio/video over WebRTC isn't wired up yet.
+- **Calls:** CallKit (iOS) / ConnectionService (Android) for a native
+  lock-screen call UI, an SFU for calls larger than 8, and an iOS Broadcast
+  Upload Extension for screen sharing from iPhones (see "Calls").
 - Encrypted group names/avatars.
 - On-device testing of libsodium's asm.js fallback on Hermes for large files
   (chunked encryption keeps memory flat, but a 50 MB video takes several
@@ -322,7 +429,7 @@ Not done yet (roadmap):
 ```bash
 supabase link --project-ref <your-project>
 supabase db push                     # applies supabase/migrations
-supabase functions deploy media-upload media-download send-push cleanup-expired device-link
+supabase functions deploy media-upload media-download send-push cleanup-expired device-link turn-credentials
 supabase secrets set CRON_SECRET=$(openssl rand -hex 32)
 ```
 
@@ -390,6 +497,7 @@ npm run typecheck           # TypeScript
 npm test                    # crypto + payload + receipt unit tests
 ./scripts/test-db.sh        # schema/RLS/RPC tests (needs a local PostgreSQL; PGHOST/PGPORT/PGUSER)
 (cd supabase/functions && npx deno check --no-lock */index.ts)
+node scripts/calls-browser-check.mjs   # optional: real WebRTC in headless Chromium (needs Playwright)
 ```
 
 ## QR codes, contact discovery, linked devices, desktop
