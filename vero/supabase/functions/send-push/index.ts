@@ -27,8 +27,10 @@ Deno.serve(async (req) => {
     const payload = (await req.json()) as WebhookPayload;
     const msg = payload.record;
     if (payload.type !== "INSERT" || payload.table !== "messages" || !msg) return json({ skipped: true });
-    // Reactions and timer changes don't need a wake-up.
-    if (msg.message_type === "reaction" || msg.message_type === "system") return json({ skipped: true });
+    // Reactions, timer changes and control messages (edits) don't need a wake-up.
+    if (msg.message_type === "reaction" || msg.message_type === "system" || msg.message_type === "control") {
+      return json({ skipped: true });
+    }
 
     const admin = adminClient();
     const { data: members } = await admin
