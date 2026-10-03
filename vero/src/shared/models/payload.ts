@@ -7,17 +7,20 @@ import type { MediaAttachment, ServerMessageType } from './Message';
 import { isValidChunkSize } from '../../core/crypto/attachments';
 import { sanitizeWaveform } from '../../features/media/waveform';
 import { ExtensionPayload, extensionServerType, parseExtensionPayload } from './payloadExtensions';
+import { EditPayload, parseEditPayload, parseForwardHops } from './messageExtras';
 
 export type MediaKind = 'image' | 'video' | 'voice' | 'document';
 
 /** What goes on the wire for an attachment: everything except device-local fields. */
 export type MessageMedia = Omit<MediaAttachment, 'localUri' | 'playedAt'>;
 
+/** `fwd`: how many times the content has been forwarded (1 = forwarded once). */
 export type MessagePayload =
-  | { t: 'text'; body: string }
-  | { t: 'media'; kind: MediaKind; caption?: string; media: MessageMedia }
+  | { t: 'text'; body: string; fwd?: number }
+  | { t: 'media'; kind: MediaKind; caption?: string; media: MessageMedia; fwd?: number }
   | { t: 'reaction'; target: string; emoji: string | null }
   | { t: 'timer'; seconds: number }
+  | EditPayload
   | ExtensionPayload;
 
 export const MAX_TEXT_LENGTH = 5000;
@@ -32,6 +35,8 @@ export function serverTypeFor(payload: MessagePayload): ServerMessageType {
       return 'reaction';
     case 'timer':
       return 'system';
+    case 'edit':
+      return 'control';
     default:
       return extensionServerType(payload);
   }
@@ -79,8 +84,13 @@ export function parsePayload(raw: string): MessagePayload | null {
   }
   if (!p || typeof p !== 'object') return null;
   switch (p.t) {
-    case 'text':
-      return str(p.body, MAX_TEXT_LENGTH) ? { t: 'text', body: p.body } : null;
+    case 'text': {
+      if (!str(p.body, MAX_TEXT_LENGTH)) return null;
+      const fwd = parseForwardHops(p.fwd);
+      return fwd ? { t: 'text', body: p.body, fwd } : { t: 'text', body: p.body };
+    }
+    case 'edit':
+      return parseEditPayload(p, MAX_TEXT_LENGTH);
     case 'reaction':
       return str(p.target, 64) && (p.emoji === null || str(p.emoji, 16))
         ? { t: 'reaction', target: p.target, emoji: p.emoji }
@@ -129,7 +139,9 @@ export function parsePayload(raw: string): MessagePayload | null {
       if ((p.kind === 'image' || p.kind === 'video') && str(m.thumb, MAX_THUMB_LENGTH) && BASE64_RE.test(m.thumb)) {
         media.thumb = m.thumb;
       }
+      const fwd = parseForwardHops(p.fwd);
       return {
+        ...(fwd ? { fwd } : {}),
         t: 'media',
         kind: p.kind,
         caption: str(p.caption, MAX_TEXT_LENGTH) ? p.caption : undefined,

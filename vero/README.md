@@ -196,9 +196,60 @@ Code: `src/features/stories/`, screens in `app/stories/`, schema in
 
 | Server can see | Server cannot see |
 | --- | --- |
-| Who is in which conversation, when messages are sent, coarse type (`text`/`media`/`reaction`/`system`) | Message text, captions, reactions, file names, real file types |
+| Who is in which conversation, when messages are sent, coarse type (`text`/`media`/`reaction`/`system`/`control`) | Message text, captions, reactions, edits, forward counts, stars, file names, real file types |
 | Profiles (username, display name, about), group names | Attachment contents or keys |
 | Device public keys, push tokens | Private keys (they never leave the device keystore) |
+
+## Messaging: edit, delete, forward, star, search, pin/archive
+
+Schema: `supabase/migrations/006_messaging.sql` (tests: `supabase/tests/messaging_test.sql`).
+Client: `src/features/messages/` (`edits.ts`, `forward.ts`, `messageActions.ts`,
+`messageEffects.ts`, `selfSync.ts`), `src/features/chats/` (`chatList.ts`,
+pin/archive), `src/features/search/`, local tables in `src/core/storage/messagingSchema.ts`.
+
+- **Edit** (15 minutes, text and photo/video captions): sent as an encrypted
+  `edit` payload; the server only sees a `control` row. Every device - the
+  recipients' and the sender's other devices - applies it only if the edit
+  comes from the original sender in the same chat within the window, using
+  server timestamps; an "edited" label is shown and the edit history is kept
+  on the device. Edits that arrive before their message are applied when it does.
+- **Delete for everyone** (48 hours, enforced by `delete_message()`): the
+  server wipes the ciphertext and keeps a tombstone; devices show "This
+  message was deleted", drop the cached attachment and the edit history, and
+  the sender also deletes its edit rows. Devices that were offline catch up
+  with `deleted_at > last sync`; realtime deletes are re-checked against the
+  server row. *Delete for me* stays on the device.
+- **Forward** one or many messages to up to 5 chats (1 when it was already
+  forwarded 5+ times: "Forwarded many times"). The hop count is inside the
+  encrypted payload. Attachments are not re-uploaded: `forward_media()` lets a
+  member reuse an encrypted blob they can already download in another chat
+  they belong to (a new `media` row pointing at the same blob), and the file
+  key is re-wrapped in the new E2EE message. `cleanup-expired` deletes a blob
+  only when no live `media` row references it.
+- **Starred messages** (`app/starred.tsx`, all chats or one chat): stored
+  locally and synced to your other devices as end-to-end encrypted
+  `self_sync_events` addressed only to your own devices (with one device
+  nothing is uploaded). The server learns neither which messages nor that it
+  is about stars.
+- **Search**: on-device SQLite FTS5 index over decrypted messages (kept in
+  sync by triggers; LIKE fallback where FTS5 isn't compiled in, e.g. the web
+  build), in-chat search with highlighting, previous/next result and
+  jump-to-message, and message results in the chat list search. Only messages
+  this device has downloaded are searchable.
+- **Chat list**: decrypted previews (sender name in groups, 📷 Photo, 🎤 Voice
+  message, deleted notices), delivery ticks, unread counts (messages from
+  others after your read watermark - reading on one device clears the others
+  on the next refresh), bold unread rows and a total badge on the Chats tab.
+  Chats are marked read only while open and in the foreground; with read
+  receipts off, only a delivery receipt is sent.
+- **Pin (max 3) and archive**: private per-user rows in `conversation_prefs`
+  (not on `conversation_members`, which co-members can read), changed only via
+  `pin_conversation()` / `archive_conversation()`. Archived chats return to the
+  list when someone writes, unless *Keep chats archived* is on (Archived screen,
+  stored on the device).
+- Sends adopt the server timestamp (ticks and sync cursors use server time);
+  a failed message is retried with the same id, so a send that actually got
+  through is not duplicated.
 
 ## Groups, invite links, channels and communities
 
