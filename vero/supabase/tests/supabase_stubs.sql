@@ -75,24 +75,6 @@ returns void language sql as $$
          description = coalesce(new_description, description), updated_at = now() where id = secret_id
 $$;
 
--- pg_net stand-in: records requests instead of sending them.
-create schema net;
-create table net.http_request_queue (
-  id                   bigserial primary key,
-  method               text not null,
-  url                  text not null,
-  headers              jsonb,
-  body                 jsonb,
-  timeout_milliseconds integer
-);
-create function net.http_post(url text, body jsonb default '{}'::jsonb, params jsonb default '{}'::jsonb,
-                              headers jsonb default '{"Content-Type": "application/json"}'::jsonb,
-                              timeout_milliseconds integer default 5000)
-returns bigint language sql as $$
-  insert into net.http_request_queue (method, url, headers, body, timeout_milliseconds)
-  values ('POST', url, headers, body, timeout_milliseconds) returning id
-$$;
-
 -- Supabase Storage stand-in: buckets, objects (with RLS) and storage.foldername().
 create schema storage;
 create table storage.buckets (

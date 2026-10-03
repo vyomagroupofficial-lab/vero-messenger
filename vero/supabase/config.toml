@@ -16,3 +16,8 @@ verify_jwt = false
 # Called by signed-out devices (QR login); signed-in actions check the JWT itself.
 [functions.device-link]
 verify_jwt = false
+
+# Search requests verify the user JWT inside the function; preview/GIF
+# downloads use short-lived HMAC-signed URLs (so <img> tags can load them).
+[functions.gif-search]
+verify_jwt = false

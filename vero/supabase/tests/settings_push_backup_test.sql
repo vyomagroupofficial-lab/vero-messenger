@@ -29,6 +29,25 @@ $$;
 
 set client_min_messages = notice;
 
+-- pg_net stand-in (created here, not in supabase_stubs.sql, because other
+-- tests bring their own): records requests instead of sending them.
+create schema net;
+create table net.http_request_queue (
+  id                   bigserial primary key,
+  method               text not null,
+  url                  text not null,
+  headers              jsonb,
+  body                 jsonb,
+  timeout_milliseconds integer
+);
+create function net.http_post(url text, body jsonb default '{}'::jsonb, params jsonb default '{}'::jsonb,
+                              headers jsonb default '{"Content-Type": "application/json"}'::jsonb,
+                              timeout_milliseconds integer default 5000)
+returns bigint language sql as $$
+  insert into net.http_request_queue (method, url, headers, body, timeout_milliseconds)
+  values ('POST', url, headers, body, timeout_milliseconds) returning id
+$$;
+
 \set alice '''aaaaaaaa-0000-4000-8000-000000000001'''
 \set bob   '''bbbbbbbb-0000-4000-8000-000000000002'''
 \set carol '''cccccccc-0000-4000-8000-000000000003'''

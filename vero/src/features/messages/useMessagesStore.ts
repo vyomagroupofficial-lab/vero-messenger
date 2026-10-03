@@ -15,6 +15,7 @@ import { conversationRepository } from '../chats/ConversationRepository';
 import { memberNames, useChatsStore } from '../chats/useChatsStore';
 import { useSettingsStore } from '../settings/useSettingsStore';
 import { mayBroadcastTyping } from '../settings/privacy';
+import { mediaRepository } from '../media/MediaRepository';
 import { messageRepository, SendOptions, ServerMessageRow } from './MessageRepository';
 
 const TYPING_TTL_MS = 6000;
@@ -155,6 +156,7 @@ export const useMessagesStore = create<MessagesState>((set, get) => {
       patch(conversationId, () => ({ isLoading: true, typing: {} }));
 
       await databaseService.purgeExpired();
+      void mediaRepository.sweepCache(); // decrypted files of expired/deleted messages
       const cachedConv = useChatsStore.getState().conversations.find((c) => c.id === conversationId) ?? null;
       const cachedMessages = await databaseService.getMessages(conversationId);
       patch(conversationId, () => ({
@@ -240,6 +242,7 @@ export const useMessagesStore = create<MessagesState>((set, get) => {
       const session = requireSession();
       if (forEveryone) await messageRepository.deleteForEveryone(session, message);
       else await messageRepository.deleteForMe(message.id);
+      mediaRepository.evict(message.media);
       get().remove(message.conversationId, message.id);
       void useChatsStore.getState().refreshLocal();
     },
@@ -253,6 +256,7 @@ export const useMessagesStore = create<MessagesState>((set, get) => {
 
     clearLocalHistory: async (conversationId) => {
       await databaseService.clearConversation(conversationId);
+      void mediaRepository.sweepCache();
       patch(conversationId, () => ({ messages: [], hasMore: false }));
       void useChatsStore.getState().refreshLocal();
     },
