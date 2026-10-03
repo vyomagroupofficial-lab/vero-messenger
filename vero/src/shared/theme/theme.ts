@@ -270,7 +270,10 @@ export const Motion = {
   stagger: 40,
 } as const;
 
-/** Static dark palette under the old names, for code outside React. */
+/**
+ * Static dark palette under the old names, for code outside React — and a bridge for screens
+ * not yet moved to useTheme(): the pre-redesign token names map onto Ink & Brass.
+ */
 export const Colors = {
   ...dark,
   ink: dark.bg,
@@ -278,4 +281,88 @@ export const Colors = {
   brass: dark.accent,
   sage: dark.success,
   ember: dark.danger,
+  // Legacy names
+  background: dark.bg,
+  backgroundSecondary: dark.panel,
+  surface: dark.panel,
+  surfaceElevated: dark.raised,
+  surfaceHighlight: dark.field,
+  surfaceGlass: 'rgba(25,29,26,0.86)',
+  surfaceGlassLight: dark.tint,
+  accentLight: dark.accentHover,
+  accentDark: '#B88A3E',
+  accentGlow: dark.accentLine,
+  accentSubtle: dark.accentTint,
+  emerald: dark.success,
+  emeraldLight: dark.successInk,
+  emeraldGlow: dark.successLine,
+  emeraldSubtle: dark.successTint,
+  purple: '#9C8BC4',
+  purpleLight: '#B8AAD9',
+  purpleGlow: 'rgba(156,139,196,0.35)',
+  purpleSubtle: 'rgba(156,139,196,0.12)',
+  teal: '#7FB5A8',
+  online: dark.success,
+  offline: dark.faint,
+  error: dark.danger,
+  warning: dark.accentHover,
+  textPrimary: dark.text,
+  textSecondary: dark.muted,
+  textTertiary: dark.faint,
+  textInverse: dark.bg,
+  textMuted: dark.placeholder,
+  bubbleSent: dark.mine,
+  bubbleSentGradientStart: dark.mine,
+  bubbleSentGradientEnd: '#173D32',
+  bubbleReceived: dark.theirs,
+  bubbleReceivedBorder: dark.line,
+  border: dark.line,
+  borderLight: dark.line2,
+  borderAccent: dark.accentLine,
+  borderEmerald: dark.successLine,
+  divider: dark.line,
+  glass: 'rgba(18,21,19,0.88)',
+  glassHighlight: dark.accentTint,
+  inputBackground: dark.field,
+  inputBorder: dark.line2,
+  inputFocusBorder: dark.accent,
+  white: '#FFFFFF',
+} as const;
+
+/** Legacy scales, kept for screens not yet on makeStyles(). */
+export const Typography = {
+  fontSans: FONT_SETS.latin.body,
+  xs: 11,
+  sm: 13,
+  base: 15,
+  md: 16,
+  lg: 18,
+  xl: 20,
+  '2xl': 24,
+  '3xl': 28,
+  '4xl': 34,
+  regular: '400' as const,
+  medium: '500' as const,
+  semibold: '600' as const,
+  bold: '700' as const,
+  extrabold: '800' as const,
+  tight: 1.2,
+  normal: 1.5,
+  relaxed: 1.8,
+} as const;
+
+export const Spacing = { xs: 4, sm: 8, md: 12, base: 16, lg: 20, xl: 24, '2xl': 32, '3xl': 40, '4xl': 48, '5xl': 64 } as const;
+
+export const BorderRadius = {
+  sm: 6,
+  md: 10,
+  lg: 14,
+  xl: 18,
+  '2xl': 22,
+  '3xl': 28,
+  full: 9999,
+  bubbleSent: 20,
+  bubbleReceived: 20,
+  bubbleTailSent: 4,
+  bubbleTailReceived: 4,
 } as const;

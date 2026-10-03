@@ -12,6 +12,7 @@ import { Conversation, Message, conversationTitle } from '../../src/shared/model
 import { makeStyles, useTheme } from '../../src/shared/theme/ThemeProvider';
 import { useT } from '../../src/shared/i18n';
 import { conversationPreview, listTime, typeLabel } from '../../src/shared/i18n/format';
+import { StoriesTray } from '../../src/features/stories/components/StoriesTray';
 import { Avatar, Badge, Button, Chip, EmptyState, Grain, Icon, IconButton, Pill, Pressy, Rise, SearchField, VeroMark, useLayout } from '../../src/shared/ui';
 
 type Category = 'all' | 'unread' | 'groups' | 'direct';
@@ -141,6 +142,7 @@ export default function ChatsScreen() {
           </Text>
         </View>
         <View style={{ flexDirection: 'row', gap: 8 }}>
+          <IconButton icon="megaphone" label={t('chats.channels')} variant="filled" onPress={() => router.push('/channels')} />
           <IconButton icon="users" label={t('chats.newGroup')} variant="filled" onPress={() => router.push('/new-group')} />
           {isWide && <IconButton icon="plus" label={t('chats.newChat')} variant="brass" onPress={() => router.push('/(tabs)/contacts')} />}
         </View>
@@ -152,6 +154,7 @@ export default function ChatsScreen() {
             <Pill icon={isDemo ? 'info' : 'cloud'} label={isDemo ? t('chats.demo') : t('chats.offline')} tone="brass" />
           </Animated.View>
         )}
+        {!query && <StoriesTray />}
         <SearchField value={query} onChangeText={setQuery} placeholder={t('chats.search')} />
         <View style={s.chips}>
           {categories.map((cat) => (

@@ -36,11 +36,12 @@ import {
   useLayout,
 } from '../../src/shared/ui';
 
-type Section = 'appearance' | 'privacy' | 'security' | 'storage';
+type Section = 'appearance' | 'privacy' | 'security' | 'extras' | 'storage';
 const SECTIONS: { key: Section; icon: IconName }[] = [
   { key: 'appearance', icon: 'moon' },
   { key: 'privacy', icon: 'lock' },
   { key: 'security', icon: 'shieldCheck' },
+  { key: 'extras', icon: 'wallet' },
   { key: 'storage', icon: 'database' },
 ];
 
@@ -335,6 +336,8 @@ export default function SettingsScreen() {
               void loadDevices();
             }}
           />
+          <Row icon="qr" label={t('settings.transfer')} hint={t('settings.transferHint')} onPress={() => router.push('/devices')} />
+          <Row icon="eye" label={t('settings.findMe')} hint={t('settings.findMeHint')} onPress={() => router.push('/discovery/settings')} />
           <Row icon="key" label={t('settings.identityKey')} hint={t('settings.identityKeyHint')} onPress={() => setShowKeys(true)} />
         </>
       )}
@@ -349,7 +352,14 @@ export default function SettingsScreen() {
     </Card>
   );
 
-  const bodies: Record<Section, React.ReactNode> = { appearance, privacy, security, storage };
+  const extras = (
+    <Card title={t('settings.sections.extras')} index={0}>
+      <Row first icon="wallet" label={t('settings.payments')} hint={t('settings.paymentsHint')} onPress={() => router.push('/payments')} />
+      <Row icon="bot" label={t('settings.bots')} hint={t('settings.botsHint')} onPress={() => router.push('/bots')} />
+    </Card>
+  );
+
+  const bodies: Record<Section, React.ReactNode> = { appearance, privacy, security, extras, storage };
 
   const profileCard = (
     <Rise>
@@ -577,6 +587,7 @@ export default function SettingsScreen() {
         {appearance}
         {privacy}
         {security}
+        {extras}
         {storage}
         <Rise index={4}>
           <View style={s.card}>

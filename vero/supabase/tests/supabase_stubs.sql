@@ -15,6 +15,11 @@ create table auth.users (
   email text,
   raw_user_meta_data jsonb not null default '{}'
 );
+-- Verification columns of the real auth.users (used by contact discovery, 009).
+alter table auth.users
+  add column if not exists email_confirmed_at timestamptz,
+  add column if not exists phone text,
+  add column if not exists phone_confirmed_at timestamptz;
 create function auth.uid() returns uuid language sql stable as $$
   select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid
 $$;

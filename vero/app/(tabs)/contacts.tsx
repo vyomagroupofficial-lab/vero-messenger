@@ -244,7 +244,11 @@ export default function ContactsScreen() {
             </Animated.Text>
           )}
         </View>
-        <IconButton icon="users" label={t('contacts.newGroup')} variant="brass" onPress={() => router.push('/new-group')} />
+        <View style={{ flexDirection: 'row', gap: 8 }}>
+          {!isDemo && <IconButton icon="search" label={t('contacts.discover')} variant="filled" onPress={() => router.push('/discovery')} />}
+          {!isDemo && <IconButton icon="qr" label={t('contacts.myQr')} variant="filled" onPress={() => router.push('/qr')} />}
+          <IconButton icon="users" label={t('contacts.newGroup')} variant="brass" onPress={() => router.push('/new-group')} />
+        </View>
       </View>
       <View style={[s.pad, isWide && s.wideTop]}>
         <SearchField value={searchQuery} onChangeText={setSearchQuery} placeholder={t('contacts.search')} onClear={() => setSearchQuery('')} style={{ flex: 1, maxWidth: isWide ? 520 : undefined }} />

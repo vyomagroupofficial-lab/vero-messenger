@@ -151,7 +151,10 @@ export default function LoginScreen() {
             <Text style={type.small}>{t('common.or')}</Text>
             <View style={s.orLine} />
           </View>
-          <Button label={t('auth.tryDemo')} icon="chat" variant="secondary" onPress={handleDemo} disabled={isLoading} />
+          <View style={{ flexDirection: 'row', gap: 10, flexWrap: 'wrap' }}>
+            <Button label={t('auth.tryDemo')} icon="chat" variant="secondary" onPress={handleDemo} disabled={isLoading} style={{ flex: 1, minWidth: 150 }} />
+            <Button label={t('auth.qrLogin')} icon="qr" variant="secondary" onPress={() => router.push('/(auth)/qr-login')} disabled={isLoading} style={{ flex: 1, minWidth: 150 }} />
+          </View>
         </Animated.View>
 
         <Animated.View entering={FadeInDown.delay(240).duration(500)} style={s.footer}>

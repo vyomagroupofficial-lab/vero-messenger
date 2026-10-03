@@ -13,4 +13,7 @@ config.server.enhanceMiddleware = (middleware) => (req, res, next) => {
   middleware(req, res, next);
 };
 
+// The Electron wrapper (desktop/) has its own dependencies and build output.
+config.resolver.blockList = [].concat(config.resolver.blockList || [], [/[\\/]desktop[\\/](node_modules|release)[\\/].*/]);
+
 module.exports = config;

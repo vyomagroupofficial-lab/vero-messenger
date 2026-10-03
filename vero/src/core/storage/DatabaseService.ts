@@ -11,6 +11,7 @@
 
 import * as SQLite from 'expo-sqlite';
 import { Conversation, MediaAttachment, Message, MessageReaction } from '../../shared/models/Message';
+import type { MessageExt } from '../../shared/models/payloadExtensions';
 
 export interface LocalCallRecord {
   id: string;
@@ -92,6 +93,24 @@ const MIGRATIONS: Record<number, string> = {
   `,
 };
 
+/**
+ * messages.ext_json holds sticker/GIF/payment-card data. Added idempotently
+ * (not via SCHEMA_VERSION) so it can't collide with other schema changes.
+ */
+async function ensureExtColumn(db: SQLite.SQLiteDatabase): Promise<void> {
+  const cols = await db.getAllAsync<{ name: string }>('PRAGMA table_info(messages)');
+  if (!cols.some((c) => c.name === 'ext_json')) await db.execAsync('ALTER TABLE messages ADD COLUMN ext_json TEXT');
+}
+
+function parseExt(json: string | null): MessageExt | undefined {
+  if (!json) return undefined;
+  try {
+    return JSON.parse(json) as MessageExt;
+  } catch {
+    return undefined;
+  }
+}
+
 function rowToMessage(r: any): Message {
   return {
     id: r.id,
@@ -110,6 +129,7 @@ function rowToMessage(r: any): Message {
     createdAt: r.created_at,
     expiresAt: r.expires_at,
     deletedAt: r.deleted_at,
+    ext: parseExt(r.ext_json ?? null),
   };
 }
 
@@ -137,6 +157,7 @@ class DatabaseService {
           await db.execAsync(`PRAGMA user_version = ${version}`);
         });
       }
+      await ensureExtColumn(db);
       return db;
     })();
     this.dbPromise.catch(() => {
@@ -184,8 +205,8 @@ class DatabaseService {
       await db.runAsync(
         `INSERT INTO messages (id, conversation_id, sender_device_id, sender_user_id, sender_name, content,
            message_type, media_json, reply_to_id, reply_preview, reactions_json, status, is_own, is_read,
-           created_at, expires_at, deleted_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           created_at, expires_at, deleted_at, ext_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            sender_name = excluded.sender_name,
            content = COALESCE(excluded.content, messages.content),
@@ -194,7 +215,8 @@ class DatabaseService {
            reply_preview = COALESCE(excluded.reply_preview, messages.reply_preview),
            status = excluded.status,
            expires_at = excluded.expires_at,
-           deleted_at = COALESCE(messages.deleted_at, excluded.deleted_at)`,
+           deleted_at = COALESCE(messages.deleted_at, excluded.deleted_at),
+           ext_json = COALESCE(messages.ext_json, excluded.ext_json)`,
         [
           m.id,
           m.conversationId,
@@ -213,6 +235,7 @@ class DatabaseService {
           m.createdAt,
           m.expiresAt ?? null,
           m.deletedAt ?? null,
+          m.ext ? JSON.stringify(m.ext) : null,
         ]
       );
     });
@@ -253,6 +276,23 @@ class DatabaseService {
     });
   }
 
+  updateMessageExt(id: string, ext: MessageExt): Promise<void> {
+    return this.safe('updateMessageExt', undefined, async (db) => {
+      await db.runAsync('UPDATE messages SET ext_json = ? WHERE id = ?', [JSON.stringify(ext), id]);
+    });
+  }
+
+  /** Newest messages of one type across all conversations (e.g. payment history). */
+  getMessagesByType(type: Message['messageType'], limit = 200): Promise<Message[]> {
+    return this.safe('getMessagesByType', [], async (db) => {
+      const rows = await db.getAllAsync<any>(
+        `SELECT * FROM messages WHERE message_type = ? AND deleted_at IS NULL ORDER BY created_at DESC LIMIT ?`,
+        [type, limit]
+      );
+      return rows.map(rowToMessage);
+    });
+  }
+
   setReactions(id: string, reactions: MessageReaction[]): Promise<void> {
     return this.safe('setReactions', undefined, async (db) => {
       await db.runAsync('UPDATE messages SET reactions_json = ? WHERE id = ?', [
@@ -265,7 +305,7 @@ class DatabaseService {
   markMessageDeleted(id: string): Promise<void> {
     return this.safe('markMessageDeleted', undefined, async (db) => {
       await db.runAsync(
-        `UPDATE messages SET deleted_at = ?, content = NULL, media_json = NULL, reply_preview = NULL WHERE id = ?`,
+        `UPDATE messages SET deleted_at = ?, content = NULL, media_json = NULL, reply_preview = NULL, ext_json = NULL WHERE id = ?`,
         [new Date().toISOString(), id]
       );
     });
@@ -477,6 +517,14 @@ class DatabaseService {
         createdAt: r.created_at,
       }));
     });
+  }
+
+  /**
+   * Raw access for bulk export/import (device-to-device transfer, see
+   * src/features/transfer). Unlike the methods above, errors propagate.
+   */
+  async withConnection<T>(fn: (db: SQLite.SQLiteDatabase) => Promise<T>): Promise<T> {
+    return fn(await this.db());
   }
 
   /** Erases everything this account stored on this device. */

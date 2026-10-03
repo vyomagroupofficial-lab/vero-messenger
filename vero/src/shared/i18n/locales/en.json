@@ -109,7 +109,8 @@
     "strength1": "Weak password",
     "strength2": "Okay password",
     "strength3": "Good password",
-    "strength4": "Strong password"
+    "strength4": "Strong password",
+    "qrLogin": "Link with QR"
   },
   "time": {
     "today": "Today",
@@ -213,7 +214,9 @@
     "role_owner": "owner",
     "longPressHint": "Long press for reactions and options",
     "pickChat": "Pick up where you left off",
-    "pickChatBody": "Choose a conversation on the left. Everything here is end-to-end encrypted."
+    "pickChatBody": "Choose a conversation on the left. Everything here is end-to-end encrypted.",
+    "adminsOnly": "Only admins can send messages",
+    "groupSettings": "Group info, admins and invite links"
   },
   "chats": {
     "title": "Chats",
@@ -235,7 +238,8 @@
     "start": "Start a chat",
     "messages": "Messages",
     "unreadA11y_one": "{{name}}, {{count}} unread",
-    "unreadA11y_other": "{{name}}, {{count}} unread"
+    "unreadA11y_other": "{{name}}, {{count}} unread",
+    "channels": "Channels and communities"
   },
   "calls": {
     "title": "Calls",
@@ -328,7 +332,9 @@
     "callPerson": "Call {{name}}",
     "demoTitle": "Demo mode",
     "demoBody": "Create a real account to start new encrypted chats.",
-    "startFailed": "Could not start chat"
+    "startFailed": "Could not start chat",
+    "discover": "Find friends from contacts",
+    "myQr": "My QR code"
   },
   "settings": {
     "title": "Settings",
@@ -337,7 +343,8 @@
       "appearance": "Appearance",
       "privacy": "Privacy",
       "security": "Security",
-      "storage": "Storage"
+      "storage": "Storage",
+      "extras": "Payments & bots"
     },
     "setName": "Set your name",
     "demoAccount": "Demo account",
@@ -430,7 +437,15 @@
       "metaBody": "Servers can see who talks to whom and when, group names, and profile details.",
       "protected": "Protected",
       "limits": "Limits"
-    }
+    },
+    "transfer": "Devices & transfer",
+    "transferHint": "Link a computer by QR, move chats to a new phone",
+    "findMe": "Who can find me",
+    "findMeHint": "Contact discovery by email or phone (off by default)",
+    "payments": "Payments",
+    "paymentsHint": "Your UPI ID and payment history",
+    "bots": "Bots",
+    "botsHint": "Bot directory and your bots"
   },
   "profile": {
     "contact": "Contact",

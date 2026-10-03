@@ -17,6 +17,10 @@ import { ConversationMember, MediaAttachment, Message, MessageStatus, conversati
 import { DISAPPEARING_OPTIONS, MAX_TEXT_LENGTH } from '../../shared/models/payload';
 import { makeStyles, useTheme } from '../../shared/theme/ThemeProvider';
 import { useT } from '../../shared/i18n';
+import { useGroupChatSync } from '../groups/useGroupChatSync';
+import { groupRepository } from '../groups/GroupRepository';
+import { AdminsOnlyNotice } from '../groups/components/GroupComponents';
+import * as Extras from '../stickers/components/chatIntegration';
 import { clockTime, dayLabel, formatBytes, timerText, typeLabel } from '../../shared/i18n/format';
 import { Avatar, Chip, DotWall, Icon, IconButton, IconName, Pressy, Sheet, SheetRow, TypingDots, Waveform, confirmAction, notify, useLayout } from '../../shared/ui';
 
@@ -100,6 +104,10 @@ const Bubble = React.memo(function Bubble({ message, status, isGroup, firstOfRun
   const isImage = messageType === 'image';
   const isMedia = isImage || messageType === 'video';
   const { uri, loading, error, load } = useDecryptedMedia(media, isImage);
+
+  if (Extras.isExtensionMessageType(messageType)) {
+    return <Extras.ExtensionMessage message={message} status={status} showSenderName={isGroup && firstOfRun} onLongPress={onLongPress} onRetry={onRetry} />;
+  }
 
   if (messageType === 'system') {
     return (
@@ -292,6 +300,7 @@ export function ChatThread({ conversationId, embedded = false }: { conversationI
   const isGroup = conversation?.conversationType === 'group';
   const otherUser = conversation?.otherUser;
   const title = conversation ? conversationTitle(conversation) : t('thread.loading');
+  const groupChat = useGroupChatSync(conversationId, isGroup && !isDemo);
 
   // Typing users (expire automatically)
   const now = Date.now();
@@ -435,7 +444,7 @@ export function ChatThread({ conversationId, embedded = false }: { conversationI
       destructive: true,
       onConfirm: async () => {
         try {
-          await conversationRepository.leaveConversation(conversationId, user.id);
+          await groupRepository.leave(conversationId);
           if (router.canGoBack()) router.back();
         } catch (e) {
           notify(t('thread.leaveFailed'), friendlyError(e));
@@ -449,6 +458,7 @@ export function ChatThread({ conversationId, embedded = false }: { conversationI
   };
   const openProfile = () => {
     if (otherUser) router.push(`/profile/${otherUser.id}`);
+    else if (isGroup && !isDemo) router.push(`/group/${conversationId}`);
     else if (isGroup) setShowMenu(true);
   };
 
@@ -477,6 +487,7 @@ export function ChatThread({ conversationId, embedded = false }: { conversationI
             <View style={{ flex: 1, minWidth: 0 }}>
               <Text style={s.headerName} numberOfLines={1}>
                 {title}
+                <Extras.BotBadge userId={otherUser?.id} />
               </Text>
               <Animated.View key={subtitle} entering={FadeIn.duration(220)} style={s.headerStatusRow}>
                 {!typing && !isGroup && <Icon name="lock" size={11} color={c.muted} />}
@@ -585,9 +596,18 @@ export function ChatThread({ conversationId, embedded = false }: { conversationI
           </Animated.View>
         )}
 
+        <Extras.BotCommandSuggestions botUserId={otherUser?.id} text={inputText} onPick={setInputText} />
+        {!groupChat.canSend && (
+          <View style={{ paddingBottom: embedded ? 18 : Math.max(insets.bottom, 12) }}>
+            <AdminsOnlyNotice text={t('thread.adminsOnly')} />
+          </View>
+        )}
+
         {/* Composer */}
+        {groupChat.canSend && (
         <View style={[s.composer, { paddingBottom: embedded ? 18 : Math.max(insets.bottom, 12) }, isWide && s.composerWide]}>
           <IconButton icon="plus" label={t('thread.attach')} variant="filled" size={46} disabled={uploading} onPress={() => setShowAttach(true)} />
+          <Extras.ChatComposerExtras conversation={conversation} replyTo={replyTo} onSent={() => setReplyTo(null)} disabled={uploading} />
           <View style={s.field}>
             <TextInput
               ref={inputRef}
@@ -614,6 +634,7 @@ export function ChatThread({ conversationId, embedded = false }: { conversationI
             <IconButton icon="send" label={t('thread.send')} variant={hasText ? 'brass' : 'filled'} size={46} disabled={!hasText} onPress={handleSend} />
           </Animated.View>
         </View>
+        )}
       </KeyboardAvoidingView>
 
       {/* Attach */}
@@ -686,6 +707,17 @@ export function ChatThread({ conversationId, embedded = false }: { conversationI
 
       {/* Chat options */}
       <Sheet visible={showMenu} onClose={() => setShowMenu(false)} title={title}>
+        {isGroup && !isDemo && (
+          <SheetRow
+            icon="info"
+            tone="brass"
+            label={t('thread.groupSettings')}
+            onPress={() => {
+              setShowMenu(false);
+              router.push(`/group/${conversationId}`);
+            }}
+          />
+        )}
         {isGroup && (
           <View style={{ gap: 2 }}>
             <Text style={type.eyebrow}>{t('thread.groupInfo')}</Text>
