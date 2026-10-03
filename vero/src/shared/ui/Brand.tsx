@@ -1,7 +1,8 @@
 import React, { useEffect, useRef } from 'react';
 import { Animated, Easing, StyleSheet, Text, View, ViewStyle, StyleProp } from 'react-native';
 import Svg, { Path, Rect, Circle, Defs, Pattern } from 'react-native-svg';
-import { Colors, Fonts } from '../theme/theme';
+import { Colors } from '../theme/theme';
+import { useTheme } from '../theme/ThemeProvider';
 
 const AnimatedPath = Animated.createAnimatedComponent(Path);
 const CHECK = 'M9 11.5l6 9.5L23.5 8';
@@ -24,11 +25,11 @@ export function VeroMark({ size = 40, animate = false }: { size?: number; animat
 
   return (
     <Svg width={size} height={size} viewBox="0 0 32 32">
-      <Rect width={32} height={32} rx={10} fill={Colors.brass} />
+      <Rect width={32} height={32} rx={10} fill={Colors.accent} />
       <AnimatedPath
         d={CHECK}
         fill="none"
-        stroke={Colors.ink}
+        stroke={Colors.bg}
         strokeWidth={3}
         strokeLinecap="round"
         strokeLinejoin="round"
@@ -39,9 +40,11 @@ export function VeroMark({ size = 40, animate = false }: { size?: number; animat
   );
 }
 
-export function Wordmark({ size = 28, color = Colors.cream }: { size?: number; color?: string }) {
+export function Wordmark({ size = 28, color }: { size?: number; color?: string }) {
+  const { c } = useTheme();
+  // The wordmark is a logo: always Bricolage, whatever the UI language.
   return (
-    <Text style={{ fontFamily: Fonts.displayHeavy, fontSize: size, letterSpacing: -size * 0.045, color }}>
+    <Text style={{ fontFamily: 'BricolageGrotesque_800ExtraBold', fontSize: size, letterSpacing: -size * 0.045, color: color ?? c.text }}>
       vero
     </Text>
   );
@@ -65,18 +68,20 @@ const GRAIN_DOTS = (() => {
 })();
 
 /** Film grain overlay. Place inside a relatively positioned container. */
-export function Grain({ opacity = 0.07, style }: { opacity?: number; style?: StyleProp<ViewStyle> }) {
+export function Grain({ opacity, style, tone }: { opacity?: number; style?: StyleProp<ViewStyle>; tone?: 'auto' | 'light' }) {
+  const { c } = useTheme();
+  const fill = tone === 'light' ? Colors.cream : c.grain;
   return (
-    <View pointerEvents="none" style={[StyleSheet.absoluteFill, { opacity }, style]}>
+    <View pointerEvents="none" style={[StyleSheet.absoluteFill, { opacity: opacity ?? (tone === 'light' ? 0.07 : c.grainOpacity) }, style]}>
       <Svg width="100%" height="100%">
         <Defs>
-          <Pattern id="vero-grain" width={96} height={96} patternUnits="userSpaceOnUse">
+          <Pattern id={`vero-grain-${fill.slice(1)}`} width={96} height={96} patternUnits="userSpaceOnUse">
             {GRAIN_DOTS.map((d, i) => (
-              <Circle key={i} cx={d.x} cy={d.y} r={d.r} fill={Colors.cream} opacity={d.o} />
+              <Circle key={i} cx={d.x} cy={d.y} r={d.r} fill={fill} opacity={d.o} />
             ))}
           </Pattern>
         </Defs>
-        <Rect width="100%" height="100%" fill="url(#vero-grain)" />
+        <Rect width="100%" height="100%" fill={`url(#vero-grain-${fill.slice(1)})`} />
       </Svg>
     </View>
   );
@@ -84,31 +89,34 @@ export function Grain({ opacity = 0.07, style }: { opacity?: number; style?: Sty
 
 /** Quiet dotted wallpaper used behind conversations. */
 export function DotWall({ gap = 22, style }: { gap?: number; style?: StyleProp<ViewStyle> }) {
+  const { c } = useTheme();
   return (
-    <View pointerEvents="none" style={[StyleSheet.absoluteFill, { backgroundColor: Colors.wallpaper }, style]}>
+    <View pointerEvents="none" style={[StyleSheet.absoluteFill, { backgroundColor: c.wall }, style]}>
       <Svg width="100%" height="100%">
         <Defs>
-          <Pattern id="vero-dots" width={gap} height={gap} patternUnits="userSpaceOnUse">
-            <Circle cx={gap / 2} cy={gap / 2} r={1} fill="rgba(237,231,217,0.06)" />
+          <Pattern id={`vero-dots-${c.name}-${gap}`} width={gap} height={gap} patternUnits="userSpaceOnUse">
+            <Circle cx={gap / 2} cy={gap / 2} r={1} fill={c.wallDot} />
           </Pattern>
         </Defs>
-        <Rect width="100%" height="100%" fill="url(#vero-dots)" />
+        <Rect width="100%" height="100%" fill={`url(#vero-dots-${c.name}-${gap})`} />
       </Svg>
     </View>
   );
 }
 
 /** Fine diagonal hatch — used on brand panels and hero cards. */
-export function Hatch({ color = 'rgba(237,231,217,0.04)', gap = 14 }: { color?: string; gap?: number }) {
+export function Hatch({ color, gap = 14 }: { color?: string; gap?: number }) {
+  const { c } = useTheme();
+  const stroke = color ?? c.hatch;
   return (
     <View pointerEvents="none" style={StyleSheet.absoluteFill}>
       <Svg width="100%" height="100%">
         <Defs>
-          <Pattern id={`vero-hatch-${gap}`} width={gap} height={gap} patternUnits="userSpaceOnUse">
-            <Path d={`M0 ${gap}L${gap} 0`} stroke={color} strokeWidth={1} />
+          <Pattern id={`vero-hatch-${gap}-${stroke.replace(/[^0-9a-z]/gi, '')}`} width={gap} height={gap} patternUnits="userSpaceOnUse">
+            <Path d={`M0 ${gap}L${gap} 0`} stroke={stroke} strokeWidth={1} />
           </Pattern>
         </Defs>
-        <Rect width="100%" height="100%" fill={`url(#vero-hatch-${gap})`} />
+        <Rect width="100%" height="100%" fill={`url(#vero-hatch-${gap}-${stroke.replace(/[^0-9a-z]/gi, '')})`} />
       </Svg>
     </View>
   );

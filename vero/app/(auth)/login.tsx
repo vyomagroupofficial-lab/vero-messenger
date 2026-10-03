@@ -1,509 +1,174 @@
-import React, { useState, useRef } from 'react';
-import {
-  View,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  StyleSheet,
-  KeyboardAvoidingView,
-  Platform,
-  Animated,
-  ScrollView,
-  Dimensions,
-  ActivityIndicator,
-  Alert,
-} from 'react-native';
+import React, { useState } from 'react';
+import { Text, View } from 'react-native';
+import Animated, { FadeInDown } from 'react-native-reanimated';
 import { router } from 'expo-router';
 import { useAuthStore } from '../../src/features/auth/useAuthStore';
 import { authRepository } from '../../src/features/auth/AuthRepository';
 import { isSupabaseConfigured } from '../../src/core/network/supabase';
-import { Colors, Typography, Spacing, BorderRadius } from '../../src/shared/theme/theme';
-import { Ionicons } from '@expo/vector-icons';
+import { AuthShell, Point } from '../../src/features/auth/AuthShell';
+import { makeStyles, useTheme } from '../../src/shared/theme/ThemeProvider';
+import { useT } from '../../src/shared/i18n';
+import { Button, Icon, Pressy, TextField, notify, useShake } from '../../src/shared/ui';
 
-const { width } = Dimensions.get('window');
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export default function LoginScreen() {
+  const { c, type } = useTheme();
+  const s = useStyles();
+  const t = useT();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [emailFocused, setEmailFocused] = useState(false);
-  const [passwordFocused, setPasswordFocused] = useState(false);
   const [emailError, setEmailError] = useState('');
   const [passwordError, setPasswordError] = useState('');
-
   const { login, loginAsDemo, isLoading } = useAuthStore();
+  const { style: shakeStyle, shake } = useShake();
 
-  const handleDemoLogin = () => {
-    loginAsDemo();
-    router.replace('/(tabs)/chats');
-  };
-
-  const handleForgotPassword = async () => {
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
-      setEmailError('Enter your email above first');
-      shake();
-      return;
-    }
-    const res = await authRepository.sendPasswordReset(email);
-    Alert.alert(
-      res.success ? 'Check your inbox' : 'Could not send reset email',
-      res.success ? `We sent a password reset link to ${email.trim()}.` : res.error
-    );
-  };
-
-  const shakeAnim = useRef(new Animated.Value(0)).current;
-
-  const shake = () => {
-    Animated.sequence([
-      Animated.timing(shakeAnim, { toValue: 10, duration: 50, useNativeDriver: true }),
-      Animated.timing(shakeAnim, { toValue: -10, duration: 50, useNativeDriver: true }),
-      Animated.timing(shakeAnim, { toValue: 8, duration: 50, useNativeDriver: true }),
-      Animated.timing(shakeAnim, { toValue: -8, duration: 50, useNativeDriver: true }),
-      Animated.timing(shakeAnim, { toValue: 0, duration: 50, useNativeDriver: true }),
-    ]).start();
-  };
-
-  const validateForm = () => {
-    let valid = true;
+  const validate = () => {
+    let ok = true;
     setEmailError('');
     setPasswordError('');
-
     if (!email.trim()) {
-      setEmailError('Email is required');
-      valid = false;
-    } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      setEmailError('Enter a valid email address');
-      valid = false;
+      setEmailError(t('auth.errEmailRequired'));
+      ok = false;
+    } else if (!EMAIL_RE.test(email.trim())) {
+      setEmailError(t('auth.errEmailInvalid'));
+      ok = false;
     }
-
     if (!password) {
-      setPasswordError('Password is required');
-      valid = false;
+      setPasswordError(t('auth.errPasswordRequired'));
+      ok = false;
     } else if (password.length < 6) {
-      setPasswordError('Password must be at least 6 characters');
-      valid = false;
+      setPasswordError(t('auth.errPasswordShort', { count: 6 }));
+      ok = false;
     }
-
-    return valid;
+    return ok;
   };
 
   const handleLogin = async () => {
     if (!isSupabaseConfigured) {
-      Alert.alert('Backend not configured', 'Set EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY in .env, or explore the demo.');
+      notify(t('auth.notConfigured'), t('auth.notConfiguredBody'));
       return;
     }
-    if (!validateForm()) {
+    if (!validate()) {
       shake();
       return;
     }
-
     const result = await login(email.trim(), password);
     if (!result.success) {
       shake();
-      Alert.alert('Sign in failed', result.error || 'Check your email and password.');
+      notify(t('auth.signInFailed'), result.error || t('auth.signInFailedBody'));
     } else {
       router.replace('/(tabs)/chats');
     }
   };
 
+  const handleForgot = async () => {
+    if (!EMAIL_RE.test(email.trim())) {
+      setEmailError(t('auth.errEmailFirst'));
+      shake();
+      return;
+    }
+    const res = await authRepository.sendPasswordReset(email);
+    if (res.success) notify(t('auth.resetSent'), t('auth.resetSentBody', { email: email.trim() }));
+    else notify(t('auth.resetFailed'), res.error);
+  };
+
+  const handleDemo = () => {
+    loginAsDemo();
+    router.replace('/(tabs)/chats');
+  };
+
   return (
-    <KeyboardAvoidingView
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      style={styles.container}
-    >
-      <ScrollView
-        contentContainerStyle={styles.scrollContent}
-        keyboardShouldPersistTaps="handled"
-        showsVerticalScrollIndicator={false}
-      >
-        {/* Cyber Hero Branding */}
-        <View style={styles.header}>
-          <View style={styles.logoHalo}>
-            <View style={styles.logoContainer}>
-              <Ionicons name="shield-checkmark" size={38} color={Colors.accent} />
-            </View>
-          </View>
-          <Text style={styles.appName}>VERO</Text>
-          <View style={styles.cryptoBadge}>
-            <View style={styles.liveDot} />
-            <Text style={styles.cryptoBadgeText}>END-TO-END ENCRYPTED</Text>
-          </View>
-          <Text style={styles.tagline}>Private by design</Text>
+    <AuthShell
+      headline={t('auth.headline')}
+      panel={
+        <View style={{ gap: 22 }}>
+          <Point index={0} icon="lock" title={t('auth.point1Title')} body={t('auth.point1Body')} />
+          <Point index={1} icon="shieldCheck" title={t('auth.point2Title')} body={t('auth.point2Body')} />
+          <Point index={2} icon="devices" title={t('auth.point3Title')} body={t('auth.point3Body')} />
         </View>
-
-        {/* Glassmorphic Form Card */}
-        <Animated.View style={[styles.form, { transform: [{ translateX: shakeAnim }] }]}>
-          <Text style={styles.welcomeTitle}>Sign In</Text>
-          <Text style={styles.welcomeSubtitle}>Your keys never leave this device</Text>
-
-          {/* Email Input */}
-          <View style={styles.inputGroup}>
-            <Text style={styles.inputLabel}>EMAIL ADDRESS</Text>
-            <View
-              style={[
-                styles.inputWrapper,
-                emailFocused && styles.inputWrapperFocused,
-                emailError ? styles.inputError : null,
-              ]}
-            >
-              <Ionicons
-                name="mail-outline"
-                size={19}
-                color={emailFocused ? Colors.accent : Colors.textSecondary}
-                style={styles.inputIcon}
-              />
-              <TextInput
-                style={styles.input}
-                placeholder="alice@vero.internal"
-                placeholderTextColor={Colors.textTertiary}
-                value={email}
-                onChangeText={(t) => { setEmail(t); setEmailError(''); }}
-                onFocus={() => setEmailFocused(true)}
-                onBlur={() => setEmailFocused(false)}
-                autoCapitalize="none"
-                keyboardType="email-address"
-                autoComplete="email"
-                returnKeyType="next"
-              />
-            </View>
-            {emailError ? <Text style={styles.errorText}>{emailError}</Text> : null}
-          </View>
-
-          {/* Password Input */}
-          <View style={styles.inputGroup}>
-            <View style={styles.passwordLabelRow}>
-              <Text style={styles.inputLabel}>PASSWORD</Text>
-              <TouchableOpacity onPress={handleForgotPassword}>
-                <Text style={styles.forgotPasswordText}>Forgot password?</Text>
-              </TouchableOpacity>
-            </View>
-            <View
-              style={[
-                styles.inputWrapper,
-                passwordFocused && styles.inputWrapperFocused,
-                passwordError ? styles.inputError : null,
-              ]}
-            >
-              <Ionicons
-                name="lock-closed-outline"
-                size={19}
-                color={passwordFocused ? Colors.accent : Colors.textSecondary}
-                style={styles.inputIcon}
-              />
-              <TextInput
-                style={styles.input}
-                placeholder="••••••••••••"
-                placeholderTextColor={Colors.textTertiary}
-                value={password}
-                onChangeText={(t) => { setPassword(t); setPasswordError(''); }}
-                onFocus={() => setPasswordFocused(true)}
-                onBlur={() => setPasswordFocused(false)}
-                secureTextEntry={!showPassword}
-                autoComplete="password"
-                returnKeyType="done"
-                onSubmitEditing={handleLogin}
-              />
-              <TouchableOpacity onPress={() => setShowPassword(!showPassword)} style={styles.eyeIcon}>
-                <Ionicons
-                  name={showPassword ? 'eye-off-outline' : 'eye-outline'}
-                  size={19}
-                  color={Colors.textSecondary}
-                />
-              </TouchableOpacity>
-            </View>
-            {passwordError ? <Text style={styles.errorText}>{passwordError}</Text> : null}
-          </View>
-
-          {/* Primary Action Button */}
-          <TouchableOpacity
-            style={[styles.loginButton, isLoading && styles.loginButtonDisabled]}
-            onPress={handleLogin}
-            disabled={isLoading}
-            activeOpacity={0.88}
-          >
-            {isLoading ? (
-              <ActivityIndicator color={Colors.white} size="small" />
-            ) : (
-              <View style={styles.btnContent}>
-                <Ionicons name="key-outline" size={18} color={Colors.white} style={{ marginRight: 8 }} />
-                <Text style={styles.loginButtonText}>Sign In</Text>
-              </View>
-            )}
-          </TouchableOpacity>
-
-          {/* Divider */}
-          <View style={styles.dividerRow}>
-            <View style={styles.dividerLine} />
-            <Text style={styles.dividerText}>OR EXPLORE</Text>
-            <View style={styles.dividerLine} />
-          </View>
-
-          {/* Explore Demo Mode Button */}
-          <TouchableOpacity
-            style={styles.demoButton}
-            onPress={handleDemoLogin}
-            disabled={isLoading}
-            activeOpacity={0.85}
-          >
-            <Ionicons name="sparkles" size={17} color={Colors.accent} style={{ marginRight: 8 }} />
-            <Text style={styles.demoButtonText}>Explore offline demo</Text>
-          </TouchableOpacity>
-
-          {/* E2EE notice */}
-          <View style={styles.e2eeNotice}>
-            <Ionicons name="shield-checkmark" size={13} color={Colors.online} />
-            <Text style={styles.e2eeText}>X25519 + XChaCha20-Poly1305, encrypted on-device</Text>
-          </View>
+      }
+    >
+      <Animated.View style={[{ gap: 18 }, shakeStyle]}>
+        <Animated.View entering={FadeInDown.duration(500)} style={{ gap: 6, marginBottom: 4 }}>
+          <Text style={[type.title, { fontSize: 34 }]} accessibilityRole="header">
+            {t('auth.welcome')}
+          </Text>
+          <Text style={type.bodyMuted}>{t('auth.welcomeSub')}</Text>
         </Animated.View>
 
-        {/* Sign Up Footer */}
-        <View style={styles.footer}>
-          <Text style={styles.footerText}>New to Vero?</Text>
-          <TouchableOpacity onPress={() => router.push('/(auth)/signup')}>
-            <Text style={styles.signUpLink}> Create an account</Text>
-          </TouchableOpacity>
-        </View>
-      </ScrollView>
-    </KeyboardAvoidingView>
+        <Animated.View entering={FadeInDown.delay(60).duration(500)}>
+          <TextField
+            label={t('auth.email')}
+            icon="mail"
+            placeholder={t('auth.emailPlaceholder')}
+            value={email}
+            onChangeText={(v) => {
+              setEmail(v);
+              setEmailError('');
+            }}
+            error={emailError}
+            autoCapitalize="none"
+            keyboardType="email-address"
+            autoComplete="email"
+            textContentType="emailAddress"
+            returnKeyType="next"
+          />
+        </Animated.View>
+
+        <Animated.View entering={FadeInDown.delay(120).duration(500)} style={{ gap: 8 }}>
+          <TextField
+            label={t('auth.password')}
+            icon="lock"
+            placeholder={t('auth.passwordPlaceholder')}
+            value={password}
+            onChangeText={(v) => {
+              setPassword(v);
+              setPasswordError('');
+            }}
+            error={passwordError}
+            secureTextEntry={!showPassword}
+            autoComplete="password"
+            textContentType="password"
+            returnKeyType="done"
+            onSubmitEditing={handleLogin}
+            right={
+              <Pressy onPress={() => setShowPassword((v) => !v)} accessibilityLabel={showPassword ? t('auth.hidePassword') : t('auth.showPassword')} style={s.eye}>
+                <Icon name={showPassword ? 'eyeOff' : 'eye'} size={19} color={c.faint} />
+              </Pressy>
+            }
+          />
+          <Pressy onPress={handleForgot} style={{ alignSelf: 'flex-end' }} accessibilityRole="link">
+            <Text style={s.link}>{t('auth.forgot')}</Text>
+          </Pressy>
+        </Animated.View>
+
+        <Animated.View entering={FadeInDown.delay(180).duration(500)} style={{ gap: 14 }}>
+          <Button label={t('auth.signIn')} iconRight="arrowRight" onPress={handleLogin} loading={isLoading} />
+          <View style={s.or}>
+            <View style={s.orLine} />
+            <Text style={type.small}>{t('common.or')}</Text>
+            <View style={s.orLine} />
+          </View>
+          <Button label={t('auth.tryDemo')} icon="chat" variant="secondary" onPress={handleDemo} disabled={isLoading} />
+        </Animated.View>
+
+        <Animated.View entering={FadeInDown.delay(240).duration(500)} style={s.footer}>
+          <Text style={type.bodyMuted}>{t('auth.newHere')}</Text>
+          <Pressy onPress={() => router.push('/(auth)/signup')} accessibilityRole="link">
+            <Text style={[s.link, { fontSize: 14.5 }]}>{t('auth.createAccount')}</Text>
+          </Pressy>
+        </Animated.View>
+      </Animated.View>
+    </AuthShell>
   );
 }
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: Colors.background,
-  },
-  scrollContent: {
-    flexGrow: 1,
-    justifyContent: 'center',
-    paddingHorizontal: Spacing['2xl'],
-    paddingVertical: Spacing['3xl'],
-  },
-  header: {
-    alignItems: 'center',
-    marginBottom: Spacing['3xl'],
-  },
-  logoHalo: {
-    padding: 6,
-    borderRadius: 36,
-    backgroundColor: 'rgba(6, 182, 212, 0.08)',
-    borderWidth: 1,
-    borderColor: 'rgba(6, 182, 212, 0.25)',
-    marginBottom: Spacing.md,
-  },
-  logoContainer: {
-    width: 68,
-    height: 68,
-    borderRadius: 30,
-    backgroundColor: '#0A1526',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(6, 182, 212, 0.4)',
-    shadowColor: Colors.accent,
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.6,
-    shadowRadius: 18,
-    elevation: 8,
-  },
-  appName: {
-    fontSize: 28,
-    fontWeight: Typography.extrabold,
-    color: Colors.textPrimary,
-    letterSpacing: 6,
-    marginBottom: Spacing.xs,
-  },
-  cryptoBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: 'rgba(6, 182, 212, 0.12)',
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    borderRadius: BorderRadius.full,
-    borderWidth: 1,
-    borderColor: 'rgba(6, 182, 212, 0.3)',
-    marginBottom: Spacing.xs,
-  },
-  liveDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: Colors.online,
-  },
-  cryptoBadgeText: {
-    fontSize: 10,
-    fontWeight: Typography.bold,
-    color: Colors.accent,
-    letterSpacing: 0.8,
-  },
-  tagline: {
-    fontSize: Typography.xs,
-    color: Colors.textSecondary,
-    letterSpacing: 0.3,
-  },
-  form: {
-    backgroundColor: '#080E1A',
-    borderRadius: BorderRadius['2xl'],
-    padding: Spacing['2xl'],
-    borderWidth: 1,
-    borderColor: 'rgba(6, 182, 212, 0.2)',
-    marginBottom: Spacing.xl,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.5,
-    shadowRadius: 20,
-  },
-  welcomeTitle: {
-    fontSize: Typography['2xl'],
-    fontWeight: Typography.bold,
-    color: Colors.textPrimary,
-    marginBottom: 4,
-  },
-  welcomeSubtitle: {
-    fontSize: Typography.sm,
-    color: Colors.textSecondary,
-    marginBottom: Spacing.xl,
-  },
-  inputGroup: {
-    marginBottom: Spacing.base,
-  },
-  passwordLabelRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: Spacing.xs,
-  },
-  inputLabel: {
-    fontSize: 11,
-    fontWeight: Typography.bold,
-    color: Colors.textSecondary,
-    letterSpacing: 0.8,
-  },
-  inputWrapper: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#040711',
-    borderRadius: BorderRadius.lg,
-    borderWidth: 1.5,
-    borderColor: '#1E293B',
-    paddingHorizontal: Spacing.md,
-    height: 50,
-  },
-  inputWrapperFocused: {
-    borderColor: Colors.accent,
-    backgroundColor: '#070D1E',
-  },
-  inputError: {
-    borderColor: Colors.error,
-  },
-  inputIcon: {
-    marginRight: Spacing.sm,
-  },
-  input: {
-    flex: 1,
-    color: Colors.textPrimary,
-    fontSize: Typography.base,
-    height: '100%',
-  },
-  eyeIcon: {
-    padding: Spacing.xs,
-  },
-  errorText: {
-    fontSize: Typography.xs,
-    color: Colors.error,
-    marginTop: Spacing.xs,
-    marginLeft: Spacing.xs,
-  },
-  forgotPasswordText: {
-    fontSize: Typography.xs,
-    color: Colors.accent,
-    fontWeight: Typography.medium,
-  },
-  loginButton: {
-    backgroundColor: Colors.accent,
-    borderRadius: BorderRadius.lg,
-    height: 50,
-    justifyContent: 'center',
-    alignItems: 'center',
-    shadowColor: Colors.accent,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.45,
-    shadowRadius: 14,
-    elevation: 8,
-    marginTop: Spacing.xs,
-  },
-  btnContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  loginButtonDisabled: {
-    opacity: 0.65,
-  },
-  loginButtonText: {
-    color: Colors.white,
-    fontSize: Typography.base,
-    fontWeight: Typography.bold,
-    letterSpacing: 0.5,
-  },
-  dividerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginVertical: Spacing.base,
-  },
-  dividerLine: {
-    flex: 1,
-    height: 1,
-    backgroundColor: '#1E293B',
-  },
-  dividerText: {
-    fontSize: 10,
-    fontWeight: Typography.bold,
-    color: Colors.textTertiary,
-    paddingHorizontal: Spacing.md,
-    letterSpacing: 0.8,
-  },
-  demoButton: {
-    backgroundColor: 'rgba(6, 182, 212, 0.08)',
-    borderRadius: BorderRadius.lg,
-    borderWidth: 1,
-    borderColor: 'rgba(6, 182, 212, 0.35)',
-    height: 48,
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  demoButtonText: {
-    color: Colors.accentLight,
-    fontSize: Typography.sm,
-    fontWeight: Typography.semibold,
-    letterSpacing: 0.3,
-  },
-  e2eeNotice: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    marginTop: Spacing.base,
-  },
-  e2eeText: {
-    fontSize: 11,
-    color: Colors.textTertiary,
-    letterSpacing: 0.2,
-  },
-  footer: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  footerText: {
-    fontSize: Typography.sm,
-    color: Colors.textSecondary,
-  },
-  signUpLink: {
-    fontSize: Typography.sm,
-    color: Colors.accent,
-    fontWeight: Typography.bold,
-  },
-});
-
+const useStyles = makeStyles((c, t, f) => ({
+  eye: { width: 44, height: 44, marginRight: -10, alignItems: 'center', justifyContent: 'center' },
+  link: { fontFamily: f.semibold, fontSize: 13.5, color: c.accentText },
+  or: { flexDirection: 'row', alignItems: 'center', gap: 14 },
+  orLine: { flex: 1, height: 1, backgroundColor: c.line },
+  footer: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', alignItems: 'center', gap: 6, marginTop: 6 },
+}));

@@ -1,4 +1,5 @@
 import { Alert, Platform } from 'react-native';
+import i18n from '../i18n';
 
 // React Native's Alert is a no-op on web, so confirmations fall back to the browser's own dialogs.
 
@@ -23,7 +24,7 @@ export function confirmAction(opts: {
     return;
   }
   Alert.alert(opts.title, opts.message, [
-    { text: 'Cancel', style: 'cancel' },
+    { text: i18n.t('common.cancel'), style: 'cancel' },
     { text: opts.confirmLabel, style: opts.destructive ? 'destructive' : 'default', onPress: () => opts.onConfirm() },
   ]);
 }

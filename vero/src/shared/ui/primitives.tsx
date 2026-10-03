@@ -6,7 +6,6 @@ import {
   PressableProps,
   ScrollView,
   StyleProp,
-  StyleSheet,
   Text,
   TextInput,
   TextInputProps,
@@ -30,7 +29,9 @@ import Animated, {
   withSpring,
   withTiming,
 } from 'react-native-reanimated';
-import { Colors, Fonts, Motion, Type, initialsOf, toneFor } from '../theme/theme';
+import { Motion, Palette, initialsOf, toneFor } from '../theme/theme';
+import { makeStyles, useTheme } from '../theme/ThemeProvider';
+import { useT } from '../i18n';
 import { Icon, IconName } from './Icon';
 import { Grain } from './Brand';
 
@@ -89,17 +90,7 @@ export function Pressy({ style, hoverStyle, scaleTo = Motion.press, children, ..
 // ── Entrance ────────────────────────────────────────────────────────────────
 
 /** Rises into place on mount — pass an index to stagger lists. */
-export function Rise({
-  index = 0,
-  delay = 0,
-  style,
-  children,
-}: {
-  index?: number;
-  delay?: number;
-  style?: StyleProp<ViewStyle>;
-  children: React.ReactNode;
-}) {
+export function Rise({ index = 0, delay = 0, style, children }: { index?: number; delay?: number; style?: StyleProp<ViewStyle>; children: React.ReactNode }) {
   const d = delay + Math.min(index, 12) * Motion.stagger;
   return (
     <Animated.View entering={FadeInDown.delay(d).duration(460).easing(Easing.bezier(0.2, 0.8, 0.2, 1))} style={style}>
@@ -119,8 +110,9 @@ export function Pop({ delay = 0, style, children }: { delay?: number; style?: St
 // ── Screen & surfaces ───────────────────────────────────────────────────────
 
 export function Screen({ children, style, grain = true }: { children: React.ReactNode; style?: StyleProp<ViewStyle>; grain?: boolean }) {
+  const s = useStyles();
   return (
-    <View style={[styles.screen, style]}>
+    <View style={[s.screen, style]}>
       {grain && <Grain />}
       {children}
     </View>
@@ -128,15 +120,19 @@ export function Screen({ children, style, grain = true }: { children: React.Reac
 }
 
 export function Panel({ children, style }: { children: React.ReactNode; style?: StyleProp<ViewStyle> }) {
-  return <View style={[styles.panel, style]}>{children}</View>;
+  const s = useStyles();
+  return <View style={[s.panel, style]}>{children}</View>;
 }
 
 export function Eyebrow({ children, style }: { children: React.ReactNode; style?: StyleProp<TextStyle> }) {
-  return <Text style={[Type.eyebrow, style]}>{typeof children === 'string' ? children.toUpperCase() : children}</Text>;
+  const { type, f } = useTheme();
+  const text = typeof children === 'string' && f.script === 'latin' ? children.toUpperCase() : children;
+  return <Text style={[type.eyebrow, style]}>{text}</Text>;
 }
 
 export function Divider({ inset = 0 }: { inset?: number }) {
-  return <View style={{ height: 1, backgroundColor: Colors.divider, marginLeft: inset }} />;
+  const { c } = useTheme();
+  return <View style={{ height: 1, backgroundColor: c.line, marginLeft: inset }} />;
 }
 
 // ── Avatar ──────────────────────────────────────────────────────────────────
@@ -154,7 +150,8 @@ interface AvatarProps {
   style?: StyleProp<ViewStyle>;
 }
 
-export function Avatar({ name, size = 48, tone, square, online, ring, ringColor, cutout = Colors.ink, icon, style }: AvatarProps) {
+export function Avatar({ name, size = 48, tone, square, online, ring, ringColor, cutout, icon, style }: AvatarProps) {
+  const { c, f } = useTheme();
   const bg = tone ?? toneFor(name);
   const radius = square ? size * 0.32 : size / 2;
   const dot = Math.min(20, Math.max(10, Math.round(size * 0.25)));
@@ -164,25 +161,32 @@ export function Avatar({ name, size = 48, tone, square, online, ring, ringColor,
     <View
       style={[
         { width: size, height: size },
-        ring && { padding: 3, width: size + 6, height: size + 6, borderRadius: radius + 3, borderWidth: 1.5, borderColor: ringColor ?? Colors.brassLine },
+        ring && { padding: 3, width: size + 6, height: size + 6, borderRadius: radius + 3, borderWidth: 1.5, borderColor: ringColor ?? c.accentLine },
         style,
       ]}
     >
       <View style={{ width: size, height: size, borderRadius: radius, backgroundColor: bg, alignItems: 'center', justifyContent: 'center' }}>
         {icon ? (
-          <Icon name={icon} size={size * 0.42} color={Colors.avatarText} />
+          <Icon name={icon} size={size * 0.42} color={c.avatarText} />
         ) : (
-          <Text style={{ fontFamily: Fonts.display, fontSize: size * 0.34, color: Colors.avatarText, letterSpacing: 0.3 }}>
+          <Text style={{ fontFamily: f.display, fontSize: size * 0.34, color: c.avatarText, letterSpacing: f.script === 'latin' ? 0.3 : 0 }}>
             {initialsOf(name)}
           </Text>
         )}
       </View>
-      {online && <OnlineDot size={dot} cutout={cutout} style={{ position: 'absolute', right: (ring ? 4.5 : 0) + edge, bottom: (ring ? 4.5 : 0) + edge }} />}
+      {online && (
+        <OnlineDot
+          size={dot}
+          cutout={cutout ?? c.bg}
+          style={{ position: 'absolute', right: (ring ? 4.5 : 0) + edge, bottom: (ring ? 4.5 : 0) + edge }}
+        />
+      )}
     </View>
   );
 }
 
-export function OnlineDot({ size = 12, cutout = Colors.ink, style }: { size?: number; cutout?: string; style?: StyleProp<ViewStyle> }) {
+export function OnlineDot({ size = 12, cutout, style }: { size?: number; cutout?: string; style?: StyleProp<ViewStyle> }) {
+  const { c } = useTheme();
   const pulse = useSharedValue(0);
   useEffect(() => {
     pulse.value = withRepeat(withTiming(1, { duration: 2200, easing: Easing.out(Easing.quad) }), -1, false);
@@ -193,8 +197,8 @@ export function OnlineDot({ size = 12, cutout = Colors.ink, style }: { size?: nu
   }));
   return (
     <View style={[{ width: size, height: size }, style]}>
-      <Animated.View style={[{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderRadius: size, backgroundColor: Colors.sage }, ringStyle]} />
-      <View style={{ width: size, height: size, borderRadius: size, backgroundColor: Colors.sage, borderWidth: 2.5, borderColor: cutout }} />
+      <Animated.View style={[{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderRadius: size, backgroundColor: c.success }, ringStyle]} />
+      <View style={{ width: size, height: size, borderRadius: size, backgroundColor: c.success, borderWidth: 2.5, borderColor: cutout ?? c.bg }} />
     </View>
   );
 }
@@ -215,27 +219,38 @@ interface ButtonProps {
   style?: StyleProp<ViewStyle>;
 }
 
-const BTN: Record<ButtonVariant, { bg: string; fg: string; border?: string; hover: string }> = {
-  primary: { bg: Colors.brass, fg: Colors.brassInk, hover: Colors.brassLight },
-  secondary: { bg: 'transparent', fg: Colors.cream, border: Colors.line2, hover: Colors.raised },
-  ghost: { bg: Colors.raised, fg: Colors.cream, border: Colors.line, hover: Colors.field },
-  danger: { bg: Colors.emberDeep, fg: '#FBEFE6', hover: '#C9502F' },
-  dangerSoft: { bg: Colors.emberTint, fg: Colors.ember, hover: 'rgba(224,105,74,0.16)' },
-  sage: { bg: Colors.sageTint, fg: Colors.sage, border: Colors.sageLine, hover: 'rgba(134,192,159,0.16)' },
-};
+function buttonColors(c: Palette, v: ButtonVariant): { bg: string; fg: string; border?: string; hover: string } {
+  switch (v) {
+    case 'primary':
+      return { bg: c.accent, fg: c.onAccent, hover: c.accentHover };
+    case 'secondary':
+      return { bg: 'transparent', fg: c.text, border: c.line2, hover: c.raised };
+    case 'ghost':
+      return { bg: c.raised, fg: c.text, border: c.line, hover: c.field };
+    case 'danger':
+      return { bg: c.dangerFill, fg: c.onDanger, hover: c.danger };
+    case 'dangerSoft':
+      return { bg: c.dangerTint, fg: c.danger, hover: c.dangerTint };
+    case 'sage':
+      return { bg: c.successTint, fg: c.success, border: c.successLine, hover: c.successTint };
+  }
+}
 
 export function Button({ label, onPress, icon, iconRight, variant = 'primary', loading, disabled, size = 'lg', style }: ButtonProps) {
-  const v = BTN[variant];
+  const { c, type } = useTheme();
+  const s = useStyles();
+  const v = buttonColors(c, variant);
   const h = size === 'lg' ? 54 : 44;
   return (
     <Pressy
       onPress={onPress}
       disabled={disabled || loading}
       accessibilityLabel={label}
+      accessibilityState={{ disabled: disabled || loading, busy: loading }}
       scaleTo={0.97}
       hoverStyle={{ backgroundColor: v.hover }}
       style={[
-        styles.button,
+        s.button,
         { height: h, backgroundColor: v.bg, borderRadius: size === 'lg' ? 16 : 13 },
         v.border ? { borderWidth: 1, borderColor: v.border } : null,
         (disabled || loading) && { opacity: 0.55 },
@@ -247,7 +262,9 @@ export function Button({ label, onPress, icon, iconRight, variant = 'primary', l
       ) : (
         <>
           {icon && <Icon name={icon} size={19} color={v.fg} />}
-          <Text style={[Type.button, { color: v.fg, fontSize: size === 'lg' ? 15.5 : 14 }]}>{label}</Text>
+          <Text style={[type.button, { color: v.fg, fontSize: size === 'lg' ? 15.5 : 14 }]} numberOfLines={1}>
+            {label}
+          </Text>
           {iconRight && <Icon name={iconRight} size={19} color={v.fg} />}
         </>
       )}
@@ -266,6 +283,7 @@ export function IconButton({
   variant = 'plain',
   color,
   active,
+  disabled,
   style,
 }: {
   icon: IconName;
@@ -276,26 +294,30 @@ export function IconButton({
   variant?: IconButtonVariant;
   color?: string;
   active?: boolean;
+  disabled?: boolean;
   style?: StyleProp<ViewStyle>;
 }) {
+  const { c } = useTheme();
   const base: Record<IconButtonVariant, ViewStyle> = {
     plain: {},
-    filled: { backgroundColor: Colors.raised, borderWidth: 1, borderColor: Colors.line },
-    brass: { backgroundColor: Colors.brass },
+    filled: { backgroundColor: c.raised, borderWidth: 1, borderColor: c.line },
+    brass: { backgroundColor: c.accent },
     glass: { backgroundColor: 'rgba(237,231,217,0.1)' },
-    outline: { borderWidth: 1, borderColor: Colors.brassLine },
+    outline: { borderWidth: 1, borderColor: c.accentLine },
   };
-  const fg = color ?? (variant === 'brass' ? Colors.brassInk : active ? Colors.ink : Colors.cream);
+  const fg = color ?? (variant === 'brass' ? c.onAccent : variant === 'glass' ? c.onStage : active ? c.bg : c.text);
   return (
     <Pressy
       onPress={onPress}
+      disabled={disabled}
       accessibilityLabel={label}
       scaleTo={0.9}
-      hoverStyle={variant === 'brass' ? { backgroundColor: Colors.brassLight } : { backgroundColor: Colors.raised }}
+      hoverStyle={variant === 'brass' ? { backgroundColor: c.accentHover } : variant === 'glass' ? { backgroundColor: 'rgba(237,231,217,0.18)' } : { backgroundColor: c.raised }}
       style={[
         { width: size, height: size, borderRadius: size * 0.32, alignItems: 'center', justifyContent: 'center' },
         base[variant],
-        active && { backgroundColor: Colors.cream },
+        active && { backgroundColor: c.text },
+        disabled && { opacity: 0.45 },
         style,
       ]}
     >
@@ -305,69 +327,110 @@ export function IconButton({
 }
 
 export function Chip({ label, active, onPress }: { label: string; active?: boolean; onPress?: () => void }) {
+  const { c } = useTheme();
+  const s = useStyles();
   return (
     <Pressy
       onPress={onPress}
       accessibilityState={{ selected: active }}
       scaleTo={0.94}
-      hoverStyle={!active ? { borderColor: Colors.line3 } : undefined}
-      style={[styles.chip, active && styles.chipActive]}
+      hoverStyle={!active ? { borderColor: c.line3 } : undefined}
+      style={[s.chip, active && s.chipActive]}
     >
-      <Text style={[styles.chipText, active && { color: Colors.ink }]}>{label}</Text>
+      <Text style={[s.chipText, active && { color: c.bg }]}>{label}</Text>
     </Pressy>
   );
 }
 
 export function Badge({ count }: { count: number }) {
+  const s = useStyles();
   return (
-    <Animated.View entering={ZoomIn.springify().damping(12)} style={styles.badge}>
-      <Text style={styles.badgeText}>{count > 99 ? '99+' : count}</Text>
+    <Animated.View entering={ZoomIn.springify().damping(12)} style={s.badge}>
+      <Text style={s.badgeText}>{count > 99 ? '99+' : count}</Text>
     </Animated.View>
   );
 }
 
-export function Pill({ icon, label, tone = 'sage', style }: { icon?: IconName; label: string; tone?: 'sage' | 'brass' | 'ember' | 'cream'; style?: StyleProp<ViewStyle> }) {
+export function Pill({ icon, label, tone = 'sage', style }: { icon?: IconName; label: string; tone?: 'sage' | 'brass' | 'ember' | 'stage'; style?: StyleProp<ViewStyle> }) {
+  const { c, f } = useTheme();
+  const s = useStyles();
   const map = {
-    sage: { bg: Colors.sageTint, fg: Colors.sage },
-    brass: { bg: Colors.brassTint, fg: Colors.brassLight },
-    ember: { bg: Colors.emberTint, fg: Colors.ember },
-    cream: { bg: 'rgba(12,14,13,0.5)', fg: Colors.cream },
+    sage: { bg: c.successTint, fg: c.success },
+    brass: { bg: c.accentTint, fg: c.accentText },
+    ember: { bg: c.dangerTint, fg: c.danger },
+    stage: { bg: 'rgba(12,14,13,0.5)', fg: c.onStage },
   }[tone];
   return (
-    <View style={[styles.pill, { backgroundColor: map.bg }, style]}>
+    <View style={[s.pill, { backgroundColor: map.bg }, style]}>
       {icon && <Icon name={icon} size={14} color={map.fg} />}
-      <Text style={{ fontFamily: Fonts.medium, fontSize: 12.5, color: map.fg }}>{label}</Text>
+      <Text style={{ fontFamily: f.medium, fontSize: 12.5, color: map.fg }}>{label}</Text>
     </View>
   );
 }
 
 // ── Toggle ──────────────────────────────────────────────────────────────────
 
-export function Toggle({ value, onValueChange, label }: { value: boolean; onValueChange: (v: boolean) => void; label: string }) {
+export function Toggle({ value, onValueChange, label, disabled }: { value: boolean; onValueChange: (v: boolean) => void; label: string; disabled?: boolean }) {
+  const { c } = useTheme();
+  const s = useStyles();
   const p = useSharedValue(value ? 1 : 0);
   useEffect(() => {
     p.value = withSpring(value ? 1 : 0, { damping: 15, stiffness: 260 });
   }, [value]);
+  const offTrack = c.field;
+  const onTrack = c.mine;
+  const offLine = c.line2;
+  const onLine = c.successLine;
+  const offKnob = c.faint;
+  const onKnob = c.onMine;
   const track = useAnimatedStyle(() => ({
-    backgroundColor: interpolateColor(p.value, [0, 1], [Colors.field, Colors.pine]),
-    borderColor: interpolateColor(p.value, [0, 1], [Colors.line2, Colors.sageLine]),
+    backgroundColor: interpolateColor(p.value, [0, 1], [offTrack, onTrack]),
+    borderColor: interpolateColor(p.value, [0, 1], [offLine, onLine]),
   }));
   const knob = useAnimatedStyle(() => ({
     transform: [{ translateX: p.value * 20 }],
-    backgroundColor: interpolateColor(p.value, [0, 1], [Colors.faint, Colors.cream]),
+    backgroundColor: interpolateColor(p.value, [0, 1], [offKnob, onKnob]),
   }));
   return (
     <Pressable
       accessibilityRole="switch"
       accessibilityLabel={label}
-      accessibilityState={{ checked: value }}
+      accessibilityState={{ checked: value, disabled }}
+      disabled={disabled}
       onPress={() => onValueChange(!value)}
       hitSlop={8}
+      style={disabled ? { opacity: 0.5 } : undefined}
     >
-      <Animated.View style={[styles.toggleTrack, track]}>
-        <Animated.View style={[styles.toggleKnob, knob]} />
+      <Animated.View style={[s.toggleTrack, track]}>
+        <Animated.View style={[s.toggleKnob, knob]} />
       </Animated.View>
     </Pressable>
+  );
+}
+
+/** Segmented control, e.g. theme or timer pickers. */
+export function Segmented<T extends string>({ options, value, onChange, label }: { options: { value: T; label: string }[]; value: T; onChange: (v: T) => void; label: string }) {
+  const { c } = useTheme();
+  const s = useStyles();
+  return (
+    <View style={s.segment} accessibilityRole="radiogroup" accessibilityLabel={label}>
+      {options.map((o) => {
+        const on = o.value === value;
+        return (
+          <Pressy
+            key={o.value}
+            onPress={() => onChange(o.value)}
+            scaleTo={0.95}
+            accessibilityRole="radio"
+            accessibilityState={{ selected: on }}
+            accessibilityLabel={o.label}
+            style={[s.segBtn, on && { backgroundColor: c.text }]}
+          >
+            <Text style={[s.segText, on && { color: c.bg }]}>{o.label}</Text>
+          </Pressy>
+        );
+      })}
+    </View>
   );
 }
 
@@ -382,21 +445,18 @@ interface FieldProps extends TextInputProps {
 }
 
 export function TextField({ label, icon, error, right, containerStyle, onFocus, onBlur, ...rest }: FieldProps) {
+  const { c, type } = useTheme();
+  const s = useStyles();
   const [focused, setFocused] = useState(false);
   return (
     <View style={[{ gap: 8 }, containerStyle]}>
-      {label ? <Text style={Type.label}>{label}</Text> : null}
-      <View
-        style={[
-          styles.field,
-          focused && { borderColor: Colors.brass, borderWidth: 1.5 },
-          !!error && { borderColor: Colors.ember, borderWidth: 1.5 },
-        ]}
-      >
-        {icon && <Icon name={icon} size={19} color={focused ? Colors.brass : Colors.faint} />}
+      {label ? <Text style={type.label}>{label}</Text> : null}
+      <View style={[s.field, focused && { borderColor: c.accent, borderWidth: 1.5 }, !!error && { borderColor: c.danger, borderWidth: 1.5 }]}>
+        {icon && <Icon name={icon} size={19} color={focused ? c.accentText : c.faint} />}
         <TextInput
-          placeholderTextColor="#7D7A6E"
-          selectionColor={Colors.brass}
+          placeholderTextColor={c.placeholder}
+          selectionColor={c.accent}
+          accessibilityLabel={label}
           {...rest}
           onFocus={(e) => {
             setFocused(true);
@@ -406,12 +466,12 @@ export function TextField({ label, icon, error, right, containerStyle, onFocus, 
             setFocused(false);
             onBlur?.(e);
           }}
-          style={[styles.fieldInput, rest.style]}
+          style={[s.fieldInput, rest.style]}
         />
         {right}
       </View>
       {error ? (
-        <Animated.Text entering={FadeIn.duration(200)} style={{ fontFamily: Fonts.medium, fontSize: 12.5, color: Colors.ember }}>
+        <Animated.Text entering={FadeIn.duration(200)} style={[type.caption, { color: c.danger }]}>
           {error}
         </Animated.Text>
       ) : null}
@@ -427,26 +487,29 @@ export function SearchField({ value, onChangeText, placeholder, autoFocus, onCle
   onClear?: () => void;
   style?: StyleProp<ViewStyle>;
 }) {
+  const { c } = useTheme();
+  const s = useStyles();
+  const t = useT();
   const [focused, setFocused] = useState(false);
   return (
-    <View style={[styles.search, focused && { borderColor: Colors.brassLine }, style]}>
-      <Icon name="search" size={18} color={Colors.faint} />
+    <View style={[s.search, focused && { borderColor: c.accentLine }, style]}>
+      <Icon name="search" size={18} color={c.faint} />
       <TextInput
         value={value}
         onChangeText={onChangeText}
         placeholder={placeholder}
-        placeholderTextColor={Colors.faint}
-        selectionColor={Colors.brass}
+        placeholderTextColor={c.faint}
+        selectionColor={c.accent}
         autoFocus={autoFocus}
         autoCapitalize="none"
         accessibilityLabel={placeholder}
         onFocus={() => setFocused(true)}
         onBlur={() => setFocused(false)}
-        style={styles.searchInput}
+        style={s.searchInput}
       />
       {value.length > 0 && (
-        <Pressy onPress={onClear ?? (() => onChangeText(''))} accessibilityLabel="Clear search" style={{ padding: 4 }}>
-          <Icon name="close" size={16} color={Colors.muted} />
+        <Pressy onPress={onClear ?? (() => onChangeText(''))} accessibilityLabel={t('common.clearSearch')} style={{ padding: 4 }}>
+          <Icon name="close" size={16} color={c.muted} />
         </Pressy>
       )}
     </View>
@@ -457,16 +520,16 @@ export function SearchField({ value, onChangeText, placeholder, autoFocus, onCle
 
 export function Sheet({ visible, onClose, title, children }: { visible: boolean; onClose: () => void; title?: string; children: React.ReactNode }) {
   const { isWide } = useLayout();
+  const { type } = useTheme();
+  const s = useStyles();
+  const t = useT();
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose} statusBarTranslucent>
-      <Pressable style={[styles.backdrop, isWide && { justifyContent: 'center', alignItems: 'center', padding: 24 }]} onPress={onClose} accessibilityLabel="Close">
-        <Animated.View
-          entering={isWide ? ZoomIn.springify().damping(18) : SlideInDown.springify().damping(20).stiffness(180)}
-          style={[styles.sheet, isWide && styles.dialog]}
-        >
-          <Pressable onPress={() => {}} style={{ gap: 14 }}>
-            {!isWide && <View style={styles.handle} />}
-            {title ? <Text style={Type.h3}>{title}</Text> : null}
+      <Pressable style={[s.backdrop, isWide && { justifyContent: 'center', alignItems: 'center', padding: 24 }]} onPress={onClose} accessibilityLabel={t('common.close')}>
+        <Animated.View entering={isWide ? ZoomIn.springify().damping(18) : SlideInDown.springify().damping(20).stiffness(180)} style={[s.sheet, isWide && s.dialog]}>
+          <Pressable onPress={() => {}} style={{ gap: 14 }} accessibilityViewIsModal>
+            {!isWide && <View style={s.handle} />}
+            {title ? <Text style={type.h3}>{title}</Text> : null}
             {children}
           </Pressable>
         </Animated.View>
@@ -475,15 +538,25 @@ export function Sheet({ visible, onClose, title, children }: { visible: boolean;
   );
 }
 
-export function SheetRow({ icon, label, onPress, tone = 'cream', detail }: { icon: IconName; label: string; onPress?: () => void; tone?: 'cream' | 'ember' | 'brass'; detail?: string }) {
-  const color = tone === 'ember' ? Colors.ember : tone === 'brass' ? Colors.brass : Colors.cream;
+export function SheetRow({ icon, label, onPress, tone = 'default', detail, selected }: {
+  icon: IconName;
+  label: string;
+  onPress?: () => void;
+  tone?: 'default' | 'ember' | 'brass';
+  detail?: string;
+  selected?: boolean;
+}) {
+  const { c, type, f } = useTheme();
+  const s = useStyles();
+  const color = tone === 'ember' ? c.danger : tone === 'brass' ? c.accentText : c.text;
   return (
-    <Pressy onPress={onPress} scaleTo={0.98} hoverStyle={{ backgroundColor: Colors.creamTint }} style={styles.sheetRow}>
-      <View style={[styles.sheetRowIcon, tone === 'ember' && { backgroundColor: Colors.emberTint }]}>
-        <Icon name={icon} size={19} color={tone === 'cream' ? Colors.brass : color} />
+    <Pressy onPress={onPress} scaleTo={0.98} hoverStyle={{ backgroundColor: c.tint }} style={s.sheetRow} accessibilityLabel={label} accessibilityState={{ selected }}>
+      <View style={[s.sheetRowIcon, tone === 'ember' && { backgroundColor: c.dangerTint }]}>
+        <Icon name={icon} size={19} color={tone === 'default' ? c.accentText : color} />
       </View>
-      <Text style={[Type.body, { color, flex: 1, fontFamily: Fonts.medium }]}>{label}</Text>
-      {detail ? <Text style={Type.caption}>{detail}</Text> : null}
+      <Text style={[type.body, { color, flex: 1, fontFamily: f.medium }]}>{label}</Text>
+      {detail ? <Text style={type.caption}>{detail}</Text> : null}
+      {selected ? <Icon name="check" size={18} color={c.accentText} /> : null}
     </Pressy>
   );
 }
@@ -491,20 +564,20 @@ export function SheetRow({ icon, label, onPress, tone = 'cream', detail }: { ico
 // ── Messaging bits ──────────────────────────────────────────────────────────
 
 function Dot({ delay }: { delay: number }) {
+  const s = useStyles();
   const v = useSharedValue(0);
   useEffect(() => {
-    v.value = withDelay(
-      delay,
-      withRepeat(withSequence(withTiming(1, { duration: 320 }), withTiming(0, { duration: 320 }), withTiming(0, { duration: 560 })), -1)
-    );
+    v.value = withDelay(delay, withRepeat(withSequence(withTiming(1, { duration: 320 }), withTiming(0, { duration: 320 }), withTiming(0, { duration: 560 })), -1));
   }, []);
   const a = useAnimatedStyle(() => ({ opacity: 0.4 + v.value * 0.6, transform: [{ translateY: -4 * v.value }] }));
-  return <Animated.View style={[styles.typingDot, a]} />;
+  return <Animated.View style={[s.typingDot, a]} />;
 }
 
 export function TypingDots() {
+  const s = useStyles();
+  const t = useT();
   return (
-    <Animated.View entering={FadeInDown.springify().damping(16)} style={styles.typing} accessibilityLabel="typing">
+    <Animated.View entering={FadeInDown.springify().damping(16)} style={s.typing} accessibilityLabel={t('thread.typing')}>
       <Dot delay={0} />
       <Dot delay={150} />
       <Dot delay={300} />
@@ -527,31 +600,34 @@ function WaveBar({ h, i, color, playing }: { h: number; i: number; color: string
   return <Animated.View style={[{ width: 3, height: h, borderRadius: 2, backgroundColor: color }, a]} />;
 }
 
-export function Waveform({ progress = 0.35, playing = false, active = Colors.brass, rest = 'rgba(237,231,217,0.45)', bars = WAVE }: {
+export function Waveform({ progress = 0.35, playing = false, active, rest = 'rgba(237,231,217,0.45)', bars = WAVE }: {
   progress?: number;
   playing?: boolean;
   active?: string;
   rest?: string;
   bars?: number[];
 }) {
+  const { c } = useTheme();
   const played = Math.round(bars.length * (playing ? 1 : progress));
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 2, height: 30, flex: 1 }}>
       {bars.map((h, i) => (
-        <WaveBar key={i} h={h} i={i} playing={playing} color={i < played ? active : rest} />
+        <WaveBar key={i} h={h} i={i} playing={playing} color={i < played ? active ?? c.accent : rest} />
       ))}
     </View>
   );
 }
 
 export function EmptyState({ icon, title, body, action }: { icon: IconName; title: string; body: string; action?: React.ReactNode }) {
+  const { c, type } = useTheme();
+  const s = useStyles();
   return (
-    <Rise style={styles.empty}>
-      <View style={styles.emptyIcon}>
-        <Icon name={icon} size={30} color={Colors.brass} />
+    <Rise style={s.empty}>
+      <View style={s.emptyIcon}>
+        <Icon name={icon} size={30} color={c.accentText} />
       </View>
-      <Text style={[Type.h3, { textAlign: 'center' }]}>{title}</Text>
-      <Text style={[Type.bodyMuted, { textAlign: 'center', maxWidth: 300 }]}>{body}</Text>
+      <Text style={[type.h3, { textAlign: 'center' }]}>{title}</Text>
+      <Text style={[type.bodyMuted, { textAlign: 'center', maxWidth: 300 }]}>{body}</Text>
       {action}
     </Rise>
   );
@@ -565,99 +641,6 @@ export function ScrollArea({ children, contentContainerStyle, style }: { childre
   );
 }
 
-const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: Colors.ink },
-  panel: {
-    backgroundColor: Colors.panel,
-    borderRadius: 22,
-    borderWidth: 1,
-    borderColor: Colors.line,
-    paddingHorizontal: 18,
-    overflow: 'hidden',
-  },
-  button: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, paddingHorizontal: 22 },
-  chip: { height: 34, paddingHorizontal: 15, borderRadius: 999, borderWidth: 1, borderColor: Colors.line2, justifyContent: 'center' },
-  chipActive: { backgroundColor: Colors.cream, borderColor: Colors.cream },
-  chipText: { fontFamily: Fonts.medium, fontSize: 13, color: Colors.muted },
-  badge: {
-    minWidth: 22,
-    height: 22,
-    paddingHorizontal: 7,
-    borderRadius: 11,
-    backgroundColor: Colors.brass,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  badgeText: { fontFamily: Fonts.bold, fontSize: 12, color: Colors.brassInk },
-  pill: { flexDirection: 'row', alignItems: 'center', gap: 6, height: 30, paddingHorizontal: 12, borderRadius: 999, alignSelf: 'flex-start' },
-  toggleTrack: { width: 52, height: 32, borderRadius: 16, borderWidth: 1, justifyContent: 'center', paddingHorizontal: 3 },
-  toggleKnob: { width: 24, height: 24, borderRadius: 12 },
-  field: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    height: 54,
-    paddingHorizontal: 16,
-    borderRadius: 16,
-    backgroundColor: Colors.raised,
-    borderWidth: 1,
-    borderColor: 'rgba(237,231,217,0.1)',
-  },
-  fieldInput: { flex: 1, minWidth: 0, height: '100%', fontFamily: Fonts.body, fontSize: 16, color: Colors.cream, outlineStyle: 'none' } as any,
-  search: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    height: 46,
-    paddingHorizontal: 16,
-    borderRadius: 15,
-    backgroundColor: Colors.raised,
-    borderWidth: 1,
-    borderColor: Colors.line,
-  },
-  searchInput: { flex: 1, minWidth: 0, height: '100%', fontFamily: Fonts.body, fontSize: 15, color: Colors.cream, outlineStyle: 'none' } as any,
-  backdrop: { flex: 1, backgroundColor: Colors.overlay, justifyContent: 'flex-end' },
-  sheet: {
-    backgroundColor: Colors.panel,
-    borderTopLeftRadius: 28,
-    borderTopRightRadius: 28,
-    borderWidth: 1,
-    borderColor: Colors.line,
-    padding: 22,
-    paddingBottom: 34,
-  },
-  dialog: { width: '100%', maxWidth: 460, borderRadius: 26, paddingBottom: 22 },
-  handle: { alignSelf: 'center', width: 40, height: 4, borderRadius: 2, backgroundColor: Colors.line3, marginBottom: 4 },
-  sheetRow: { flexDirection: 'row', alignItems: 'center', gap: 14, minHeight: 54, paddingHorizontal: 6, borderRadius: 14 },
-  sheetRowIcon: { width: 38, height: 38, borderRadius: 12, backgroundColor: Colors.raised, alignItems: 'center', justifyContent: 'center' },
-  typing: {
-    flexDirection: 'row',
-    gap: 4,
-    paddingVertical: 14,
-    paddingHorizontal: 16,
-    borderRadius: 20,
-    borderBottomLeftRadius: 6,
-    backgroundColor: Colors.raised,
-    borderWidth: 1,
-    borderColor: Colors.line,
-    alignSelf: 'flex-start',
-    marginVertical: 4,
-  },
-  typingDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: Colors.muted },
-  empty: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 10, padding: 32 },
-  emptyIcon: {
-    width: 76,
-    height: 76,
-    borderRadius: 24,
-    backgroundColor: Colors.brassTint,
-    borderWidth: 1,
-    borderColor: 'rgba(214,166,87,0.2)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 6,
-  },
-});
-
 // ── Ripple rings (calls) ────────────────────────────────────────────────────
 
 function Ring({ size, delay, color, duration }: { size: number; delay: number; color: string; duration: number }) {
@@ -666,12 +649,7 @@ function Ring({ size, delay, color, duration }: { size: number; delay: number; c
     v.value = withDelay(delay, withRepeat(withTiming(1, { duration, easing: Easing.out(Easing.quad) }), -1, false));
   }, []);
   const a = useAnimatedStyle(() => ({ opacity: 0.6 * (1 - v.value), transform: [{ scale: 1 + v.value * 0.9 }] }));
-  return (
-    <Animated.View
-      pointerEvents="none"
-      style={[{ position: 'absolute', width: size, height: size, borderRadius: size / 2, borderWidth: 2, borderColor: color }, a]}
-    />
-  );
+  return <Animated.View pointerEvents="none" style={[{ position: 'absolute', width: size, height: size, borderRadius: size / 2, borderWidth: 2, borderColor: color }, a]} />;
 }
 
 /** Concentric rings that breathe out from an avatar while a call is live. */
@@ -707,3 +685,56 @@ export function useShake() {
   };
   return { style, shake };
 }
+
+const useStyles = makeStyles((c, t, f) => ({
+  screen: { flex: 1, backgroundColor: c.bg },
+  panel: { backgroundColor: c.panel, borderRadius: 22, borderWidth: 1, borderColor: c.line, paddingHorizontal: 18, overflow: 'hidden' },
+  button: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, paddingHorizontal: 22 },
+  chip: { minHeight: 34, paddingHorizontal: 15, paddingVertical: 6, borderRadius: 999, borderWidth: 1, borderColor: c.line2, justifyContent: 'center' },
+  chipActive: { backgroundColor: c.text, borderColor: c.text },
+  chipText: { fontFamily: f.medium, fontSize: 13, color: c.muted },
+  badge: { minWidth: 22, height: 22, paddingHorizontal: 7, borderRadius: 11, backgroundColor: c.accent, alignItems: 'center', justifyContent: 'center' },
+  badgeText: { fontFamily: f.bold, fontSize: 12, color: c.onAccent },
+  pill: { flexDirection: 'row', alignItems: 'center', gap: 6, minHeight: 30, paddingHorizontal: 12, paddingVertical: 4, borderRadius: 999, alignSelf: 'flex-start' },
+  toggleTrack: { width: 52, height: 32, borderRadius: 16, borderWidth: 1, justifyContent: 'center', paddingHorizontal: 3 },
+  toggleKnob: { width: 24, height: 24, borderRadius: 12 },
+  segment: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, padding: 4, borderRadius: 14, backgroundColor: c.raised, borderWidth: 1, borderColor: c.line, alignSelf: 'flex-start' },
+  segBtn: { minHeight: 36, paddingHorizontal: 14, borderRadius: 10, justifyContent: 'center' },
+  segText: { fontFamily: f.medium, fontSize: 13.5, color: c.muted },
+  field: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    height: 54,
+    paddingHorizontal: 16,
+    borderRadius: 16,
+    backgroundColor: c.raised,
+    borderWidth: 1,
+    borderColor: c.line2,
+  },
+  fieldInput: { flex: 1, minWidth: 0, height: '100%', fontFamily: f.body, fontSize: 16, color: c.text, outlineStyle: 'none' } as any,
+  search: { flexDirection: 'row', alignItems: 'center', gap: 10, height: 46, paddingHorizontal: 16, borderRadius: 15, backgroundColor: c.raised, borderWidth: 1, borderColor: c.line },
+  searchInput: { flex: 1, minWidth: 0, height: '100%', fontFamily: f.body, fontSize: 15, color: c.text, outlineStyle: 'none' } as any,
+  backdrop: { flex: 1, backgroundColor: c.overlay, justifyContent: 'flex-end' },
+  sheet: { backgroundColor: c.panel, borderTopLeftRadius: 28, borderTopRightRadius: 28, borderWidth: 1, borderColor: c.line, padding: 22, paddingBottom: 34 },
+  dialog: { width: '100%', maxWidth: 460, borderRadius: 26, paddingBottom: 22 },
+  handle: { alignSelf: 'center', width: 40, height: 4, borderRadius: 2, backgroundColor: c.line3, marginBottom: 4 },
+  sheetRow: { flexDirection: 'row', alignItems: 'center', gap: 14, minHeight: 54, paddingHorizontal: 6, borderRadius: 14 },
+  sheetRowIcon: { width: 38, height: 38, borderRadius: 12, backgroundColor: c.raised, alignItems: 'center', justifyContent: 'center' },
+  typing: {
+    flexDirection: 'row',
+    gap: 4,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderRadius: 20,
+    borderBottomLeftRadius: 6,
+    backgroundColor: c.theirs,
+    borderWidth: 1,
+    borderColor: c.line,
+    alignSelf: 'flex-start',
+    marginVertical: 4,
+  },
+  typingDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: c.muted },
+  empty: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 10, padding: 32 },
+  emptyIcon: { width: 76, height: 76, borderRadius: 24, backgroundColor: c.accentTint, borderWidth: 1, borderColor: c.accentTint2, alignItems: 'center', justifyContent: 'center', marginBottom: 6 },
+}));
