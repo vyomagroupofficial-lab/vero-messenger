@@ -38,6 +38,9 @@ import {
 } from '../../src/shared/models/Message';
 import { DISAPPEARING_OPTIONS, MAX_TEXT_LENGTH, timerLabel } from '../../src/shared/models/payload';
 import { Colors, Typography, Spacing, BorderRadius } from '../../src/shared/theme/theme';
+import { useGroupChatSync } from '../../src/features/groups/useGroupChatSync';
+import { groupRepository } from '../../src/features/groups/GroupRepository';
+import { AdminsOnlyNotice } from '../../src/features/groups/components/GroupComponents';
 
 const REACTION_EMOJIS = ['❤️', '😂', '👍', '🔥', '😮', '😢'];
 const TYPING_SEND_INTERVAL_MS = 3000;
@@ -352,6 +355,7 @@ export default function ChatScreen() {
   const isGroup = conversation?.conversationType === 'group';
   const otherUser = conversation?.otherUser;
   const title = conversation ? conversationTitle(conversation) : 'Loading…';
+  const groupChat = useGroupChatSync(conversationId, isGroup && !isDemo);
 
   // Typing users (expire automatically)
   const now = Date.now();
@@ -530,7 +534,7 @@ export default function ChatScreen() {
         style: 'destructive',
         onPress: async () => {
           try {
-            await conversationRepository.leaveConversation(conversationId, user.id);
+            await groupRepository.leave(conversationId);
             router.back();
           } catch (e) {
             Alert.alert('Could not leave group', friendlyError(e));
@@ -559,7 +563,7 @@ export default function ChatScreen() {
 
         <TouchableOpacity
           style={styles.headerInfo}
-          onPress={() => (otherUser ? router.push(`/profile/${otherUser.id}`) : isGroup ? setShowMenuModal(true) : null)}
+          onPress={() => (otherUser ? router.push(`/profile/${otherUser.id}`) : isGroup ? router.push(`/group/${conversationId}`) : null)}
           activeOpacity={0.7}
         >
           <View style={styles.headerAvatar}>
@@ -682,6 +686,8 @@ export default function ChatScreen() {
           </View>
         )}
 
+        {!groupChat.canSend && <AdminsOnlyNotice />}
+        {groupChat.canSend && (
         <View style={styles.inputBar}>
           <TouchableOpacity style={styles.attachBtn} onPress={() => setShowAttachModal(true)} disabled={uploading}>
             <Ionicons name="add-circle-outline" size={26} color={Colors.accent} />
@@ -708,6 +714,7 @@ export default function ChatScreen() {
             <Ionicons name="send" size={18} color={Colors.white} />
           </TouchableOpacity>
         </View>
+        )}
       </KeyboardAvoidingView>
 
       {/* Attachment sheet */}
@@ -799,6 +806,13 @@ export default function ChatScreen() {
                   </Text>
                 </View>
               ))}
+
+            {isGroup && !isDemo && (
+              <TouchableOpacity style={styles.menuItem} onPress={() => { setShowMenuModal(false); router.push(`/group/${conversationId}`); }}>
+                <Ionicons name="information-circle-outline" size={20} color={Colors.accent} />
+                <Text style={styles.menuItemText}>Group info, admins and invite links</Text>
+              </TouchableOpacity>
+            )}
 
             {otherUser && (
               <TouchableOpacity

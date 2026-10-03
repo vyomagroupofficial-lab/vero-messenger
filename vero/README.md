@@ -69,6 +69,60 @@ and decrypts.
 | Profiles (username, display name, about), group names | Attachment contents or keys |
 | Device public keys, push tokens | Private keys (they never leave the device keystore) |
 
+## Groups, invite links, channels and communities
+
+Server side lives in `supabase/migrations/007_groups_channels.sql` (tests:
+`supabase/tests/groups_channels_test.sql`); client code in
+`src/features/{groups,channels,communities}`.
+
+- **Group admin tools** (`app/group/[id].tsx`): description, photo, roles
+  (admins promote; only the owner dismisses admins; ownership transfer), and
+  three settings enforced server-side: *only admins can send* (a BEFORE INSERT
+  trigger on `messages`), *only admins can edit group info*, *approve new
+  members*. Membership/role/info changes are logged by triggers into
+  `group_events` and rendered as system lines in the chat (live over the
+  private `group:<id>` topic). Leaving as owner hands the group to the
+  longest-serving admin; deleting a group wipes its ciphertext and queues its
+  attachment blobs for cleanup.
+- **Invite links**: random 43-character tokens with optional expiry, max uses
+  and admin approval; admins can reset them. Anyone signed in can preview a
+  link (name, photo, member count) and join; failed guesses count toward a
+  per-user rate limit (60 previews / 10 min, 10 joins / hour).
+- **Channels** (`app/channels/*`): one-to-many broadcast with public
+  (searchable) or private (invite-link) visibility, admins, follower counts,
+  mute and emoji reaction counts. **Channel posts are not end-to-end
+  encrypted** - per-device key fan-out doesn't scale to thousands of
+  followers, so, like WhatsApp Channels, the server can read them; the app
+  says so on every channel screen. Followers are visible only to themselves,
+  admins only to other admins, and post authors aren't exposed. Images go to
+  the private `vero-channel-media` bucket behind storage policies.
+- **Communities** (`app/communities/*`): link groups you admin, create groups
+  inside a community, and an E2EE announcements group where only admins post.
+  Joining any linked group (or the announcements group via a link) makes you a
+  member; community members can join open groups or request to join groups
+  that need approval.
+
+**Server-visible metadata (trade-off):** group / channel / community names,
+descriptions and photos are stored in plain form so invite previews and
+directories work. Photos are small (256 px JPEG, <= ~96 KB) data URIs in the
+row, shown to members and to anyone holding an invite link. Messages and
+attachments in groups and communities remain end-to-end encrypted.
+
+### Invite links
+
+Links look like `vero://join/<token>`. To share `https://<host>/join/<token>`
+links instead (they open the app if installed, or the web build otherwise):
+
+1. Set `EXPO_PUBLIC_INVITE_HOST=<host>` in `.env` and rebuild the app;
+   `app.config.js` then adds the iOS associated domain and the Android App
+   Link intent filter for `/join/*` and `/channels/*`.
+2. On that host, serve `/.well-known/apple-app-site-association` (appID
+   `<TEAMID>.com.vero.messenger`, paths `/join/*`, `/channels/*`) and
+   `/.well-known/assetlinks.json` (package `com.vero.messenger` + your signing
+   certificate SHA-256).
+3. Optionally deploy the web export (`npx expo export --platform web`) there
+   with an SPA fallback so `/join/<token>` renders the join screen in a browser.
+
 ## Security status (be honest with users)
 
 Done:

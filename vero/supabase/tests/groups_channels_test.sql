@@ -81,8 +81,11 @@ select pg_temp.check((select count(*) from group_settings where conversation_id 
   'outsiders cannot read group settings');
 select pg_temp.check((select count(*) from group_events where conversation_id = pg_temp.id('grp')) = 0,
   'outsiders cannot read group events');
+select pg_temp.check(not can_use_channel_topic('group:' || pg_temp.id('grp'), false), 'outsiders cannot receive the group topic');
 
 select pg_temp.as_user(:member);
+select pg_temp.check(can_use_channel_topic('group:' || pg_temp.id('grp'), false), 'members receive the group topic');
+select pg_temp.check(not can_use_channel_topic('group:' || pg_temp.id('grp'), true), 'nobody but the server sends on the group topic');
 select pg_temp.expect_fail(format($$update group_settings set only_admins_send = false where conversation_id = %L$$, pg_temp.id('grp')));
 select pg_temp.expect_fail(format($$insert into group_events (conversation_id, event_type) values (%L, 'renamed')$$, pg_temp.id('grp')));
 select pg_temp.check(true, 'group settings/events cannot be written directly');
@@ -167,8 +170,8 @@ select pg_temp.check((select array_agg(distinct event_type order by event_type) 
   'membership, role and info changes are logged as group events');
 reset role;
 select pg_temp.check(exists (select 1 from realtime.messages where event = 'group.event'
-                             and topic = 'conversation:' || pg_temp.id('grp')),
-  'group events are broadcast on the conversation topic');
+                             and topic = 'group:' || pg_temp.id('grp')),
+  'group events are broadcast on the group:<id> topic');
 set role authenticated;
 
 -- 001's remove_group_member still produces an event (logged by trigger)

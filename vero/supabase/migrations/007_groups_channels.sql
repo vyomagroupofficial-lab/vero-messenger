@@ -17,8 +17,8 @@
 --                         followers. The app labels this clearly.
 --   * communities         related groups + an E2EE announcements group where
 --                         only admins can post
---   * realtime topic `channel:<id>` authorised by NEW policies on
---     realtime.messages (policies are OR-ed with 001's).
+--   * realtime topics `channel:<id>` and `group:<id>` authorised by NEW
+--     policies on realtime.messages (policies are OR-ed with 001's).
 --
 -- Privacy notes (server-visible metadata, same trade-off as group names in 001)
 --   * Group/channel/community names, descriptions and avatars are visible to
@@ -294,7 +294,7 @@ begin
   )
   returning * into v_row;
 
-  perform realtime.send(to_jsonb(v_row), 'group.event', 'conversation:' || p_conversation_id::text, true);
+  perform realtime.send(to_jsonb(v_row), 'group.event', 'group:' || p_conversation_id::text, true);
 end;
 $$;
 
@@ -475,6 +475,10 @@ begin
                             else avatar_data end
    where conversation_id = p_conversation_id
      and (p_description is not null or p_avatar_data is not null or p_clear_avatar);
+
+  -- Lets open chats refresh their header (name) via the existing handler.
+  perform realtime.send(jsonb_build_object('conversation_id', p_conversation_id),
+                        'members.changed', 'conversation:' || p_conversation_id::text, true);
 end;
 $$;
 
@@ -498,6 +502,9 @@ begin
          only_admins_edit_info  = coalesce(p_only_admins_edit_info, only_admins_edit_info),
          join_approval_required = coalesce(p_join_approval_required, join_approval_required)
    where conversation_id = p_conversation_id;
+
+  perform realtime.send(jsonb_build_object('conversation_id', p_conversation_id),
+                        'members.changed', 'conversation:' || p_conversation_id::text, true);
 end;
 $$;
 
@@ -1730,7 +1737,8 @@ as $$
   limit least(greatest(coalesce(p_limit, 30), 1), 50);
 $$;
 
--- ── Realtime: channel:<id> (readers receive, admins send) ────────────────────
+-- ── Realtime: channel:<id> (readers receive, admins send) and group:<id>
+--    (current members receive group events; only the server sends) ──────────
 
 create or replace function public.can_use_channel_topic(p_topic text, p_write boolean)
 returns boolean
@@ -1743,17 +1751,22 @@ declare
   v_kind text := split_part(p_topic, ':', 1);
   v_id   text := split_part(p_topic, ':', 2);
 begin
-  if v_kind <> 'channel' or v_id !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then
+  if v_id !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then
     return false;
   end if;
-  if p_write then
-    return public.is_channel_admin(v_id::uuid);
+  if v_kind = 'channel' then
+    if p_write then
+      return public.is_channel_admin(v_id::uuid);
+    end if;
+    return public.can_read_channel(v_id::uuid);
+  elsif v_kind = 'group' then
+    return not p_write and public.is_conversation_member(v_id::uuid);
   end if;
-  return public.can_read_channel(v_id::uuid);
+  return false;
 end;
 $$;
 
-create policy "vero channel readers receive realtime"
+create policy "vero channel and group topics receive realtime"
   on realtime.messages for select to authenticated
   using (
     realtime.messages.extension = 'broadcast'

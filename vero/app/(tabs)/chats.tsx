@@ -236,6 +236,10 @@ export default function ChatsScreen() {
                 <Ionicons name="search-outline" size={20} color={Colors.textPrimary} />
               </TouchableOpacity>
 
+              <TouchableOpacity style={styles.headerActionBtn} onPress={() => router.push('/channels')} activeOpacity={0.7} accessibilityLabel="Channels and communities">
+                <Ionicons name="megaphone-outline" size={20} color={Colors.textPrimary} />
+              </TouchableOpacity>
+
               <TouchableOpacity
                 style={styles.headerActionBtn}
                 onPress={handleNewGroup}
