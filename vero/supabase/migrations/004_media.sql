@@ -19,6 +19,8 @@ alter table public.media
   add column if not exists upload_status text not null default 'ready'
     check (upload_status in ('pending', 'ready')),
   add column if not exists confirmed_at timestamptz;
+-- Existing rows were verified by the old upload path; new rows start pending.
+alter table public.media alter column upload_status set default 'pending';
 
 alter table public.media
   add constraint media_encrypted_hash_format check (encrypted_hash ~ '^[0-9a-f]{64}$') not valid;
@@ -164,6 +166,27 @@ end;
 $$;
 
 -- ─────────────────────────────────────────────────────────────────────────────
+-- media_download_target: service role only (media-download function). Returns
+-- the stored object only to a current member of the media's conversation, and
+-- only once the upload was verified. Same empty result for "missing", "not
+-- yours", "deleted" and "not ready", so ids can't be probed.
+-- ─────────────────────────────────────────────────────────────────────────────
+create or replace function public.media_download_target(p_media_id uuid, p_user_id uuid)
+returns table (storage_object_id text, encrypted_size bigint)
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select m.storage_object_id, m.encrypted_size
+  from public.media m
+  where m.id = p_media_id
+    and m.deleted_at is null
+    and m.upload_status = 'ready'
+    and public.is_conversation_member(m.conversation_id, p_user_id);
+$$;
+
+-- ─────────────────────────────────────────────────────────────────────────────
 -- Messages may only reference verified, live media. (Separate trigger so the
 -- messages_before_insert function from 001 stays untouched.)
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -184,8 +207,7 @@ begin
 end;
 $$;
 
-drop trigger if exists messages_check_media_ready on public.messages;
-create trigger messages_check_media_ready
+create or replace trigger messages_check_media_ready
   before insert on public.messages
   for each row execute function public.messages_check_media_ready();
 
@@ -196,6 +218,8 @@ revoke execute on function public.begin_media_upload(uuid, uuid, bigint, text, t
 revoke execute on function public.complete_media_upload(uuid, uuid, boolean, text) from public, anon, authenticated;
 revoke execute on function public.cleanup_stale_media_uploads(interval) from public, anon, authenticated;
 revoke execute on function public.messages_check_media_ready() from public, anon, authenticated;
+revoke execute on function public.media_download_target(uuid, uuid) from public, anon, authenticated;
+grant execute on function public.media_download_target(uuid, uuid) to service_role;
 grant execute on function public.begin_media_upload(uuid, uuid, bigint, text, text, bigint, integer, integer) to service_role;
 grant execute on function public.complete_media_upload(uuid, uuid, boolean, text) to service_role;
 grant execute on function public.cleanup_stale_media_uploads(interval) to service_role;
