@@ -14,8 +14,9 @@ routes ciphertext only.
 app/                     Expo Router screens (UI only)
 src/
   core/
-    crypto/primitives.ts   Pure crypto: envelopes, attachments, safety numbers (unit-tested)
-    crypto/CryptoManager   Device identity keys in the platform keystore
+    crypto/primitives.ts   Pure crypto: v2 envelopes, attachments, safety numbers (unit-tested)
+    crypto/ratchet/        X3DH + Double Ratchet session layer, v3 envelopes (unit-tested)
+    crypto/CryptoManager   Device identity/signing keys in the platform keystore
     crypto/sodium.ts       libsodium loader + native CSPRNG polyfill for Hermes
     storage/               Per-account SQLite (decrypted view) + secure key storage
     network/               Supabase client, private realtime channels
@@ -23,6 +24,7 @@ src/
   features/
     auth/                  Sign-up / sign-in, idempotent device registration
     keys/KeyDirectory      Device public keys with trust-on-first-use pinning
+    keys/SessionService    Starts the session layer at sign-in, prekey upkeep, session resets
     messages/              Send/receive/decrypt, receipts, reactions, timers
     chats/                 Conversation list, directory, groups, blocks/reports
     media/                 Encrypt -> upload, download -> decrypt
@@ -40,15 +42,75 @@ tests/                     Unit tests (crypto, payload parsing, receipts)
 
 1. The sender builds a payload (`text`, `media`, `reaction`, `timer`) and
    encrypts it **once** with a random content key (XChaCha20-Poly1305).
-2. The content key is wrapped with `crypto_box` (X25519) for **every active
-   device of every member**, including the sender's other devices. Each slot
-   is bound to `conversation|message|senderDevice`, so slots can't be replayed.
+2. The 32-byte content key is encrypted for **every active device of every
+   member** (including the sender's other devices) through a per-device
+   **Double Ratchet session** (envelope `v: 3`, see *Forward secrecy* below).
+   Each slot is bound to `conversation|message|senderDevice`, so slots can't
+   be replayed into another message.
 3. The ciphertext is inserted into `messages`. A trigger checks that the device
    belongs to the sender and broadcasts the row on the private
    `conversation:<id>` channel, plus a tiny "inbox" ping to each member.
-4. Recipients look up the sender device's public key (pinned on first use;
+4. Recipients look up the sender device's identity key (pinned on first use;
    a changed key is rejected), decrypt, and store the plaintext in a per-account
    local SQLite database.
+
+### Forward secrecy (X3DH + Double Ratchet)
+
+Code: `src/core/crypto/ratchet/` (pure, unit-tested in `tests/ratchet.test.ts`),
+`src/features/keys/SessionService.ts` (app wiring), schema in
+`supabase/migrations/003_ratchet.sql` (tests: `supabase/tests/ratchet_test.sql`).
+
+- **Keys.** Each device has its X25519 identity key plus an Ed25519 signing
+  key that signs the identity key and the device's **signed prekey** (rotated
+  weekly; old private halves kept 30 days for in-flight messages). Devices
+  upload a pool of 100 **one-time prekeys** and top it up below 25.
+  `claim_prekey_bundle()` hands out one one-time prekey per device atomically
+  (`FOR UPDATE SKIP LOCKED`), only to people who share a conversation with
+  the device's owner (this includes story contacts), and at most 1000 per
+  caller per hour. An empty pool falls back to X3DH without a one-time prekey.
+- **Sessions.** [X3DH](https://signal.org/docs/specifications/x3dh/) (X25519,
+  HKDF-SHA-512) starts a session; the
+  [Double Ratchet](https://signal.org/docs/specifications/doubleratchet/)
+  (no header encryption) gives every message a fresh key. Out-of-order and
+  lost messages are handled with skipped message keys: at most 1000 per chain
+  step and 1000 stored per session, each dropped after 30 days. Simultaneous
+  first messages converge (old sessions are kept and tried).
+- **Deviation from Signal.** libsodium has no XEdDSA, so the identity key is
+  bound to a separate Ed25519 signing key by a signature *made by the signing
+  key*. That signature doesn't prove possession of the identity key; the
+  signing key is therefore pinned on first use and is part of the safety
+  number (the QR fingerprint and *Verify safety number* cover identity AND
+  signing keys). KDFs are HMAC/HKDF-SHA-512 built on libsodium's SHA-512
+  (checked against Node's implementations).
+- **Local state.** Sessions, prekey private keys and a plaintext cache live in
+  the account's SQLite database (`vero_ratchet_kv`), every row sealed with
+  XChaCha20-Poly1305 under a storage key kept in SecureStore; deleting the
+  identity crypto-shreds them. Updates for one remote device are serialized
+  by a mutex, and a decrypt commits the new session state, the consumed
+  one-time prekey and the plaintext in one atomic statement.
+- **Duplicates.** Realtime and history fetches can deliver the same message
+  twice, and ratchet keys are single-use, so messages are de-duplicated by id
+  *before* decrypting and answered from the plaintext cache. The cache follows
+  the messages table (deleted and disappeared messages lose their copy too);
+  story entries expire after 48 h.
+- **Recovery.** If a message can't be decrypted because the session is gone or
+  out of sync, it is shown as *"couldn't be decrypted: the secure session was
+  out of sync and has been reset. Ask the sender to send it again."* The
+  session is archived (the next message re-runs X3DH) and the sender's device
+  gets an encrypted *session reset* control message (stored as a
+  `reaction`-type row: no push, ignored by every other client). At most one
+  reset per device per 10 minutes. In admins-only groups a non-admin can't
+  post the reset there; the session is repaired by the next message to that
+  device instead.
+- **History and new devices.** A device can only read messages sent after it
+  existed: earlier messages have no slot for it ("sent before this device was
+  linked"). Linking by QR copies the last 200 messages per chat from the old
+  device (see *QR codes ... linked devices* below). Re-downloading old history
+  after clearing a chat doesn't work for v3 messages (their keys are gone);
+  that is the price of forward secrecy.
+- **Stories** use the same v3 envelope (split per recipient as before).
+- **Bots** (`bots/sdk`) run the same session layer and keep it in their state
+  file.
 
 Group membership changes go through RPCs. A removed member's devices simply
 stop getting key slots, so they can't read new messages.
@@ -70,9 +132,11 @@ Code: `src/features/stories/`, screens in `app/stories/`, schema in
   ("My contacts", "My contacts except…", "Only share with…"; contacts = people
   you share a direct chat with). The setting is kept locally and synced to your
   own `story_privacy` row.
-- The story is encrypted once with the message envelope, bound to
-  `story:<author>|<storyId>|<authorDevice>`, and its key is wrapped for every
-  active device of the author and every audience member. The key slots are
+- The story is encrypted once with the message envelope (`v: 3`), bound to
+  `story:<author>|<storyId>|<authorDevice>`, and its key is ratchet-encrypted
+  for every active device of the author and every audience member (the
+  posting device keeps its own copy locally; viewers keep the decrypted story
+  in the session layer's cache for 48 h, since its key can be used only once). The key slots are
   stored per recipient (`story_recipients`), so each person downloads only their
   own slots. Photos/videos (≤ 30 s) are encrypted on device and stored in the
   private `vero-stories` bucket; storage policies allow downloads only to the
@@ -152,17 +216,52 @@ links instead (they open the app if installed, or the web build otherwise):
 
 Done:
 - E2EE for messages and attachments, multi-device, groups
+- **Forward secrecy and post-compromise security for messages and stories**
+  (X3DH + Double Ratchet per device pair, envelope `v: 3`). Compromising a
+  device's long-term keys later does not reveal past messages whose keys were
+  already deleted; a compromised session heals after the next DH ratchet step.
 - Sender authentication and per-message binding
-- Key pinning, safety numbers covering all of a user's devices, change detection
+- Key pinning, safety numbers covering all of a user's devices (identity and
+  signing keys), change detection
 - RLS on every table, RPC-only membership changes, private realtime channels
 - Push notifications contain no content ("New message")
 - Disappearing messages (server-side hard delete plus local purge)
 
+Limits of the forward secrecy we have (be precise):
+- **Legacy `v: 2` messages** (sent before the upgrade) are still readable with
+  the long-term device key and have no forward secrecy. The app no longer
+  sends v2; devices that never publish prekeys (old app versions) don't get
+  new messages at all, and a sender whose recipients all lack prekeys gets
+  an error instead of a silent downgrade.
+- **Plaintext at rest.** The local message database holds plaintext (as
+  before); forward secrecy protects against later key compromise, not
+  against someone who can read an unlocked phone's storage.
+- **Groups** use pairwise sessions (one ratchet slot per member device), not
+  MLS / sender keys: cost grows with the number of devices, and slots with a
+  pending X3DH header are ~200 bytes, so very large groups (~1000+ devices)
+  approach the 256 KiB message limit.
+- **Attachments** are encrypted with a per-file key that travels inside the
+  ratcheted message; the ciphertext blob stays on the server until the
+  message is deleted or expires, so a leaked file key decrypts it.
+- **Signing key binding** is TOFU (see above), and devices that registered
+  before this change have their signing key published (and pinned by
+  contacts) on first start of the new version, which changes safety numbers
+  once.
+- **Performance on Hermes.** Hermes has no WebAssembly, so libsodium runs as
+  asm.js. Measured on V8 (JIT) the asm.js build needs ~5 ms per X25519 or
+  Ed25519 operation (wasm: ~0.15 ms); Hermes interprets it and will be
+  several times slower. Steady-state sends are symmetric-only (cheaper than
+  v2's one `crypto_box` per device), but starting a session costs ~8 curve
+  operations per device and each new ratchet chain ~3, so the first message
+  to a large group or story audience can take seconds. Not yet measured on a
+  real device; a native libsodium (JSI) binding is the fix if it's too slow.
+- A malicious server can force a session reset by injecting messages with an
+  unknown ratchet key (rate-limited to one per device per 10 minutes), and
+  can withhold one-time prekeys (X3DH still works without them).
+
 Not done yet (roadmap):
-- **Forward secrecy / post-compromise security.** Envelopes use long-term
-  device keys. The next step is a ratcheting session layer (Signal's Double
-  Ratchet for 1:1, MLS for groups). The envelope format is versioned (`v: 2`)
-  so it can be upgraded.
+- **MLS / sender keys for large groups**, header encryption, and sealed sender
+  (the server still sees which device sent each message).
 - **Call media.** Signalling works (invite, ring, accept, decline, history);
   audio/video over WebRTC isn't wired up yet.
 - Voice notes, encrypted backups, encrypted group names/avatars, app lock.
