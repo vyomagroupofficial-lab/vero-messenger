@@ -41,6 +41,7 @@ import { Colors, Typography, Spacing, BorderRadius } from '../../src/shared/them
 import { useGroupChatSync } from '../../src/features/groups/useGroupChatSync';
 import { groupRepository } from '../../src/features/groups/GroupRepository';
 import { AdminsOnlyNotice } from '../../src/features/groups/components/GroupComponents';
+import * as Extras from '../../src/features/stickers/components/chatIntegration';
 
 const REACTION_EMOJIS = ['❤️', '😂', '👍', '🔥', '😮', '😢'];
 const TYPING_SEND_INTERVAL_MS = 3000;
@@ -108,6 +109,7 @@ const MessageBubble = React.memo(function MessageBubble({
   const { isOwn, content, messageType, createdAt, senderName, media, reactions } = message;
   const isImage = messageType === 'image';
   const { uri, loading, error, load } = useDecryptedMedia(media, isImage);
+  if (Extras.isExtensionMessageType(messageType)) return <Extras.ExtensionMessage message={message} status={status} showSenderName={showSenderName} onLongPress={onLongPress} onRetry={onRetry} />;
 
   if (messageType === 'system') {
     return (
@@ -576,6 +578,7 @@ export default function ChatScreen() {
           <View style={{ flex: 1 }}>
             <Text style={styles.headerName} numberOfLines={1}>
               {title}
+              <Extras.BotBadge userId={otherUser?.id} />
             </Text>
             <TouchableOpacity style={styles.headerStatus} onPress={otherUser ? openVerify : undefined}>
               <Ionicons name="lock-closed" size={10} color={Colors.accent} />
@@ -686,12 +689,14 @@ export default function ChatScreen() {
           </View>
         )}
 
+        <Extras.BotCommandSuggestions botUserId={otherUser?.id} text={inputText} onPick={setInputText} />
         {!groupChat.canSend && <AdminsOnlyNotice />}
         {groupChat.canSend && (
         <View style={styles.inputBar}>
           <TouchableOpacity style={styles.attachBtn} onPress={() => setShowAttachModal(true)} disabled={uploading}>
             <Ionicons name="add-circle-outline" size={26} color={Colors.accent} />
           </TouchableOpacity>
+          <Extras.ChatComposerExtras conversation={conversation} replyTo={replyTo} onSent={() => setReplyTo(null)} disabled={uploading} />
 
           <View style={styles.inputWrapper}>
             <TextInput

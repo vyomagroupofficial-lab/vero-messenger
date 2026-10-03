@@ -6,7 +6,9 @@
   "exclude": [
     "node_modules",
     "supabase",
-    "tests"
+    "tests",
+    "scripts",
+    "bots"
   ],
   "include": [
     "**/*.ts",

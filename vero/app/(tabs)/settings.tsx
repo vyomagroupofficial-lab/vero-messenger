@@ -332,6 +332,14 @@ export default function SettingsScreen() {
         />
 
         <SettingSection
+          title="Payments & bots"
+          items={[
+            { icon: 'wallet-outline', label: 'Payments', value: 'Your UPI id and payment history', onPress: () => router.push('/payments'), iconColor: Colors.emerald },
+            { icon: 'hardware-chip-outline', label: 'Bots', value: 'Bot directory and your bots', onPress: () => router.push('/bots'), iconColor: Colors.purple },
+          ]}
+        />
+
+        <SettingSection
           title="Storage"
           items={[
             { icon: 'images-outline', label: 'Clear media cache', onPress: handleClearCache, iconColor: Colors.warning },
