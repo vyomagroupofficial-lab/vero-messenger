@@ -14,13 +14,15 @@
  *
  * Wire format (JSON, same outer shape as v2 so per-device slot splitting -
  * e.g. for stories - works unchanged):
- *   { v: 3, n: b64 nonce, c: b64 body, k: { deviceId: "<slot json>" } }
- *   slot json = { h: b64 ratchet header, c: b64 ratchet ciphertext, p?: X3DH header }
+ *   { v: 3, n: b64 nonce, c: b64 body, k: { deviceId: "<b64 slot>" } }
+ *   slot = flag | [X3DH header: IK_A, EK_A, signed prekey id, one-time prekey id?]
+ *          | ratchet header (DH pub, PN, N) | ratchet ciphertext   (see serializeSlot)
  */
 
 import type { EnvelopeContext, EnvelopeV2, Sodium } from '../primitives';
 import { DecryptionError, ENVELOPE_VERSION } from '../primitives';
-import { isB64Key, KEY_LEN } from './bytes';
+import { concat, KEY_LEN, readU32, u32 } from './bytes';
+import { HEADER_LEN } from './doubleRatchet';
 import type { RatchetSlot } from './session';
 import type { PreKeyHeader } from './x3dh';
 
@@ -79,35 +81,65 @@ export function decryptBody(sodium: Sodium, env: EnvelopeV3, ctx: EnvelopeContex
   }
 }
 
-export function serializeSlot(slot: RatchetSlot): string {
-  return JSON.stringify(slot);
-}
+const SLOT_PLAIN = 1;
+const SLOT_PREKEY = 2;
+const SLOT_PREKEY_OPK = 3;
 
-function parsePreKeyHeader(sodium: Sodium, p: any): PreKeyHeader {
-  const okId = (n: unknown) => Number.isInteger(n) && (n as number) >= 0 && (n as number) <= 0x7fffffff;
-  if (!p || typeof p !== 'object' || !isB64Key(sodium, p.ik) || !isB64Key(sodium, p.ek) || !okId(p.s)) {
-    throw new DecryptionError('Malformed X3DH header');
+/**
+ * Compact binary slot, base64:
+ *   flag(1) [ ik(32) ek(32) u32 spkId [u32 opkId] ] header(40) ciphertext
+ * flag 1 = no X3DH header, 2 = X3DH header without, 3 = with one-time prekey.
+ */
+export function serializeSlot(sodium: Sodium, slot: RatchetSlot): string {
+  const header = sodium.from_base64(slot.h);
+  const ct = sodium.from_base64(slot.c);
+  const parts: Uint8Array[] = [];
+  if (!slot.p) parts.push(new Uint8Array([SLOT_PLAIN]));
+  else {
+    parts.push(new Uint8Array([slot.p.o === undefined ? SLOT_PREKEY : SLOT_PREKEY_OPK]));
+    parts.push(sodium.from_base64(slot.p.ik), sodium.from_base64(slot.p.ek), u32(slot.p.s));
+    if (slot.p.o !== undefined) parts.push(u32(slot.p.o));
   }
-  if (p.o !== undefined && !okId(p.o)) throw new DecryptionError('Malformed X3DH header');
-  const out: PreKeyHeader = { ik: p.ik, ek: p.ek, s: p.s };
-  if (p.o !== undefined) out.o = p.o;
-  return out;
+  parts.push(header, ct);
+  return sodium.to_base64(concat(...parts));
 }
 
 /** Defensive parse: every byte of a slot is attacker-controlled. */
 export function parseSlot(sodium: Sodium, raw: unknown): RatchetSlot {
-  if (typeof raw !== 'string' || raw.length > 64 * 1024) throw new DecryptionError('Malformed key slot');
-  let s: any;
+  if (typeof raw !== 'string' || raw.length > 4096) throw new DecryptionError('Malformed key slot');
+  let b: Uint8Array;
   try {
-    s = JSON.parse(raw);
+    b = sodium.from_base64(raw);
   } catch {
     throw new DecryptionError('Malformed key slot');
   }
-  if (!s || typeof s !== 'object' || typeof s.h !== 'string' || typeof s.c !== 'string') {
+  const flag = b[0];
+  let offset = 1;
+  let p: PreKeyHeader | undefined;
+  if (flag === SLOT_PREKEY || flag === SLOT_PREKEY_OPK) {
+    const need = 1 + 64 + 4 + (flag === SLOT_PREKEY_OPK ? 4 : 0);
+    if (b.length < need) throw new DecryptionError('Malformed key slot');
+    p = {
+      ik: sodium.to_base64(b.subarray(1, 33)),
+      ek: sodium.to_base64(b.subarray(33, 65)),
+      s: readU32(b, 65),
+    };
+    offset = 69;
+    if (flag === SLOT_PREKEY_OPK) {
+      p.o = readU32(b, 69);
+      offset = 73;
+    }
+    if (p.s > 0x7fffffff || (p.o !== undefined && p.o > 0x7fffffff)) throw new DecryptionError('Malformed X3DH header');
+  } else if (flag !== SLOT_PLAIN) {
     throw new DecryptionError('Malformed key slot');
   }
-  const slot: RatchetSlot = { h: s.h, c: s.c };
-  if (s.p !== undefined) slot.p = parsePreKeyHeader(sodium, s.p);
+  // header (40) + at least the AEAD tag (16)
+  if (b.length < offset + HEADER_LEN + 16) throw new DecryptionError('Malformed key slot');
+  const slot: RatchetSlot = {
+    h: sodium.to_base64(b.subarray(offset, offset + HEADER_LEN)),
+    c: sodium.to_base64(b.subarray(offset + HEADER_LEN)),
+  };
+  if (p) slot.p = p;
   return slot;
 }
 

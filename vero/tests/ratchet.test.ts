@@ -500,25 +500,36 @@ describe('session layer (v3 envelopes)', () => {
     const { alice, bob } = await pair();
     assert.equal(await open(bob, alice, await send(alice, [bob], 'setup')), 'setup');
     assert.equal(await open(alice, bob, await send(bob, [alice], 'ack')), 'ack');
+    // Bob learns Alice's current ratchet key from the first message of the chain.
+    assert.equal(await open(bob, alice, await send(alice, [bob], 'new chain')), 'new chain');
     const m = await send(alice, [bob], 'secret');
     const env = JSON.parse(m.raw);
-    const slot = JSON.parse(env.k['bob-phone']);
+    const slot: string = env.k['bob-phone'];
     const flip = (b64: string, i: number) => {
       const b = sodium.from_base64(b64);
       b[i] ^= 0x01;
       return sodium.to_base64(b);
     };
+    // slot = flag(1) | DH pub(32) | PN(4) | N(4) | ciphertext
     const variants = [
-      { ...env, k: { 'bob-phone': JSON.stringify({ ...slot, h: flip(slot.h, 35) }) } }, // pn/n changed
-      { ...env, k: { 'bob-phone': JSON.stringify({ ...slot, h: flip(slot.h, 39) }) } },
-      { ...env, k: { 'bob-phone': JSON.stringify({ ...slot, c: flip(slot.c, 5) }) } },
-      { ...env, c: flip(env.c, 5) },
-      { ...env, n: flip(env.n, 0) },
+      { ...env, k: { 'bob-phone': flip(slot, 36) } }, // PN
+      { ...env, k: { 'bob-phone': flip(slot, 40) } }, // N
+      { ...env, k: { 'bob-phone': flip(slot, 50) } }, // slot ciphertext
+      { ...env, k: { 'bob-phone': flip(slot, 0) } }, // flag
+      { ...env, c: flip(env.c, 5) }, // body
+      { ...env, n: flip(env.n, 0) }, // body nonce
       { ...env, k: { 'bob-phone': 'garbage' } },
     ];
     for (const v of variants) {
       await assert.rejects(open(bob, alice, { ctx: m.ctx, raw: JSON.stringify(v) }), DecryptionError);
     }
+    assert.deepEqual(bob.broken, [], 'tampering within a known chain is not mistaken for a broken session');
+    // An unknown ratchet public key is indistinguishable from a session that
+    // fell out of sync: rejected, and (rate-limited) treated as broken.
+    await assert.rejects(
+      open(bob, alice, { ctx: m.ctx, raw: JSON.stringify({ ...env, k: { 'bob-phone': flip(slot, 10) } }) }),
+      DecryptionError
+    );
     // The genuine message still decrypts afterwards.
     assert.equal(await open(bob, alice, m), 'secret');
   });
@@ -596,6 +607,26 @@ describe('session layer (v3 envelopes)', () => {
     d.spk = { id: 99, publicKey: spk.pub, signature: spk.signature };
     await alice.manager.resetSession('bob-phone');
     await assert.rejects(send(alice, [bob], 'refused'), NoReachableDevicesError);
+  });
+
+  test('tampered X3DH header (ephemeral key / prekey ids) is rejected and the real message still works', async () => {
+    const { alice, bob } = await pair();
+    const m = await send(alice, [bob], 'first');
+    const env = JSON.parse(m.raw);
+    const slot: string = env.k['bob-phone'];
+    const flip = (i: number) => {
+      const b = sodium.from_base64(slot);
+      b[i] ^= 0x01;
+      return sodium.to_base64(b);
+    };
+    // flag(1) | IK_A(32) | EK_A(32) | spk id(4) | opk id(4) | ...
+    for (const i of [40, 68, 72]) {
+      await assert.rejects(
+        open(bob, alice, { ctx: m.ctx, raw: JSON.stringify({ ...env, k: { 'bob-phone': flip(i) } }) }),
+        DecryptionError
+      );
+    }
+    assert.equal(await open(bob, alice, m), 'first');
   });
 
   test('identity mismatch in an X3DH header is refused', async () => {

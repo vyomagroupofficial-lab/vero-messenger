@@ -263,7 +263,7 @@ export class SessionManager {
           }
           const out = encryptSlot(sodium, rec!, body.contentKey, binding);
           await this.store.write([{ ns: 'session', key: r.deviceId, value: out.record }]);
-          k[r.deviceId] = serializeSlot(out.slot);
+          k[r.deviceId] = serializeSlot(sodium, out.slot);
         });
       }
     } finally {
