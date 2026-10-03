@@ -4,9 +4,12 @@
  */
 
 import React, { useCallback } from 'react';
-import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ScrollView, Text, View } from 'react-native';
+import Animated, { FadeIn, ZoomIn } from 'react-native-reanimated';
 import { router, useFocusEffect } from 'expo-router';
-import { Colors, Spacing, Typography } from '../../../shared/theme/theme';
+import i18n, { useT } from '../../../shared/i18n';
+import { makeStyles, useTheme } from '../../../shared/theme/ThemeProvider';
+import { Pressy } from '../../../shared/ui';
 import { useAuthStore } from '../../auth/useAuthStore';
 import { confirmAction, notify } from '../confirm';
 import { useStoriesLive, useStoryTray } from '../hooks';
@@ -14,26 +17,27 @@ import { StoryGroup, useStoriesStore } from '../useStoriesStore';
 import { StoryRing } from './StoryRing';
 
 export async function confirmToggleMute(group: Pick<StoryGroup, 'userId' | 'displayName' | 'muted'>): Promise<void> {
-  const action = group.muted ? 'Unmute' : 'Mute';
+  const t = i18n.t.bind(i18n);
   const ok = await confirmAction(
-    `${action} ${group.displayName}'s stories?`,
-    group.muted
-      ? 'Their new stories will appear with everyone else’s again.'
-      : 'Their stories move to the end of the list. They won’t be told.',
-    action
+    group.muted ? t('stories.unmuteTitle', { name: group.displayName }) : t('stories.muteTitle', { name: group.displayName }),
+    group.muted ? t('stories.unmuteBody') : t('stories.muteBody'),
+    group.muted ? t('channels.unmute') : t('channels.mute')
   );
   if (!ok) return;
   try {
     await useStoriesStore.getState().toggleMute(group.userId);
   } catch (e: any) {
-    notify('Saved on this device only', e?.message ?? 'Couldn’t sync the change.');
+    notify(t('stories.localOnly'), e?.message ?? t('stories.syncFailed'));
   }
 }
 
 export function StoriesTray() {
-  const userId = useAuthStore((s) => s.user?.id);
-  const unavailable = useStoriesStore((s) => s.unavailable);
-  const load = useStoriesStore((s) => s.load);
+  const { f } = useTheme();
+  const s = useStyles();
+  const t = useT();
+  const userId = useAuthStore((st) => st.user?.id);
+  const unavailable = useStoriesStore((st) => st.unavailable);
+  const load = useStoriesStore((st) => st.load);
   const { mine, groups } = useStoryTray();
   useStoriesLive();
 
@@ -48,52 +52,50 @@ export function StoriesTray() {
   const openMine = () => router.push(mine.length ? `/stories/${userId}` : '/stories/new');
 
   return (
-    <View style={styles.container}>
-      <View style={styles.headerRow}>
-        <Text style={styles.title}>Stories</Text>
-        <TouchableOpacity onPress={() => router.push('/stories')} hitSlop={8}>
-          <Text style={styles.link}>See all</Text>
-        </TouchableOpacity>
+    <Animated.View entering={FadeIn} style={s.container}>
+      <View style={s.headerRow}>
+        <Text style={s.title}>{f.script === 'latin' ? t('stories.title').toUpperCase() : t('stories.title')}</Text>
+        <Pressy onPress={() => router.push('/stories')} accessibilityRole="link" accessibilityLabel={t('stories.seeAll')}>
+          <Text style={s.link}>{t('stories.seeAll')}</Text>
+        </Pressy>
       </View>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.row}>
-        <TouchableOpacity style={styles.item} onPress={openMine} onLongPress={() => router.push('/stories/new')}>
-          <StoryRing userId={userId} name="Me" state={mine.length ? 'seen' : 'none'} showAdd={mine.length === 0} />
-          <Text style={styles.name} numberOfLines={1}>
-            {mine.length ? 'My story' : 'Add story'}
-          </Text>
-        </TouchableOpacity>
-        {groups.map((g) => (
-          <TouchableOpacity
-            key={g.userId}
-            style={styles.item}
-            onPress={() => router.push(`/stories/${g.userId}`)}
-            onLongPress={() => confirmToggleMute(g)}
-            accessibilityLabel={`${g.displayName}'s story${g.hasUnseen ? ', new' : ''}${g.muted ? ', muted' : ''}`}
-          >
-            <StoryRing userId={g.userId} name={g.displayName} state={g.hasUnseen ? 'unseen' : 'seen'} muted={g.muted} />
-            <Text style={[styles.name, g.muted && styles.nameMuted]} numberOfLines={1}>
-              {g.displayName}
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.row}>
+        <Animated.View entering={ZoomIn.springify().damping(14)}>
+          <Pressy style={s.item} onPress={openMine} onLongPress={() => router.push('/stories/new')} scaleTo={0.92} accessibilityLabel={mine.length ? t('stories.mine') : t('stories.add')}>
+            <StoryRing userId={userId} name={t('common.you')} state={mine.length ? 'seen' : 'none'} showAdd={mine.length === 0} />
+            <Text style={s.name} numberOfLines={1}>
+              {mine.length ? t('stories.mine') : t('stories.add')}
             </Text>
-          </TouchableOpacity>
+          </Pressy>
+        </Animated.View>
+        {groups.map((g, i) => (
+          <Animated.View key={g.userId} entering={ZoomIn.delay(40 + i * 40).springify().damping(14)}>
+            <Pressy
+              style={s.item}
+              onPress={() => router.push(`/stories/${g.userId}`)}
+              onLongPress={() => confirmToggleMute(g)}
+              scaleTo={0.92}
+              accessibilityLabel={`${g.displayName}${g.hasUnseen ? `, ${t('stories.unseen')}` : ''}${g.muted ? `, ${t('channels.muted')}` : ''}`}
+            >
+              <StoryRing userId={g.userId} name={g.displayName} state={g.hasUnseen ? 'unseen' : 'seen'} muted={g.muted} />
+              <Text style={[s.name, g.muted && s.nameMuted]} numberOfLines={1}>
+                {g.displayName.split(' ')[0]}
+              </Text>
+            </Pressy>
+          </Animated.View>
         ))}
       </ScrollView>
-    </View>
+    </Animated.View>
   );
 }
 
-const styles = StyleSheet.create({
-  container: { paddingTop: Spacing.xs, paddingBottom: Spacing.sm },
-  headerRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: Spacing.base,
-    marginBottom: Spacing.xs,
-  },
-  title: { color: Colors.textSecondary, fontSize: Typography.sm, fontWeight: Typography.semibold, letterSpacing: 0.4 },
-  link: { color: Colors.accentLight, fontSize: Typography.sm, fontWeight: Typography.medium },
-  row: { paddingHorizontal: Spacing.md, gap: Spacing.md },
-  item: { alignItems: 'center', width: 68 },
-  name: { color: Colors.textPrimary, fontSize: Typography.xs, marginTop: Spacing.xs, maxWidth: 68 },
-  nameMuted: { color: Colors.textTertiary },
-});
+const useStyles = makeStyles((c, t, f) => ({
+  container: { gap: 10 },
+  headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  title: { ...t.eyebrow },
+  link: { fontFamily: f.medium, fontSize: 13, color: c.accentText },
+  row: { gap: 14, paddingRight: 8 },
+  item: { alignItems: 'center', width: 66, gap: 6 },
+  name: { fontFamily: f.medium, fontSize: 12, color: c.text, maxWidth: 66 },
+  nameMuted: { color: c.faint },
+}));

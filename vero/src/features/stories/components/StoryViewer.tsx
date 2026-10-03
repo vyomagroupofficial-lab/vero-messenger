@@ -22,13 +22,14 @@ import {
 } from 'react-native';
 import { router } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
-import { BorderRadius, Colors, Spacing, Typography } from '../../../shared/theme/theme';
+import { BorderRadius, Colors, Fonts, Spacing, Typography } from '../../../shared/theme/theme';
+import { useT } from '../../../shared/i18n';
+import { Glyph as Ionicons, useLayout } from '../../../shared/ui';
 import { currentSession } from '../../../core/session';
 import { useAuthStore } from '../../auth/useAuthStore';
 import { confirmAction, notify } from '../confirm';
 import { useStoriesLive, useStoryTray } from '../hooks';
-import { storyAgeLabel, timeLeftLabel } from '../expiry';
+import { storyAge, storyTimeLeft } from '../storyText';
 import { STORY_QUICK_REACTIONS } from '../payload';
 import { reactToStory, replyToStory } from '../storyReply';
 import type { Story } from '../StoryRepository';
@@ -55,6 +56,8 @@ const TICK_MS = 50;
 const HOLD_MS = 200;
 
 export function StoryViewer({ startUserId }: { startUserId: string }) {
+  const t = useT();
+  const { isWide } = useLayout();
   const myId = useAuthStore((s) => s.user?.id);
   const loaded = useStoriesStore((s) => s.loaded);
   const stories = useStoriesStore((s) => s.stories);
@@ -232,13 +235,13 @@ export function StoryViewer({ startUserId }: { startUserId: string }) {
         await replyToStory(session, story, value);
         setReply('');
         Keyboard.dismiss();
-        setToast('Reply sent');
+        setToast(t('stories.replySent'));
       } else {
         await reactToStory(session, story, value);
-        setToast(`Sent ${value}`);
+        setToast(t('stories.sentReaction', { emoji: value }));
       }
     } catch (e: any) {
-      notify('Couldn’t send', e?.message ?? 'Try again.');
+      notify(t('stories.sendFailed'), e?.message ?? t('stories.tryAgain'));
     } finally {
       setSending(false);
     }
@@ -248,11 +251,11 @@ export function StoryViewer({ startUserId }: { startUserId: string }) {
     if (!story) return;
     dispatch({ type: 'PAUSE', reason: 'sheet' });
     try {
-      if (await confirmAction('Delete this story?', 'It will disappear for everyone who can see it.', 'Delete', true)) {
+      if (await confirmAction(t('stories.deleteTitle'), t('stories.deleteBody'), t('common.delete'), true)) {
         await useStoriesStore.getState().deleteStory(story.id);
       }
     } catch (e: any) {
-      notify('Couldn’t delete', e?.message ?? 'Try again.');
+      notify(t('thread.deleteFailed'), e?.message ?? t('stories.tryAgain'));
     } finally {
       dispatch({ type: 'RESUME', reason: 'sheet' });
     }
@@ -278,14 +281,15 @@ export function StoryViewer({ startUserId }: { startUserId: string }) {
   if (!story) return <View style={styles.root} />;
 
   const group = state.groups[state.group];
-  const authorName = story.isOwn ? 'My story' : names[story.authorId] ?? 'Unknown';
+  const authorName = story.isOwn ? t('stories.mine') : names[story.authorId] ?? t('stories.unknown');
   const paused = isPaused(state);
   const payload = story.payload;
   const muted = privacy.mutedUserIds.includes(story.authorId);
   const caption = payload && payload.kind !== 'text' ? payload.caption : undefined;
 
   return (
-    <View style={styles.root} ref={rootRef} onLayout={measure}>
+    <View style={[styles.backdrop, isWide && styles.backdropWide]}>
+    <View style={[styles.root, isWide && styles.rootWide]} ref={rootRef} onLayout={measure}>
       <Animated.View
         style={[
           styles.stage,
@@ -299,7 +303,7 @@ export function StoryViewer({ startUserId }: { startUserId: string }) {
         {!payload ? (
           <View style={[styles.center, styles.lockedCard]}>
             <Ionicons name="lock-closed" size={30} color={Colors.textSecondary} />
-            <Text style={styles.lockedText}>{story.error ?? "This story couldn't be decrypted."}</Text>
+            <Text style={styles.lockedText}>{story.error ?? t('stories.decryptFailed')}</Text>
           </View>
         ) : payload.kind === 'text' ? (
           <TextStoryCanvas text={payload.text} bg={payload.bg} font={payload.font} />
@@ -329,21 +333,21 @@ export function StoryViewer({ startUserId }: { startUserId: string }) {
               {authorName}
             </Text>
             <Text style={styles.meta}>
-              {storyAgeLabel(story.createdAt)}
-              {story.isOwn ? ` · ${timeLeftLabel(story.expiresAt)}` : ''}
-              {paused ? ' · paused' : ''}
+              {storyAge(t, story.createdAt)}
+              {story.isOwn ? ` · ${storyTimeLeft(t, story.expiresAt)}` : ''}
+              {paused ? ` · ${t('stories.paused')}` : ''}
             </Text>
           </View>
           {!story.isOwn && (
             <TouchableOpacity
               hitSlop={10}
               onPress={() => void toggleMute({ userId: story.authorId, displayName: authorName, muted })}
-              accessibilityLabel={muted ? 'Unmute stories' : 'Mute stories'}
+              accessibilityLabel={muted ? t('stories.unmuteStories') : t('stories.muteStories')}
             >
               <Ionicons name={muted ? 'volume-mute' : 'ellipsis-horizontal'} size={22} color={Colors.white} />
             </TouchableOpacity>
           )}
-          <TouchableOpacity hitSlop={10} onPress={() => dispatch({ type: 'CLOSE' })} accessibilityLabel="Close">
+          <TouchableOpacity hitSlop={10} onPress={() => dispatch({ type: 'CLOSE' })} accessibilityLabel={t('common.close')}>
             <Ionicons name="close" size={26} color={Colors.white} />
           </TouchableOpacity>
         </View>
@@ -373,7 +377,7 @@ export function StoryViewer({ startUserId }: { startUserId: string }) {
                 <Ionicons name="eye-outline" size={20} color={Colors.white} />
                 <Text style={styles.ownButtonText}>{viewCounts[story.id] ?? 0}</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.ownButton} onPress={confirmDelete} accessibilityLabel="Delete story">
+              <TouchableOpacity style={styles.ownButton} onPress={confirmDelete} accessibilityLabel={t('stories.deleteTitle')}>
                 <Ionicons name="trash-outline" size={20} color={Colors.white} />
               </TouchableOpacity>
             </View>
@@ -393,7 +397,7 @@ export function StoryViewer({ startUserId }: { startUserId: string }) {
                   style={styles.replyInput}
                   value={reply}
                   onChangeText={setReply}
-                  placeholder={`Reply to ${authorName}…`}
+                  placeholder={t('stories.replyTo', { name: authorName })}
                   placeholderTextColor="rgba(255,255,255,0.6)"
                   maxLength={2000}
                   onFocus={() => {
@@ -409,7 +413,7 @@ export function StoryViewer({ startUserId }: { startUserId: string }) {
                 />
                 {reply.trim() ? (
                   <TouchableOpacity onPress={() => send('reply', reply)} disabled={sending} hitSlop={8}>
-                    <Ionicons name="send" size={22} color={Colors.accentLight} />
+                    <Ionicons name="send" size={22} color="#E7BD72" />
                   </TouchableOpacity>
                 ) : (
                   <TouchableOpacity onPress={() => send('reaction', '❤️')} disabled={sending} hitSlop={8}>
@@ -417,7 +421,7 @@ export function StoryViewer({ startUserId }: { startUserId: string }) {
                   </TouchableOpacity>
                 )}
               </View>
-              <Text style={styles.e2eeNote}>Replies are sent as an end-to-end encrypted message</Text>
+              <Text style={styles.e2eeNote}>{t('stories.replyNote')}</Text>
             </View>
           )}
         </SafeAreaView>
@@ -432,15 +436,19 @@ export function StoryViewer({ startUserId }: { startUserId: string }) {
         }}
       />
     </View>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: Colors.black },
+  backdrop: { flex: 1, backgroundColor: '#070808' },
+  backdropWide: { alignItems: 'center', justifyContent: 'center', paddingVertical: 24 },
+  root: { flex: 1, backgroundColor: '#070808' },
+  rootWide: { width: '100%', maxWidth: 460, aspectRatio: 9 / 16, flex: undefined, maxHeight: '100%', borderRadius: 28, overflow: 'hidden', borderWidth: 1, borderColor: 'rgba(237,231,217,0.1)' },
   center: { alignItems: 'center', justifyContent: 'center' },
   stage: { flex: 1 },
-  lockedCard: { flex: 1, gap: Spacing.md, padding: Spacing['2xl'], backgroundColor: Colors.surface },
-  lockedText: { color: Colors.textSecondary, fontSize: Typography.base, textAlign: 'center' },
+  lockedCard: { flex: 1, gap: Spacing.md, padding: Spacing['2xl'], backgroundColor: '#14231E' },
+  lockedText: { fontFamily: Fonts.body, color: '#D9D2C1', fontSize: Typography.base, textAlign: 'center' },
   captionWrap: {
     position: 'absolute',
     left: 0,
@@ -450,6 +458,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   caption: {
+    fontFamily: Fonts.body,
     color: Colors.white,
     fontSize: Typography.md,
     textAlign: 'center',
@@ -461,8 +470,8 @@ const styles = StyleSheet.create({
   },
   topOverlay: { position: 'absolute', top: 0, left: 0, right: 0, paddingHorizontal: Spacing.sm, paddingTop: Spacing.sm },
   header: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, marginTop: Spacing.sm },
-  author: { color: Colors.white, fontSize: Typography.base, fontWeight: Typography.semibold },
-  meta: { color: 'rgba(255,255,255,0.75)', fontSize: Typography.xs, marginTop: 1 },
+  author: { color: Colors.white, fontSize: Typography.base, fontFamily: Fonts.semibold },
+  meta: { fontFamily: Fonts.body, color: 'rgba(255,255,255,0.75)', fontSize: Typography.xs, marginTop: 1 },
   toast: {
     position: 'absolute',
     alignSelf: 'center',
@@ -472,7 +481,7 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.sm,
     borderRadius: BorderRadius.full,
   },
-  toastText: { color: Colors.white, fontSize: Typography.base, fontWeight: Typography.medium },
+  toastText: { color: Colors.white, fontSize: Typography.base, fontFamily: Fonts.medium },
   bottomOverlay: { position: 'absolute', left: 0, right: 0, bottom: 0 },
   ownBar: { flexDirection: 'row', justifyContent: 'space-between', padding: Spacing.base },
   ownButton: {
@@ -484,7 +493,7 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.sm,
     borderRadius: BorderRadius.full,
   },
-  ownButtonText: { color: Colors.white, fontSize: Typography.base, fontWeight: Typography.semibold },
+  ownButtonText: { color: Colors.white, fontSize: Typography.base, fontFamily: Fonts.semibold },
   reactions: { flexDirection: 'row', justifyContent: 'space-around', paddingHorizontal: Spacing.lg, paddingBottom: Spacing.sm },
   reaction: { fontSize: 30 },
   replyBar: {
@@ -498,8 +507,8 @@ const styles = StyleSheet.create({
     borderRadius: BorderRadius.full,
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.45)',
-    backgroundColor: 'rgba(0,0,0,0.35)',
+    backgroundColor: 'rgba(12,14,13,0.45)',
   },
-  replyInput: { flex: 1, color: Colors.white, fontSize: Typography.base },
-  e2eeNote: { color: 'rgba(255,255,255,0.55)', fontSize: Typography.xs, textAlign: 'center', marginBottom: Spacing.sm },
+  replyInput: { flex: 1, fontFamily: Fonts.body, color: Colors.white, fontSize: Typography.base, outlineStyle: 'none' } as any,
+  e2eeNote: { fontFamily: Fonts.body, color: 'rgba(255,255,255,0.55)', fontSize: Typography.xs, textAlign: 'center', marginBottom: Spacing.sm },
 });
