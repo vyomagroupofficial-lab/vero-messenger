@@ -10,21 +10,33 @@
  *      on first use, like the app) and decrypts it
  *   4. replies by encrypting for every device in the conversation
  * The server never sees plaintext - only this process can read the chats.
+ *
+ * Messages use the app's forward-secret session layer (v3 envelopes: X3DH +
+ * Double Ratchet, src/core/crypto/ratchet). The bot has an Ed25519 signing
+ * key, publishes signed/one-time prekeys, and keeps its sessions, prekey
+ * private keys and a short plaintext cache in the state file - so the state
+ * file is now as sensitive as the identity key, must be persistent, and must
+ * not be shared between two running processes (sessions would fork).
+ * Legacy v2 messages are still read.
  */
 
 import { randomUUID } from 'node:crypto';
 import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { createClient, type RealtimeChannel, type SupabaseClient } from '@supabase/supabase-js';
 import sodiumModule from 'libsodium-wrappers';
-import { generateIdentityKeyPair, NotAddressedToDeviceError } from '../../src/core/crypto/primitives';
+import { generateIdentityKeyPair, NotAddressedToDeviceError, type EnvelopeContext } from '../../src/core/crypto/primitives';
+import { generateSigningKeyPair, type KeyPairB64 } from '../../src/core/crypto/ratchet/keys';
+import { MemoryRatchetStore, type MemorySnapshot } from '../../src/core/crypto/ratchet/store';
+import { SessionManager, sessionResetPlaintext, type TrustedDevice } from '../../src/core/crypto/ratchet/SessionManager';
+import { createPreKeyServer } from '../../src/core/crypto/ratchet/serverApi';
 import {
   DeviceKeyRef,
   MessagePayload,
   Sodium,
-  openPayload,
+  openSessionPayload,
   parseBotToken,
   parseCommand,
-  sealPayload,
+  sealSessionPayload,
 } from './envelope';
 
 export interface VeroBotOptions {
@@ -68,15 +80,21 @@ type Handler = (ctx: BotContext) => unknown | Promise<unknown>;
 interface PinnedKey {
   userId: string;
   publicKey: string;
+  /** Ed25519 signing key, pinned on first use (session layer). */
+  signingKey?: string;
 }
 
 interface BotState {
   userId?: string;
   identity?: { publicKey: string; secretKey: string };
+  /** Ed25519 key that signs the identity key and the signed prekeys. */
+  signing?: KeyPairB64;
   deviceId?: string;
   pinned: Record<string, PinnedKey>;
   cursors: Record<string, string>;
   processed: string[];
+  /** Session layer store: sessions, prekey private keys, plaintext cache. */
+  ratchet?: MemorySnapshot;
 }
 
 interface MessageRow {
@@ -105,6 +123,7 @@ export class VeroBot {
   private dataHandlers: Handler[] = [];
   private queue: Promise<void> = Promise.resolve();
   private username: string | undefined;
+  private sessions!: SessionManager;
   private readonly log: (...args: unknown[]) => void;
 
   constructor(private readonly opts: VeroBotOptions) {
@@ -161,6 +180,8 @@ export class VeroBot {
     this.username = profile?.username ?? undefined;
 
     await this.ensureDevice();
+    this.startSessions();
+    await this.sessions.refreshPreKeys();
     await this.catchUp(true);
 
     await this.supabase.realtime.setAuth();
@@ -175,7 +196,16 @@ export class VeroBot {
       });
 
     const every = this.opts.pollIntervalMs ?? 60_000;
-    if (every > 0) this.poller = setInterval(() => this.enqueue(() => this.catchUp(false)), every);
+    if (every > 0) {
+      let ticks = 0;
+      this.poller = setInterval(() => {
+        this.enqueue(() => this.catchUp(false));
+        // Top up one-time prekeys / rotate the signed prekey about hourly.
+        if (++ticks % Math.max(1, Math.round(3_600_000 / every)) === 0) {
+          this.enqueue(async () => void (await this.sessions.refreshPreKeys()));
+        }
+      }, every);
+    }
   }
 
   async stop(): Promise<void> {
@@ -197,11 +227,10 @@ export class VeroBot {
   async sendPayload(conversationId: string, payload: MessagePayload, replyTo?: string): Promise<string> {
     const recipients = await this.recipients(conversationId);
     const id = randomUUID();
-    const { ciphertext, messageType } = sealPayload(
-      this.sodium,
+    const { ciphertext, messageType } = await sealSessionPayload(
+      this.sessions,
       payload,
       { conversationId, messageId: id, senderDeviceId: this.state.deviceId! },
-      this.state.identity!.secretKey,
       recipients
     );
     const { error } = await this.supabase.from('messages').insert({
@@ -265,6 +294,9 @@ export class VeroBot {
     }
     // A fresh key pair for every (re-)registration: revoked keys stay revoked.
     this.state.identity = generateIdentityKeyPair(this.sodium);
+    // A new device: fresh signing key, no sessions or prekeys from the old one.
+    this.state.signing = generateSigningKeyPair(this.sodium);
+    this.state.ratchet = {};
     const { data, error } = await this.supabase
       .from('devices')
       .insert({ identity_public_key: this.state.identity.publicKey, device_label: (this.opts.deviceLabel ?? 'Bot server').slice(0, 64) })
@@ -273,6 +305,70 @@ export class VeroBot {
     if (error || !data) throw new Error(`device registration failed: ${error?.message}`);
     this.state.deviceId = data.id;
     this.saveState();
+  }
+
+  private startSessions(): void {
+    if (!this.state.signing) {
+      this.state.signing = generateSigningKeyPair(this.sodium);
+      this.saveState();
+    }
+    const store = new MemoryRatchetStore(this.state.ratchet ?? {}, (snapshot) => {
+      this.state.ratchet = snapshot;
+      this.saveState();
+    });
+    const sessions: SessionManager = new SessionManager({
+      sodium: this.sodium,
+      local: {
+        userId: this.userId,
+        deviceId: this.state.deviceId!,
+        identity: { pub: this.state.identity!.publicKey, priv: this.state.identity!.secretKey },
+        signing: this.state.signing,
+      },
+      store,
+      directory: {
+        trusted: async (deviceId) => this.trustedDevice(deviceId),
+        pinSigningKey: async (deviceId, userId, signingKey) => {
+          const known = this.state.pinned[deviceId];
+          if (!known) return;
+          if (known.signingKey && known.signingKey !== signingKey) throw new Error(`signing key for ${deviceId} changed`);
+          known.signingKey = signingKey;
+          this.saveState();
+        },
+      },
+      server: createPreKeyServer(this.supabase),
+      hooks: {
+        onSessionBroken: (remote, ctx) => this.enqueue(() => this.sendSessionReset(remote, ctx)),
+        onPreKeysConsumed: () => this.enqueue(async () => void (await this.sessions.refreshPreKeys())),
+        log: (m, d) => this.log(m, d ?? ''),
+      },
+    });
+    this.sessions = sessions;
+  }
+
+  private async trustedDevice(deviceId: string): Promise<TrustedDevice | null> {
+    const k = await this.senderKey(deviceId);
+    return k ? { userId: k.userId, identityKey: k.publicKey, signingKey: k.signingKey ?? null } : null;
+  }
+
+  /** Our session with `remote` broke: send it an encrypted reset (new X3DH). */
+  private async sendSessionReset(remote: string, ctx: EnvelopeContext): Promise<void> {
+    const key = await this.senderKey(remote);
+    if (!key || ctx.conversationId.startsWith('story:')) return;
+    const id = randomUUID();
+    const ciphertext = await this.sessions.encrypt(
+      { conversationId: ctx.conversationId, messageId: id, senderDeviceId: this.state.deviceId! },
+      sessionResetPlaintext(),
+      [{ deviceId: remote, publicKey: key.publicKey }]
+    );
+    const { error } = await this.supabase.from('messages').insert({
+      id,
+      conversation_id: ctx.conversationId,
+      sender_device_id: this.state.deviceId,
+      sender_user_id: this.userId,
+      ciphertext,
+      message_type: 'reaction',
+    });
+    if (error) this.log('session reset not sent:', error.message);
   }
 
   /** Fetches anything newer than our cursor in every conversation the bot is in. */
@@ -317,20 +413,20 @@ export class VeroBot {
       this.log('skipping message from unknown/changed device', row.sender_device_id);
       return;
     }
-    let payload: MessagePayload | null;
+    let opened: MessagePayload | null | 'control';
     try {
-      payload = openPayload(
-        this.sodium,
+      opened = await openSessionPayload(
+        this.sessions,
         row.ciphertext,
         { conversationId: row.conversation_id, messageId: row.id, senderDeviceId: row.sender_device_id },
-        this.state.deviceId!,
-        this.state.identity!.secretKey,
         senderKey.publicKey
       );
     } catch (e) {
-      if (!(e instanceof NotAddressedToDeviceError)) this.log('could not decrypt', row.id);
+      if (!(e instanceof NotAddressedToDeviceError)) this.log('could not decrypt', row.id, (e as Error)?.message ?? '');
       return;
     }
+    if (opened === 'control') return;
+    const payload = opened;
     if (!payload || payload.t === 'reaction' || payload.t === 'timer' || payload.t === 'payment_status') return;
 
     const message: IncomingMessage = {

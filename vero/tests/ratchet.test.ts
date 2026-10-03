@@ -46,6 +46,7 @@ import {
 import { MemoryRatchetStore, RatchetStore } from '../src/core/crypto/ratchet/store';
 import { MinimalSqlDb, SqliteRatchetStore, RATCHET_TABLE } from '../src/core/crypto/ratchet/SqliteRatchetStore';
 import { bundleFromRow } from '../src/core/crypto/ratchet/serverApi';
+import { openSessionPayload, sealSessionPayload } from '../bots/sdk/envelope';
 import { openRow, sealRow } from '../src/core/crypto/ratchet/atRest';
 import { KeyedMutex } from '../src/core/crypto/ratchet/mutex';
 import { parseAnyEnvelope, parseSlot } from '../src/core/crypto/ratchet/envelope';
@@ -741,6 +742,46 @@ describe('session layer (v3 envelopes)', () => {
     assert.equal(await read(author, null), '{"t":"story"}'); // own device: local cache
     // Re-reading (every fetch of the tray) is served from the cache.
     assert.equal(await read(bob, split.recipientSlots.bob), '{"t":"story"}');
+  });
+});
+
+// ── Bot SDK interop ──────────────────────────────────────────────────────────
+
+describe('bot SDK (v3 through the same session layer)', () => {
+  test('app device <-> bot: payloads, control messages, state-file persistence', async () => {
+    const backend = new FakeBackend();
+    let stateFile = '{}';
+    const botIdentity = generateX25519KeyPair(sodium);
+    const botSigning = generateSigningKeyPair(sodium);
+    const botStore = () =>
+      new MemoryRatchetStore(JSON.parse(stateFile), (snap) => {
+        stateFile = JSON.stringify(snap);
+      });
+    const user = makeDevice(backend, 'user', 'user-phone');
+    let bot = makeDevice(backend, 'bot', 'bot-server', { identity: botIdentity, signing: botSigning, store: botStore() });
+    await user.manager.refreshPreKeys();
+    await bot.manager.refreshPreKeys();
+
+    const inCtx = ctxFrom(user);
+    const sealed = await sealSessionPayload(user.manager, { t: 'text', body: '/start' }, inCtx, [ref(bot)]);
+    assert.equal(sealed.messageType, 'text');
+    assert.deepEqual(await openSessionPayload(bot.manager, sealed.ciphertext, inCtx, user.identity.pub), {
+      t: 'text',
+      body: '/start',
+    });
+
+    // Bot process restarts from its state file and replies.
+    bot = makeDevice(backend, 'bot', 'bot-server', { identity: botIdentity, signing: botSigning, store: botStore() });
+    const outCtx = ctxFrom(bot);
+    const reply = await sealSessionPayload(bot.manager, { t: 'text', body: 'Hello!' }, outCtx, [ref(user), ref(bot)]);
+    assert.deepEqual(await openSessionPayload(user.manager, reply.ciphertext, outCtx, bot.identity.pub), {
+      t: 'text',
+      body: 'Hello!',
+    });
+
+    const ctl = ctxFrom(user);
+    const reset = await user.manager.encrypt(ctl, sessionResetPlaintext(), [ref(bot)]);
+    assert.equal(await openSessionPayload(bot.manager, reset, ctl, user.identity.pub), 'control');
   });
 });
 
