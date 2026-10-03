@@ -1,44 +1,56 @@
 -- ============================================================================
 -- Vero Messenger - 005: privacy settings, push notifications, mutes,
---                       last seen / presence, encrypted backups
+--                       last seen / online presence, encrypted backups
 -- ============================================================================
--- Applies on top of 001 only (does not depend on 002-004).
+-- Depends on 001 only. Later migrations (007 channels, ...) are referenced
+-- solely from PL/pgSQL bodies, which resolve tables at call time.
 --
 -- Push pipeline (no Edge Function secrets needed):
+--
 --   messages INSERT --trigger--> net.http_post(<project_url>/functions/v1/send-push,
 --                                              header x-webhook-secret: <vault secret>)
---   send-push verifies the header with verify_push_webhook_secret() (service
---   role only) and asks get_message_push_targets() whom to wake.
+--   send-push checks the header with verify_push_webhook_secret() (service
+--   role only), then asks get_message_push_targets() whom to wake.
+--
 --   Both values live in Supabase Vault:
---     push_webhook_secret  created here with a random value
---     project_url          set by the operator:  select public.vero_set_project_url('https://<ref>.supabase.co');
---   Until project_url is set the trigger is a silent no-op.
+--     push_webhook_secret  created by this migration with a random value
+--     project_url          created by the operator, once:
+--       select vault.create_secret('https://<ref>.supabase.co', 'project_url');
+--   Until project_url exists the trigger is a silent no-op.
 --
 -- Privacy:
---   * user_settings is readable/writable by its owner only.
---   * profiles.last_seen_at and conversation_members.muted_until are hidden
---     from clients by column privileges; last seen is read through
---     get_last_seen(), which applies the owner's visibility setting.
+--   * user_settings: owner-only (RLS).
+--   * last seen lives in its own table that clients cannot read directly
+--     (profiles are readable by every signed-in user); get_last_seen()
+--     applies the owner's visibility setting.
+--   * presence:<user id> realtime topics: only that user may track, only
+--     people who share a chat with them may watch, and only while both
+--     sides have "show online" on.
 -- ============================================================================
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- Platform extensions (present on Supabase; stubbed by the local test harness)
+-- pg_net (present on Supabase; the local test harness stubs net.http_post)
 -- ─────────────────────────────────────────────────────────────────────────────
 
 do $$
 begin
   if exists (select 1 from pg_available_extensions where name = 'pg_net')
      and not exists (select 1 from pg_extension where extname = 'pg_net') then
-    create extension pg_net with schema extensions;
+    begin
+      create extension pg_net with schema extensions;
+    exception when others then
+      raise warning '[vero] could not enable pg_net (%); enable it under Database -> Extensions', sqlerrm;
+    end;
   end if;
 end
 $$;
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- Vault helpers
+-- Vault
 -- ─────────────────────────────────────────────────────────────────────────────
 
--- Reads a Vault secret. Only callable by the database owner / service role.
+-- Reads a Vault secret (null when Vault or the secret is missing).
+-- Owner / service role only.
 create or replace function public.vero_read_secret(p_name text)
 returns text
 language plpgsql
@@ -52,68 +64,28 @@ begin
   if to_regclass('vault.decrypted_secrets') is null then
     return null;
   end if;
-  execute 'select decrypted_secret from vault.decrypted_secrets where name = $1 limit 1'
+  execute 'select decrypted_secret from vault.decrypted_secrets where name = $1 order by created_at desc limit 1'
     into v_value using p_name;
-  return nullif(v_value, '');
+  return nullif(btrim(coalesce(v_value, '')), '');
 end;
 $$;
 
--- Creates or replaces a named Vault secret.
-create or replace function public.vero_upsert_secret(p_name text, p_value text, p_description text default '')
-returns void
-language plpgsql
-security definer
-set search_path = ''
-as $$
-declare
-  v_id uuid;
-begin
-  if to_regclass('vault.secrets') is null then
-    raise exception 'Supabase Vault is not available' using errcode = '0A000';
-  end if;
-  execute 'select id from vault.secrets where name = $1 limit 1' into v_id using p_name;
-  if v_id is null then
-    execute 'select vault.create_secret($1, $2, $3)' using p_value, p_name, p_description;
-  else
-    execute 'select vault.update_secret($1, $2)' using v_id, p_value;
-  end if;
-end;
-$$;
-
--- Operator entry point: the base URL used to reach Edge Functions.
-create or replace function public.vero_set_project_url(p_url text)
-returns void
-language plpgsql
-security definer
-set search_path = ''
-as $$
-declare
-  v_url text := rtrim(btrim(coalesce(p_url, '')), '/');
-begin
-  if v_url !~ '^https?://[A-Za-z0-9.:-]+$' then
-    raise exception 'expected a base URL like https://<ref>.supabase.co' using errcode = '22023';
-  end if;
-  perform public.vero_upsert_secret('project_url', v_url, 'Base URL of this Supabase project (used by database triggers to call Edge Functions)');
-end;
-$$;
-
--- Shared secret between the push trigger and the send-push function.
+-- Shared secret between the push trigger and the send-push function:
+-- 64 hex chars from two v4 UUIDs (gen_random_uuid uses the CSPRNG) hashed together.
 do $$
 begin
-  if to_regclass('vault.secrets') is not null then
-    if public.vero_read_secret('push_webhook_secret') is null then
-      perform public.vero_upsert_secret(
-        'push_webhook_secret',
-        encode(extensions.gen_random_bytes(32), 'hex'),
-        'Authenticates database -> send-push calls (x-webhook-secret header)'
-      );
-    end if;
+  if to_regclass('vault.secrets') is not null and public.vero_read_secret('push_webhook_secret') is null then
+    perform vault.create_secret(
+      encode(sha256(convert_to(gen_random_uuid()::text || gen_random_uuid()::text || clock_timestamp()::text, 'UTF8')), 'hex'),
+      'push_webhook_secret',
+      'Authenticates database -> send-push calls (x-webhook-secret header). Rotate with vault.update_secret.'
+    );
   end if;
 end
 $$;
 
 -- send-push calls this (service role) to check the x-webhook-secret header.
--- Compares digests so the comparison time does not depend on the secret.
+-- Compares digests so the timing does not depend on how much of the secret matches.
 create or replace function public.verify_push_webhook_secret(p_secret text)
 returns boolean
 language plpgsql
@@ -144,7 +116,7 @@ create table public.user_settings (
   show_online                  boolean not null default true,
   default_disappearing_seconds integer not null default 0
                                check (default_disappearing_seconds between 0 and 31536000),
-  -- Show the sender's name in push notifications (never content). Off by default.
+  -- Show the sender's name in push notifications (never message content). Off by default.
   notification_previews        boolean not null default false,
   updated_at                   timestamptz not null default now()
 );
@@ -172,7 +144,7 @@ revoke all on public.user_settings from anon, authenticated;
 grant select, insert, update on public.user_settings to authenticated;
 grant all on public.user_settings to service_role;
 
--- Every profile gets a settings row.
+-- Every profile gets a settings row (and existing profiles get one now).
 create or replace function public.profiles_create_settings()
 returns trigger
 language plpgsql
@@ -194,26 +166,21 @@ select id from public.profiles
 on conflict (user_id) do nothing;
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- LAST SEEN (profiles.last_seen_at, hidden behind get_last_seen)
+-- LAST SEEN
+-- Kept out of `profiles` on purpose: every signed-in user can read profiles.
+-- No client privileges at all; read through get_last_seen().
 -- ─────────────────────────────────────────────────────────────────────────────
 
-alter table public.profiles add column if not exists last_seen_at timestamptz;
+create table public.user_last_seen (
+  user_id      uuid primary key references public.profiles (id) on delete cascade,
+  last_seen_at timestamptz not null default now()
+);
 
--- Clients may read every profile column except last_seen_at.
-do $$
-declare
-  v_cols text;
-begin
-  select string_agg(quote_ident(attname), ', ' order by attnum) into v_cols
-  from pg_attribute
-  where attrelid = 'public.profiles'::regclass and attnum > 0 and not attisdropped
-    and attname <> 'last_seen_at';
-  revoke select on public.profiles from anon, authenticated;
-  execute format('grant select (%s) on public.profiles to anon, authenticated', v_cols);
-end
-$$;
+alter table public.user_last_seen enable row level security;
+revoke all on public.user_last_seen from anon, authenticated;
+grant all on public.user_last_seen to service_role;
 
--- "contacts" = people the caller currently shares a conversation with.
+-- "Contacts" = people you currently share a DIRECT chat with.
 create or replace function public.is_contact(p_a uuid, p_b uuid)
 returns boolean
 language sql
@@ -225,13 +192,15 @@ as $$
     select 1
     from public.conversation_members a
     join public.conversation_members b on b.conversation_id = a.conversation_id
-    where a.user_id = p_a and a.left_at is null
+    join public.conversations c on c.id = a.conversation_id
+    where c.conversation_type = 'direct'
+      and a.user_id = p_a and a.left_at is null
       and b.user_id = p_b and b.left_at is null
   );
 $$;
 
--- Throttled heartbeat. Stores nothing (and clears the old value) when the
--- user hides their last seen.
+-- Throttled heartbeat (at most one write a minute). Stores nothing - and
+-- erases the old value - while the user hides their last seen.
 create or replace function public.touch_last_seen()
 returns void
 language plpgsql
@@ -247,19 +216,20 @@ begin
   end if;
   select last_seen into v_vis from public.user_settings where user_id = v_me;
   if coalesce(v_vis, 'everyone') = 'nobody' then
-    update public.profiles set last_seen_at = null where id = v_me and last_seen_at is not null;
+    delete from public.user_last_seen where user_id = v_me;
     return;
   end if;
-  update public.profiles
-     set last_seen_at = now()
-   where id = v_me
-     and (last_seen_at is null or last_seen_at < now() - interval '60 seconds');
+  insert into public.user_last_seen as ls (user_id, last_seen_at)
+  values (v_me, now())
+  on conflict (user_id) do update
+    set last_seen_at = excluded.last_seen_at
+    where ls.last_seen_at < now() - interval '60 seconds';
 end;
 $$;
 
 -- Returns null whenever the caller may not see it:
---   * target hides it ('nobody', or 'contacts' and caller isn't one)
---   * caller hides their own last seen (reciprocity, like WhatsApp)
+--   * the target hides it ('nobody', or 'contacts' and the caller isn't one)
+--   * the caller hides their own (reciprocity, as in WhatsApp)
 --   * either side blocked the other
 create or replace function public.get_last_seen(p_user_id uuid)
 returns timestamptz
@@ -277,7 +247,7 @@ begin
   if v_me is null or p_user_id is null then
     return null;
   end if;
-  select last_seen_at into v_at from public.profiles where id = p_user_id;
+  select last_seen_at into v_at from public.user_last_seen where user_id = p_user_id;
   if p_user_id = v_me then
     return v_at;
   end if;
@@ -305,7 +275,7 @@ set search_path = ''
 as $$
 begin
   if new.last_seen = 'nobody' and old.last_seen is distinct from 'nobody' then
-    update public.profiles set last_seen_at = null where id = new.user_id;
+    delete from public.user_last_seen where user_id = new.user_id;
   end if;
   return null;
 end;
@@ -317,7 +287,8 @@ create trigger user_settings_after_update
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- READ RECEIPTS: server-side backstop for the client setting. A user with
--- read receipts off never moves their read watermark.
+-- read receipts off never moves their own read watermark (the app sends
+-- 'delivered' instead of 'read' anyway).
 -- ─────────────────────────────────────────────────────────────────────────────
 
 create or replace function public.conversation_members_enforce_receipts()
@@ -341,44 +312,34 @@ create trigger conversation_members_enforce_receipts
   for each row execute function public.conversation_members_enforce_receipts();
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- MUTED CONVERSATIONS (per member; only visible to that member)
+-- MUTED CONVERSATIONS (per member). 'infinity' = until unmuted.
 -- ─────────────────────────────────────────────────────────────────────────────
 
 alter table public.conversation_members add column if not exists muted_until timestamptz;
 
--- Co-members can read every member column except muted_until.
-do $$
-declare
-  v_cols text;
-begin
-  select string_agg(quote_ident(attname), ', ' order by attnum) into v_cols
-  from pg_attribute
-  where attrelid = 'public.conversation_members'::regclass and attnum > 0 and not attisdropped
-    and attname <> 'muted_until';
-  revoke select on public.conversation_members from anon, authenticated;
-  execute format('grant select (%s) on public.conversation_members to authenticated', v_cols);
-end
-$$;
-
--- p_until: null (or in the past) unmutes; 'infinity' mutes until unmuted.
+-- p_until: null (or a time in the past) unmutes.
 create or replace function public.mute_conversation(p_conversation_id uuid, p_until timestamptz)
-returns void
+returns timestamptz
 language plpgsql
 security definer
 set search_path = ''
 as $$
+declare
+  v_until timestamptz := case when p_until is null or p_until <= now() then null else p_until end;
 begin
   update public.conversation_members
-     set muted_until = case when p_until is null or p_until <= now() then null else p_until end
+     set muted_until = v_until
    where conversation_id = p_conversation_id
      and user_id = auth.uid()
      and left_at is null;
   if not found then
     raise exception 'not a member' using errcode = '42501';
   end if;
+  return v_until;
 end;
 $$;
 
+-- The caller's active mutes.
 create or replace function public.get_conversation_mutes()
 returns table (conversation_id uuid, muted_until timestamptz)
 language sql
@@ -418,11 +379,13 @@ create trigger devices_revoked_clear_push
   for each row execute function public.devices_revoked_clear_push();
 
 -- Queues an async POST to the send-push Edge Function. Never raises: a push
--- problem must not fail the INSERT that caused it. Returns the pg_net request
--- id, or null when push isn't configured.
+-- problem must not fail the statement that caused it. Returns the pg_net
+-- request id, or null when push isn't configured.
 --
--- Reusable hook (e.g. for calls):
+-- Reusable from other migrations / RPCs, e.g. for an incoming call:
 --   perform public.send_push_event('call', jsonb_build_object('call_id', v_call));
+-- send-push understands: message {message_id}, call {call_id},
+--                        channel_post {post_id}.
 create or replace function public.send_push_event(p_type text, p_payload jsonb)
 returns bigint
 language plpgsql
@@ -434,12 +397,14 @@ declare
   v_secret text;
   v_id     bigint;
 begin
-  if p_type not in ('message', 'call') then
-    raise exception 'unknown push type %', p_type using errcode = '22023';
+  if p_type is null or p_type !~ '^[a-z_]{1,32}$' then
+    raise warning '[vero] invalid push type %', p_type;
+    return null;
   end if;
   v_url := public.vero_read_secret('project_url');
   v_secret := public.vero_read_secret('push_webhook_secret');
   if v_url is null or v_secret is null
+     or v_url !~ '^https?://[^/[:space:]]+/?$'
      or to_regprocedure('net.http_post(text, jsonb, jsonb, jsonb, integer)') is null then
     return null;
   end if;
@@ -457,7 +422,7 @@ begin
 end;
 $$;
 
--- Wakes recipients for new text/media messages. Only ids travel; the
+-- Wakes recipients of new text/media messages. Only ids travel; the
 -- ciphertext never leaves the database.
 create or replace function public.messages_push_after_insert()
 returns trigger
@@ -525,6 +490,7 @@ as $$
   where m.id = p_message_id
     and m.deleted_at is null
     and m.message_type in ('text', 'media')
+    and m.created_at > now() - interval '10 minutes'
     and cm.left_at is null
     and cm.user_id <> m.sender_user_id
     and (cm.muted_until is null or cm.muted_until <= now())
@@ -534,7 +500,7 @@ as $$
     );
 $$;
 
--- Whom to ring for a call: the callee's active devices, while the call is
+-- Whom to ring for a call: the callee's active devices while the call is
 -- still ringing. p_requester (optional) must be the caller.
 create or replace function public.get_call_push_targets(p_call_id uuid, p_requester uuid default null)
 returns table (
@@ -570,12 +536,58 @@ as $$
     );
 $$;
 
+-- Channel posts (007). PL/pgSQL so this migration does not depend on 007;
+-- the trigger itself must be created after 007 (see README):
+--   create trigger channel_posts_push_after_insert after insert on public.channel_posts
+--     for each row execute function public.channel_posts_push_after_insert();
+create or replace function public.get_channel_post_push_targets(p_post_id uuid)
+returns table (
+  device_id    uuid,
+  user_id      uuid,
+  token        text,
+  channel_id   uuid,
+  channel_name text
+)
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+begin
+  return query
+    select pt.device_id, pt.user_id, pt.token, ch.id, ch.name
+    from public.channel_posts p
+    join public.channels ch on ch.id = p.channel_id
+    join public.channel_followers f on f.channel_id = p.channel_id and not f.muted
+    join public.devices d on d.user_id = f.user_id and d.revoked_at is null
+    join public.push_tokens pt on pt.device_id = d.id
+    where p.id = p_post_id
+      and p.created_at > now() - interval '10 minutes'
+      and f.user_id is distinct from p.author_id;
+end;
+$$;
+
+create or replace function public.channel_posts_push_after_insert()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  perform public.send_push_event('channel_post', jsonb_build_object('post_id', new.id));
+  return null;
+end;
+$$;
+
 -- ─────────────────────────────────────────────────────────────────────────────
--- PRESENCE (Realtime Presence on private "presence:<conversation id>" topics)
--- Added as extra policies so 001's can_use_realtime_topic stays untouched.
+-- ONLINE PRESENCE (Realtime Presence on private "presence:<user id>" topics)
+--   track (write): only the user themself
+--   watch (read):  people who share a chat with them, unless blocked, and
+--                  only while BOTH have show_online on (reciprocal)
+-- Extra policies, so 001's can_use_realtime_topic stays untouched.
 -- ─────────────────────────────────────────────────────────────────────────────
 
-create or replace function public.can_use_presence_topic(p_topic text)
+create or replace function public.can_use_presence_topic(p_topic text, p_write boolean)
 returns boolean
 language plpgsql
 stable
@@ -583,34 +595,57 @@ security definer
 set search_path = ''
 as $$
 declare
-  v_id text := split_part(coalesce(p_topic, ''), ':', 2);
+  v_me     uuid := auth.uid();
+  v_id     text := split_part(coalesce(p_topic, ''), ':', 2);
+  v_target uuid;
 begin
-  if split_part(coalesce(p_topic, ''), ':', 1) <> 'presence'
+  if v_me is null
+     or split_part(coalesce(p_topic, ''), ':', 1) <> 'presence'
      or v_id !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then
     return false;
   end if;
-  return public.is_conversation_member(v_id::uuid);
+  v_target := v_id::uuid;
+  if v_target = v_me then
+    return true;
+  end if;
+  if p_write then
+    return false;
+  end if;
+  if public.is_blocked_between(v_me, v_target) then
+    return false;
+  end if;
+  if not coalesce((select show_online from public.user_settings where user_id = v_target), true)
+     or not coalesce((select show_online from public.user_settings where user_id = v_me), true) then
+    return false;
+  end if;
+  return exists (
+    select 1
+    from public.conversation_members a
+    join public.conversation_members b on b.conversation_id = a.conversation_id
+    where a.user_id = v_me and a.left_at is null
+      and b.user_id = v_target and b.left_at is null
+  );
 end;
 $$;
 
-create policy "vero members receive presence"
+create policy "vero presence watchers"
   on realtime.messages for select to authenticated
   using (
     realtime.messages.extension = 'presence'
-    and public.can_use_presence_topic((select realtime.topic()))
+    and public.can_use_presence_topic((select realtime.topic()), false)
   );
 
-create policy "vero members track presence"
+create policy "vero presence trackers"
   on realtime.messages for insert to authenticated
   with check (
     realtime.messages.extension = 'presence'
-    and public.can_use_presence_topic((select realtime.topic()))
+    and public.can_use_presence_topic((select realtime.topic()), true)
   );
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- ENCRYPTED BACKUPS: private bucket, one folder per user (<user_id>/backup.bin).
--- The blob is encrypted on device with a key derived from the user's backup
--- passphrase; the server never sees the passphrase or the key.
+-- ENCRYPTED BACKUPS: private bucket, one folder per user (<user id>/backup.bin).
+-- The blob is encrypted on the device (passphrase and/or recovery key); the
+-- server never sees either secret or the backup key.
 -- ─────────────────────────────────────────────────────────────────────────────
 
 do $$
@@ -628,11 +663,6 @@ begin
   end if;
 
   if to_regclass('storage.objects') is not null then
-    execute $sql$drop policy if exists "vero backups: owner reads" on storage.objects$sql$;
-    execute $sql$drop policy if exists "vero backups: owner uploads" on storage.objects$sql$;
-    execute $sql$drop policy if exists "vero backups: owner updates" on storage.objects$sql$;
-    execute $sql$drop policy if exists "vero backups: owner deletes" on storage.objects$sql$;
-
     execute $sql$
       create policy "vero backups: owner reads" on storage.objects for select to authenticated
       using (bucket_id = 'vero-backups' and (storage.foldername(name))[1] = (select auth.uid())::text)
@@ -659,8 +689,6 @@ $$;
 -- ─────────────────────────────────────────────────────────────────────────────
 
 revoke execute on function public.vero_read_secret(text) from public, anon, authenticated;
-revoke execute on function public.vero_upsert_secret(text, text, text) from public, anon, authenticated;
-revoke execute on function public.vero_set_project_url(text) from public, anon, authenticated;
 revoke execute on function public.verify_push_webhook_secret(text) from public, anon, authenticated;
 revoke execute on function public.profiles_create_settings() from public, anon, authenticated;
 revoke execute on function public.is_contact(uuid, uuid) from public, anon, authenticated;
@@ -675,16 +703,18 @@ revoke execute on function public.send_push_event(text, jsonb) from public, anon
 revoke execute on function public.messages_push_after_insert() from public, anon, authenticated;
 revoke execute on function public.get_message_push_targets(uuid) from public, anon, authenticated;
 revoke execute on function public.get_call_push_targets(uuid, uuid) from public, anon, authenticated;
-revoke execute on function public.can_use_presence_topic(text) from public, anon, authenticated;
+revoke execute on function public.get_channel_post_push_targets(uuid) from public, anon, authenticated;
+revoke execute on function public.channel_posts_push_after_insert() from public, anon, authenticated;
+revoke execute on function public.can_use_presence_topic(text, boolean) from public, anon, authenticated;
 
 grant execute on function public.touch_last_seen() to authenticated;
 grant execute on function public.get_last_seen(uuid) to authenticated;
 grant execute on function public.mute_conversation(uuid, timestamptz) to authenticated;
 grant execute on function public.get_conversation_mutes() to authenticated;
-grant execute on function public.can_use_presence_topic(text) to authenticated;
+grant execute on function public.can_use_presence_topic(text, boolean) to authenticated;
 
 grant execute on function public.verify_push_webhook_secret(text) to service_role;
 grant execute on function public.get_message_push_targets(uuid) to service_role;
 grant execute on function public.get_call_push_targets(uuid, uuid) to service_role;
-grant execute on function public.vero_set_project_url(text) to service_role;
+grant execute on function public.get_channel_post_push_targets(uuid) to service_role;
 grant execute on function public.send_push_event(text, jsonb) to service_role;
