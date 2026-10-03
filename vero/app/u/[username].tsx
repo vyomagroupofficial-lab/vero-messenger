@@ -1,14 +1,17 @@
 import React, { useEffect, useState } from 'react';
-import { Text, ScrollView, ActivityIndicator, Alert } from 'react-native';
+import { ActivityIndicator, ScrollView, Text, View } from 'react-native';
+import Animated, { FadeIn, ZoomIn } from 'react-native-reanimated';
 import { router, useLocalSearchParams } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuthStore } from '../../src/features/auth/useAuthStore';
 import { conversationRepository } from '../../src/features/chats/ConversationRepository';
 import { resolveUsername, verifyContactFromQr } from '../../src/features/linking/profileQr';
 import { FINGERPRINT_RE, USERNAME_RE } from '../../src/features/linking/qrPayloads';
 import { friendlyError } from '../../src/core/network/supabase';
-import { Button, Card, Note, ScreenHeader, ui } from '../../src/features/linking/ui';
-import { Colors } from '../../src/shared/theme/theme';
+import { Note, ScreenHeader, useLinkStyles } from '../../src/features/linking/ui';
+import { makeStyles, useTheme } from '../../src/shared/theme/ThemeProvider';
+import { useT } from '../../src/shared/i18n';
+import { Avatar, Button, DotWall, Pill, Ripple, notify } from '../../src/shared/ui';
 import type { User } from '../../src/shared/models/Message';
 
 /**
@@ -19,10 +22,15 @@ export default function UserLinkScreen() {
   const params = useLocalSearchParams<{ username: string; fp?: string }>();
   const username = String(params.username || '').toLowerCase();
   const fingerprint = params.fp && FINGERPRINT_RE.test(String(params.fp)) ? String(params.fp) : null;
-  const me = useAuthStore((s) => s.user);
-  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
-  const isDemo = useAuthStore((s) => s.isDemo);
-  const authLoading = useAuthStore((s) => s.isLoading);
+  const insets = useSafeAreaInsets();
+  const { c, type } = useTheme();
+  const ui = useLinkStyles();
+  const s = useStyles();
+  const t = useT();
+  const me = useAuthStore((st) => st.user);
+  const isAuthenticated = useAuthStore((st) => st.isAuthenticated);
+  const isDemo = useAuthStore((st) => st.isDemo);
+  const authLoading = useAuthStore((st) => st.isLoading);
 
   const [profile, setProfile] = useState<User | null | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
@@ -58,65 +66,71 @@ export default function UserLinkScreen() {
       const conversationId = await conversationRepository.createDirectConversation(profile.id);
       if (fingerprint) {
         const result = await verifyContactFromQr(me.id, profile.id, fingerprint).catch(() => 'unavailable' as const);
-        if (result === 'verified') {
-          Alert.alert('Verified', `${profile.displayName}'s keys match their QR code. Your safety number is marked as verified.`);
-        } else if (result === 'mismatch') {
-          Alert.alert(
-            'Keys do not match',
-            `The keys Vero's server lists for ${profile.displayName} differ from the ones on their phone. They may have just added a device; if not, someone could be intercepting. Compare safety numbers in person before sharing anything sensitive.`
-          );
-        }
+        if (result === 'verified') notify(t('verify.states.verified'), t('ulink.verifiedBody', { name: profile.displayName }));
+        else if (result === 'mismatch') notify(t('ulink.mismatch'), t('ulink.mismatchBody', { name: profile.displayName }));
       }
       router.replace(`/chat/${conversationId}`);
     } catch (e) {
-      Alert.alert('Could not start chat', friendlyError(e));
+      notify(t('contacts.startFailed'), friendlyError(e));
     } finally {
       setBusy(false);
     }
   };
 
-  return (
-    <SafeAreaView style={ui.screen} edges={['top']}>
-      <ScreenHeader title="Add contact" />
-      <ScrollView contentContainerStyle={ui.content}>
-        {authLoading ? (
-          <ActivityIndicator color={Colors.accent} />
-        ) : !isAuthenticated ? (
-          <>
-            <Note>Sign in to Vero to chat with @{username}.</Note>
-            <Button label="Sign in" onPress={() => router.replace('/(auth)/login')} />
-          </>
-        ) : isDemo ? (
-          <Note icon="sparkles">The offline demo can't add real contacts. Create an account to chat with @{username}.</Note>
-        ) : profile === undefined ? (
-          <ActivityIndicator color={Colors.accent} />
-        ) : profile === null ? (
-          <Note icon="alert-circle" tone="warning">{error || `No Vero user called @${username}.`}</Note>
-        ) : (
-          <>
-            <Card style={ui.center}>
-              <Text style={ui.title}>{profile.displayName}</Text>
-              <Text style={ui.body}>@{profile.username}</Text>
-              {profile.about ? <Text style={ui.muted}>{profile.about}</Text> : null}
-            </Card>
-            {fingerprint && (
-              <Note icon="shield-checkmark" tone="success">
-                This code includes a fingerprint of {profile.displayName}'s device keys. Vero checks it against the
-                server's keys when you start the chat and marks your safety number verified if they match.
-              </Note>
-            )}
-            <Button
-              label={profile.id === me?.id ? 'This is you' : 'Message'}
-              icon="chatbubble-ellipses"
-              onPress={startChat}
-              loading={busy}
-            />
-            {profile.id !== me?.id && (
-              <Button label="View profile" variant="secondary" onPress={() => router.push(`/profile/${profile.id}`)} />
-            )}
-          </>
+  let body: React.ReactNode;
+  if (authLoading || (isAuthenticated && !isDemo && profile === undefined)) body = <ActivityIndicator color={c.accent} style={{ marginTop: 40 }} />;
+  else if (!isAuthenticated)
+    body = (
+      <>
+        <Note>{t('ulink.signIn', { username })}</Note>
+        <Button label={t('auth.signIn')} iconRight="arrowRight" onPress={() => router.replace('/(auth)/login')} />
+      </>
+    );
+  else if (isDemo) body = <Note icon="info">{t('ulink.demo', { username })}</Note>;
+  else if (profile === null)
+    body = (
+      <Note icon="info" tone="warning">
+        {error || t('ulink.notFound', { username })}
+      </Note>
+    );
+  else if (profile)
+    body = (
+      <>
+        <Animated.View entering={FadeIn} style={s.card}>
+          <Animated.View entering={ZoomIn.springify().damping(14)}>
+            <Ripple size={108} color={c.accentLine}>
+              <Avatar name={profile.displayName} size={108} />
+            </Ripple>
+          </Animated.View>
+          <View style={{ alignItems: 'center', gap: 4 }}>
+            <Text style={ui.title}>{profile.displayName}</Text>
+            <Text style={s.handle}>@{profile.username}</Text>
+          </View>
+          {profile.about ? <Text style={[type.body, { color: c.muted, textAlign: 'center' }]}>{profile.about}</Text> : null}
+          {fingerprint && <Pill icon="shieldCheck" label={t('ulink.hasFingerprint')} />}
+        </Animated.View>
+        {fingerprint && (
+          <Note icon="shieldCheck" tone="success">
+            {t('ulink.fingerprintNote', { name: profile.displayName })}
+          </Note>
         )}
-      </ScrollView>
-    </SafeAreaView>
+        <Button label={profile.id === me?.id ? t('ulink.thisIsYou') : t('profile.message')} icon="chat" onPress={startChat} loading={busy} />
+        {profile.id !== me?.id && <Button label={t('thread.viewProfile')} variant="secondary" onPress={() => router.push(`/profile/${profile.id}`)} />}
+      </>
+    );
+
+  return (
+    <View style={[ui.screen, { paddingTop: insets.top }]}>
+      <ScreenHeader title={t('ulink.title')} />
+      <View style={{ flex: 1 }}>
+        <DotWall />
+        <ScrollView contentContainerStyle={[ui.content, { paddingBottom: insets.bottom + 40 }]}>{body}</ScrollView>
+      </View>
+    </View>
   );
 }
+
+const useStyles = makeStyles((c, t, f) => ({
+  card: { alignItems: 'center', gap: 16, padding: 26, borderRadius: 28, backgroundColor: c.panel, borderWidth: 1, borderColor: c.line },
+  handle: { fontFamily: f.script === 'latin' ? f.mono : f.body, fontSize: 14, color: c.muted },
+}));
