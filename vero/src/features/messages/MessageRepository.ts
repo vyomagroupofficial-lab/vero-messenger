@@ -11,7 +11,6 @@
 
 import { supabase } from '../../core/network/supabase';
 import { cryptoManager } from '../../core/crypto/CryptoManager';
-import { NotAddressedToDeviceError } from '../../core/crypto/primitives';
 import { databaseService } from '../../core/storage/DatabaseService';
 import { SessionContext } from '../../core/session';
 import { generateUUID } from '../../shared/utils/uuid';
@@ -29,6 +28,7 @@ import { applyExtensionControl, finalizeExtensionMessage } from '../payments/pay
 import { keyDirectory } from '../keys/KeyDirectory';
 import { useSettingsStore } from '../settings/useSettingsStore';
 import { computeStatus } from './status';
+import { decryptFailureText } from './decryptStatus';
 
 export const PAGE_SIZE = 50;
 
@@ -335,10 +335,7 @@ class MessageRepository {
         payload = parsePayload(plaintext);
         if (!payload) throw new Error('Unreadable payload');
       } catch (e) {
-        base.content =
-          e instanceof NotAddressedToDeviceError
-            ? 'This message was sent before this device was linked.'
-            : "This message couldn't be decrypted.";
+        base.content = decryptFailureText(e);
         if (row.message_type === 'reaction') {
           out.push({ kind: 'ignored' });
           continue;

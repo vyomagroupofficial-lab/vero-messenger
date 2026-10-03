@@ -1,9 +1,13 @@
 /**
- * Story encryption layout (pure; reuses the message envelope from
- * core/crypto/primitives).
+ * Story encryption layout (pure; reuses the message envelopes).
  *
- * A story is encrypted ONCE with encryptEnvelope(), exactly like a message,
- * for every active device of the author and of every audience member. The
+ * A story is encrypted ONCE, exactly like a message, for every active device
+ * of the author and of every audience member. The app posts v3 envelopes
+ * (content key ratchet-encrypted per device, see core/crypto/ratchet); v2
+ * (static crypto_box slots) is still read, and the pure v2 helpers below
+ * are kept for tests and old stories. Both versions have the same outer
+ * shape { v, n, c, k: deviceId -> slot }, so the split below works for both.
+ * The
  * associated data binds it to "story:<authorId>" + storyId + authorDeviceId,
  * which can never collide with a conversation id (those are bare UUIDs), so a
  * story slot cannot be replayed as a message or vice versa.
@@ -23,9 +27,8 @@ import {
   Sodium,
   decryptEnvelope,
   encryptEnvelope,
-  parseEnvelope,
-  serializeEnvelope,
 } from '../../core/crypto/primitives';
+import { AnyEnvelope, parseAnyEnvelope } from '../../core/crypto/ratchet/envelope';
 
 export interface AudienceDevice extends DeviceKeyRef {
   userId: string;
@@ -44,7 +47,7 @@ export function storyContext(authorId: string, storyId: string, authorDeviceId: 
 }
 
 /** Splits an encrypted envelope's key slots between the author row and per-recipient rows. */
-export function splitStoryEnvelope(envelope: EnvelopeV2, devices: AudienceDevice[], authorId: string): SplitStoryEnvelope {
+export function splitStoryEnvelope(envelope: AnyEnvelope, devices: AudienceDevice[], authorId: string): SplitStoryEnvelope {
   const owner = new Map(devices.map((d) => [d.deviceId, d.userId]));
   const authorSlots: Record<string, string> = {};
   const recipientSlots: Record<string, Record<string, string>> = {};
@@ -55,14 +58,14 @@ export function splitStoryEnvelope(envelope: EnvelopeV2, devices: AudienceDevice
     else (recipientSlots[userId] ??= {})[deviceId] = slot;
   }
   return {
-    storyCiphertext: serializeEnvelope({ v: envelope.v, n: envelope.n, c: envelope.c, k: authorSlots }),
+    storyCiphertext: JSON.stringify({ v: envelope.v, n: envelope.n, c: envelope.c, k: authorSlots }),
     recipientSlots,
   };
 }
 
 /** Rebuilds a decryptable envelope from the story row plus this user's slots (null for the author). */
-export function assembleStoryEnvelope(storyCiphertext: string, mySlots: Record<string, string> | null): EnvelopeV2 {
-  const base = parseEnvelope(storyCiphertext);
+export function assembleStoryEnvelope(storyCiphertext: string, mySlots: Record<string, string> | null): AnyEnvelope {
+  const base = parseAnyEnvelope(storyCiphertext);
   if (!mySlots) return base;
   if (typeof mySlots !== 'object') throw new DecryptionError('Malformed key slots');
   const k: Record<string, string> = {};
@@ -92,9 +95,11 @@ export function decryptStory(
   mySecretKey: string,
   authorPublicKey: string
 ): string {
+  const envelope = assembleStoryEnvelope(storyCiphertext, mySlots);
+  if (envelope.v !== 2) throw new DecryptionError('v3 stories are decrypted by the session layer');
   return decryptEnvelope(
     sodium,
-    assembleStoryEnvelope(storyCiphertext, mySlots),
+    envelope as EnvelopeV2,
     ctx,
     myDeviceId,
     mySecretKey,

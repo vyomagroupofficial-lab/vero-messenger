@@ -9,6 +9,7 @@ import { authRepository, AuthResult } from '../auth/AuthRepository';
 import { useAuthStore } from '../auth/useAuthStore';
 import { databaseService } from '../../core/storage/DatabaseService';
 import { keyDirectory } from '../keys/KeyDirectory';
+import { sessionService } from '../keys/SessionService';
 
 export async function adoptCurrentSession(): Promise<AuthResult> {
   const result = await authRepository.restoreSession();
@@ -16,6 +17,7 @@ export async function adoptCurrentSession(): Promise<AuthResult> {
   if (result.success && result.user && result.deviceId) {
     databaseService.open(result.user.id);
     keyDirectory.reset();
+    void sessionService.start(result.user.id, result.deviceId);
     useAuthStore.setState({
       user: result.user,
       deviceId: result.deviceId,
