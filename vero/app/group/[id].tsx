@@ -1,29 +1,18 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Modal, Pressable, ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, ScrollView, Text, TextInput, View } from 'react-native';
+import Animated, { FadeIn, ZoomIn } from 'react-native-reanimated';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import dayjs from 'dayjs';
 import { friendlyError } from '../../src/core/network/supabase';
 import { useAuthStore } from '../../src/features/auth/useAuthStore';
 import { conversationRepository } from '../../src/features/chats/ConversationRepository';
 import { useChatsStore } from '../../src/features/chats/useChatsStore';
 import { pickAvatarDataUri } from '../../src/features/groups/avatarPicker';
-import {
-  Banner,
-  EntityAvatar,
-  groupStyles as gs,
-  PrimaryButton,
-  Row,
-  ScreenHeader,
-  SectionHeader,
-  ToggleRow,
-} from '../../src/features/groups/components/GroupComponents';
+import { Banner, EntityAvatar, PrimaryButton, Row, ScreenHeader, SectionHeader, ToggleRow, useGroupStyles } from '../../src/features/groups/components/GroupComponents';
 import { ActionSheet, confirmAction, copyLink, notify, SheetOption, shareLink } from '../../src/features/groups/components/ui';
 import { shareableInviteUrl } from '../../src/features/groups/config';
-import {
-  INVITE_EXPIRY_CHOICES,
-  INVITE_MAX_USES_CHOICES,
-  inviteState,
-} from '../../src/features/groups/inviteLinks';
+import { INVITE_EXPIRY_CHOICES, INVITE_MAX_USES_CHOICES, inviteState } from '../../src/features/groups/inviteLinks';
 import {
   canChangeRole,
   canChangeSettings,
@@ -37,19 +26,29 @@ import {
 } from '../../src/features/groups/permissions';
 import { GroupMemberInfo } from '../../src/features/groups/types';
 import { useGroupStore, groupStore } from '../../src/features/groups/useGroupStore';
-import { Colors, Spacing, Typography } from '../../src/shared/theme/theme';
+import { makeStyles, useTheme } from '../../src/shared/theme/ThemeProvider';
+import { useT } from '../../src/shared/i18n';
+import { Avatar, Button, Chip, Icon, Pill, Pressy, Sheet } from '../../src/shared/ui';
+
+export const expiryLabel = (t: (k: string, o?: any) => string, seconds: number | null) =>
+  seconds == null ? t('groups.never') : seconds < 86400 ? t('groups.hours', { count: seconds / 3600 }) : t('groups.days', { count: seconds / 86400 });
+export const usesLabel = (t: (k: string, o?: any) => string, uses: number | null) => (uses == null ? t('groups.noLimit') : t('groups.people', { count: uses }));
 
 export default function GroupInfoScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const conversationId = id ?? '';
-  const me = useAuthStore((s) => s.user?.id ?? null);
-  const isDemo = useAuthStore((s) => s.isDemo);
+  const { c, type } = useTheme();
+  const gs = useGroupStyles();
+  const s = useStyles();
+  const t = useT();
+  const me = useAuthStore((st) => st.user?.id ?? null);
+  const isDemo = useAuthStore((st) => st.isDemo);
 
-  const details = useGroupStore((s) => s.details[conversationId]);
-  const invites = useGroupStore((s) => s.invites[conversationId]) ?? [];
-  const requests = useGroupStore((s) => s.requests[conversationId]) ?? [];
-  const loading = useGroupStore((s) => s.loading[conversationId]);
-  const error = useGroupStore((s) => s.errors[conversationId]);
+  const details = useGroupStore((st) => st.details[conversationId]);
+  const invites = useGroupStore((st) => st.invites[conversationId]) ?? [];
+  const requests = useGroupStore((st) => st.requests[conversationId]) ?? [];
+  const loading = useGroupStore((st) => st.loading[conversationId]);
+  const error = useGroupStore((st) => st.errors[conversationId]);
   const store = groupStore.getState();
 
   const [editing, setEditing] = useState(false);
@@ -90,26 +89,19 @@ export default function GroupInfoScreen() {
     }
   };
 
-  if (isDemo) {
-    return (
-      <SafeAreaView style={gs.container} edges={['top']}>
-        <ScreenHeader title="Group info" onBack={() => router.back()} />
-        <View style={gs.centered}>
-          <Text style={gs.muted}>Group admin tools need a real account.</Text>
-        </View>
-      </SafeAreaView>
-    );
-  }
+  const back = () => (router.canGoBack() ? router.back() : router.replace('/(tabs)/chats'));
 
-  if (!details) {
+  if (isDemo || !details) {
     return (
       <SafeAreaView style={gs.container} edges={['top']}>
-        <ScreenHeader title="Group info" onBack={() => router.back()} />
+        <ScreenHeader title={t('groups.info')} onBack={back} />
         <View style={gs.centered}>
-          {loading || details === undefined ? (
-            <ActivityIndicator color={Colors.accent} />
+          {isDemo ? (
+            <Text style={gs.muted}>{t('groups.demo')}</Text>
+          ) : loading || details === undefined ? (
+            <ActivityIndicator color={c.accent} />
           ) : (
-            <Text style={gs.muted}>{error || "This group isn't available. You may have left it."}</Text>
+            <Text style={gs.muted}>{error || t('groups.unavailable')}</Text>
           )}
         </View>
       </SafeAreaView>
@@ -118,6 +110,7 @@ export default function GroupInfoScreen() {
 
   const editable = !!settings && canEditInfo(myRole, settings);
   const isAdmin = canChangeSettings(myRole);
+  const joinTitle = t('groups.joinShare', { name: details.name });
 
   const saveInfo = () =>
     run(async () => {
@@ -127,69 +120,65 @@ export default function GroupInfoScreen() {
       });
       setEditing(false);
       void useChatsStore.getState().load({ sync: false });
-    }, 'Could not save');
+    }, t('groups.saveFailed'));
 
   const changePhoto = () =>
     run(async () => {
       const uri = await pickAvatarDataUri();
       if (uri) await store.updateInfo(conversationId, { avatarData: uri });
-    }, 'Could not change photo');
+    }, t('groups.photoFailed'));
 
   const createInvite = () =>
     run(async () => {
-      const invite = await store.createInvite(conversationId, {
-        expiresInSeconds: expiry,
-        maxUses,
-        requiresApproval: approval,
-      });
+      const invite = await store.createInvite(conversationId, { expiresInSeconds: expiry, maxUses, requiresApproval: approval });
       setInviteSheet(false);
-      await shareLink(shareableInviteUrl(invite.token), `Join "${details.name}" on Vero`);
-    }, 'Could not create link');
+      await shareLink(shareableInviteUrl(invite.token), joinTitle);
+    }, t('groups.linkFailed'));
 
   const memberOptions = (m: GroupMemberInfo): SheetOption[] => {
     const actor = { id: me ?? '', role: myRole };
     const opts: SheetOption[] = [];
     if (m.id !== me) {
       opts.push({
-        label: `Message ${m.displayName}`,
-        icon: 'chatbubble-outline',
+        label: t('groups.messagePerson', { name: m.displayName }),
+        icon: 'chat',
         onPress: () =>
           void run(async () => {
             const convId = await conversationRepository.createDirectConversation(m.id);
             router.push(`/chat/${convId}`);
-          }, 'Could not open chat'),
+          }, t('thread.openFailed')),
       });
-      opts.push({ label: 'View profile', icon: 'person-outline', onPress: () => router.push(`/profile/${m.id}`) });
+      opts.push({ label: t('thread.viewProfile'), icon: 'user', onPress: () => router.push(`/profile/${m.id}`) });
     }
     if (canChangeRole(actor, m, 'admin')) {
-      opts.push({ label: 'Make group admin', icon: 'shield-outline', onPress: () => void run(() => store.setRole(conversationId, m.id, 'admin'), 'Could not change role') });
+      opts.push({ label: t('groups.makeAdmin'), icon: 'shieldCheck', onPress: () => void run(() => store.setRole(conversationId, m.id, 'admin'), t('groups.roleFailed')) });
     }
     if (canChangeRole(actor, m, 'member')) {
       opts.push({
-        label: m.id === me ? 'Step down as admin' : 'Dismiss as admin',
-        icon: 'shield-half-outline',
-        onPress: () => void run(() => store.setRole(conversationId, m.id, 'member'), 'Could not change role'),
+        label: m.id === me ? t('groups.stepDown') : t('groups.dismissAdmin'),
+        icon: 'shield',
+        onPress: () => void run(() => store.setRole(conversationId, m.id, 'member'), t('groups.roleFailed')),
       });
     }
     if (canTransferOwnership(myRole) && m.id !== me) {
       opts.push({
-        label: 'Transfer ownership',
-        icon: 'key-outline',
+        label: t('groups.transfer'),
+        icon: 'key',
         onPress: async () => {
-          if (await confirmAction('Transfer ownership', `${m.displayName} will own this group and you'll stay an admin.`, 'Transfer')) {
-            void run(() => store.transferOwnership(conversationId, m.id), 'Could not transfer');
+          if (await confirmAction(t('groups.transfer'), t('groups.transferBody', { name: m.displayName }), t('groups.transferConfirm'))) {
+            void run(() => store.transferOwnership(conversationId, m.id), t('groups.transferFailed'));
           }
         },
       });
     }
     if (canRemoveMember(actor, m)) {
       opts.push({
-        label: `Remove ${m.displayName}`,
-        icon: 'person-remove-outline',
+        label: t('groups.removePerson', { name: m.displayName }),
+        icon: 'ban',
         destructive: true,
         onPress: async () => {
-          if (await confirmAction('Remove member', `Remove ${m.displayName} from the group? Their devices stop receiving new messages.`, 'Remove', true)) {
-            void run(() => store.removeMember(conversationId, m.id), 'Could not remove');
+          if (await confirmAction(t('groups.removeTitle'), t('groups.removeBody', { name: m.displayName }), t('groups.removeConfirm'), true)) {
+            void run(() => store.removeMember(conversationId, m.id), t('groups.removeFailed'));
           }
         },
       });
@@ -199,134 +188,131 @@ export default function GroupInfoScreen() {
 
   const leave = async () => {
     const owner = myRole === 'owner';
-    const ok = await confirmAction(
-      'Leave group',
-      owner ? 'Ownership passes to the longest-serving admin (or member).' : 'You will stop receiving new messages from this group.',
-      'Leave',
-      true
-    );
+    const ok = await confirmAction(t('thread.leave'), owner ? t('groups.leaveOwnerBody') : t('thread.leaveBody'), t('thread.leaveConfirm'), true);
     if (!ok) return;
     await run(async () => {
       await store.leave(conversationId);
       void useChatsStore.getState().load({ sync: false });
       router.replace('/(tabs)/chats');
-    }, 'Could not leave group');
+    }, t('thread.leaveFailed'));
   };
 
   const deleteGroup = async () => {
-    const ok = await confirmAction(
-      'Delete group',
-      'Everyone is removed and the encrypted history is deleted from the server. This cannot be undone.',
-      'Delete',
-      true
-    );
+    const ok = await confirmAction(t('groups.deleteTitle'), t('groups.deleteBody'), t('common.delete'), true);
     if (!ok) return;
     await run(async () => {
       await store.deleteGroup(conversationId);
       void useChatsStore.getState().load({ sync: false });
       router.replace('/(tabs)/chats');
-    }, 'Could not delete group');
+    }, t('groups.deleteFailed'));
   };
+
+  const roleLabel = (r: string) => (r === 'owner' ? t('thread.role_owner') : t('thread.role_admin'));
 
   return (
     <SafeAreaView style={gs.container} edges={['top']}>
-      <ScreenHeader title="Group info" subtitle={`${members.length} members`} onBack={() => router.back()} right={busy ? <ActivityIndicator color={Colors.accent} /> : null} />
+      <ScreenHeader
+        title={t('groups.info')}
+        subtitle={t('thread.members', { count: members.length })}
+        onBack={back}
+        right={busy ? <ActivityIndicator color={c.accent} style={{ marginRight: 12 }} /> : null}
+      />
       <ScrollView contentContainerStyle={gs.scroll}>
         <View style={gs.hero}>
-          <TouchableOpacity disabled={!editable} onPress={changePhoto} accessibilityLabel="Change group photo">
-            <EntityAvatar name={details.name} dataUri={settings?.avatarData} size={88} icon="people" />
-          </TouchableOpacity>
+          <Animated.View entering={ZoomIn.springify().damping(14)}>
+            <Pressy disabled={!editable} onPress={changePhoto} scaleTo={0.95} accessibilityLabel={t('groups.changePhoto')}>
+              <EntityAvatar name={details.name} dataUri={settings?.avatarData} size={96} icon="users" />
+              {editable && (
+                <View style={s.camBadge}>
+                  <Icon name="camera" size={15} color={c.onAccent} />
+                </View>
+              )}
+            </Pressy>
+          </Animated.View>
           {editing ? (
-            <View style={{ alignSelf: 'stretch' }}>
-              <TextInput style={gs.input} value={name} onChangeText={setName} maxLength={64} placeholder="Group name" placeholderTextColor={Colors.textTertiary} />
+            <Animated.View entering={FadeIn} style={{ alignSelf: 'stretch', gap: 4, paddingTop: 8 }}>
+              <TextInput style={gs.input} value={name} onChangeText={setName} maxLength={64} placeholder={t('groups.namePlaceholder')} placeholderTextColor={c.placeholder} />
               <TextInput
-                style={[gs.input, { minHeight: 70 }]}
+                style={[gs.input, { minHeight: 84, textAlignVertical: 'top' }]}
                 value={description}
                 onChangeText={setDescription}
                 maxLength={512}
                 multiline
-                placeholder="Description (optional)"
-                placeholderTextColor={Colors.textTertiary}
+                placeholder={t('groups.descriptionPlaceholder')}
+                placeholderTextColor={c.placeholder}
               />
-              <View style={{ flexDirection: 'row', justifyContent: 'center' }}>
-                <PrimaryButton label="Save" onPress={saveInfo} disabled={!name.trim() || busy} />
-                <PrimaryButton label="Cancel" onPress={() => setEditing(false)} />
+              <View style={{ flexDirection: 'row', gap: 10, paddingHorizontal: 16 }}>
+                <Button label={t('common.cancel')} variant="secondary" size="md" onPress={() => setEditing(false)} style={{ flex: 1 }} />
+                <Button label={t('common.save')} size="md" onPress={saveInfo} disabled={!name.trim() || busy} style={{ flex: 1 }} />
               </View>
-            </View>
+            </Animated.View>
           ) : (
-            <>
+            <Animated.View entering={FadeIn.delay(80)} style={{ alignItems: 'center', gap: 6 }}>
               <Text style={gs.heroTitle}>{details.name}</Text>
               {!!settings?.description && <Text style={gs.heroSub}>{settings.description}</Text>}
-              <Text style={gs.muted}>Group · {members.length} members</Text>
-            </>
+              <Pill icon="users" label={t('groups.groupMembers', { count: members.length })} tone="brass" />
+            </Animated.View>
           )}
         </View>
 
-        <Banner
-          icon="lock-closed"
-          text="Messages are end-to-end encrypted. The group's name, description, photo and member list are visible to Vero's servers."
-        />
+        <Banner icon="lock" text={t('groups.metadataNote')} />
 
         {editable && !editing && (
           <>
-            <Row icon="create-outline" label="Edit name and description" onPress={() => setEditing(true)} />
-            <Row icon="image-outline" label="Change group photo" onPress={changePhoto} />
+            <Row icon="edit" label={t('groups.editInfo')} onPress={() => setEditing(true)} />
+            <Row icon="image" label={t('groups.changePhoto')} onPress={changePhoto} />
             {!!settings?.avatarData && (
-              <Row icon="trash-outline" label="Remove group photo" onPress={() => void run(() => store.updateInfo(conversationId, { clearAvatar: true }), 'Could not remove photo')} />
+              <Row icon="trash" label={t('groups.removePhoto')} onPress={() => void run(() => store.updateInfo(conversationId, { clearAvatar: true }), t('groups.photoFailed'))} />
             )}
           </>
         )}
 
         {details.community && (
           <Row
-            icon="git-network-outline"
-            label={details.community.isAnnouncements ? 'Community announcements' : 'Part of a community'}
-            sublabel="Open community"
+            icon="grid"
+            label={details.community.isAnnouncements ? t('groups.communityAnnouncements') : t('groups.partOfCommunity')}
+            sublabel={t('groups.openCommunity')}
             onPress={() => router.push(`/communities/${details.community!.id}`)}
           />
         )}
 
         {isAdmin && settings && (
           <>
-            <SectionHeader title="Group settings" />
+            <SectionHeader title={t('groups.settings')} />
             <ToggleRow
-              label="Only admins can send messages"
-              sublabel="Members can still read everything"
+              label={t('thread.adminsOnly')}
+              sublabel={t('groups.adminsOnlyHint')}
               value={settings.onlyAdminsSend}
-              onChange={(v) => void run(() => store.setPermissions(conversationId, { onlyAdminsSend: v }), 'Could not update setting')}
+              onChange={(v) => void run(() => store.setPermissions(conversationId, { onlyAdminsSend: v }), t('groups.settingFailed'))}
             />
             <ToggleRow
-              label="Only admins can edit group info"
-              sublabel="Name, description and photo"
+              label={t('groups.adminsEdit')}
+              sublabel={t('groups.adminsEditHint')}
               value={settings.onlyAdminsEditInfo}
-              onChange={(v) => void run(() => store.setPermissions(conversationId, { onlyAdminsEditInfo: v }), 'Could not update setting')}
+              onChange={(v) => void run(() => store.setPermissions(conversationId, { onlyAdminsEditInfo: v }), t('groups.settingFailed'))}
             />
             <ToggleRow
-              label="Approve new members"
-              sublabel="People joining via a link need an admin's approval"
+              label={t('groups.approve')}
+              sublabel={t('groups.approveHint')}
               value={settings.joinApprovalRequired}
-              onChange={(v) => void run(() => store.setPermissions(conversationId, { joinApprovalRequired: v }), 'Could not update setting')}
+              onChange={(v) => void run(() => store.setPermissions(conversationId, { joinApprovalRequired: v }), t('groups.settingFailed'))}
             />
           </>
         )}
 
         {isAdmin && requests.length > 0 && (
           <>
-            <SectionHeader title={`Join requests (${requests.length})`} />
+            <SectionHeader title={t('groups.requests', { count: requests.length })} />
             {requests.map((r) => (
               <Row
                 key={r.id}
-                icon="person-add-outline"
-                label={r.user?.displayName ?? 'Someone'}
-                sublabel={`${r.user?.username ? '@' + r.user.username + ' · ' : ''}via ${r.via === 'community' ? 'community' : 'invite link'}`}
+                icon="userPlus"
+                label={r.user?.displayName ?? t('common.someone')}
+                sublabel={`${r.user?.username ? '@' + r.user.username + ' · ' : ''}${r.via === 'community' ? t('groups.viaCommunity') : t('groups.viaLink')}`}
                 right={
-                  <View style={{ flexDirection: 'row', gap: Spacing.md }}>
-                    <TouchableOpacity onPress={() => void run(() => store.decideRequest(conversationId, r.id, false), 'Could not deny')}>
-                      <Text style={{ color: Colors.error, fontWeight: Typography.semibold }}>Deny</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity onPress={() => void run(() => store.decideRequest(conversationId, r.id, true), 'Could not approve')}>
-                      <Text style={{ color: Colors.accentLight, fontWeight: Typography.semibold }}>Approve</Text>
-                    </TouchableOpacity>
+                  <View style={{ flexDirection: 'row', gap: 8 }}>
+                    <Button label={t('groups.deny')} variant="dangerSoft" size="sm" onPress={() => void run(() => store.decideRequest(conversationId, r.id, false), t('groups.denyFailed'))} />
+                    <Button label={t('groups.approveBtn')} size="sm" onPress={() => void run(() => store.decideRequest(conversationId, r.id, true), t('groups.approveFailed'))} />
                   </View>
                 }
               />
@@ -336,104 +322,107 @@ export default function GroupInfoScreen() {
 
         {canManageInvites(myRole) && (
           <>
-            <SectionHeader title="Invite links" />
-            <Row icon="link-outline" label="Create invite link" sublabel="Anyone with the link can see the group's name and photo" onPress={() => setInviteSheet(true)} />
+            <SectionHeader title={t('groups.inviteLinks')} />
+            <Row icon="link" label={t('groups.createLink')} sublabel={t('groups.createLinkHint')} onPress={() => setInviteSheet(true)} />
             {invites.map((inv) => {
               const state = inviteState(inv);
               const url = shareableInviteUrl(inv.token);
               const parts = [
-                state === 'active' ? 'Active' : state[0].toUpperCase() + state.slice(1),
-                `${inv.uses}${inv.maxUses != null ? '/' + inv.maxUses : ''} used`,
-                inv.expiresAt ? `expires ${new Date(inv.expiresAt).toLocaleString()}` : 'never expires',
-                inv.requiresApproval ? 'needs approval' : null,
+                t(`groups.state_${state}`),
+                inv.maxUses != null ? t('groups.usedOf', { uses: inv.uses, max: inv.maxUses }) : t('groups.used', { count: inv.uses }),
+                inv.expiresAt ? t('groups.expires', { date: dayjs(inv.expiresAt).format('D MMM, HH:mm') }) : t('groups.neverExpires'),
+                inv.requiresApproval ? t('groups.needsApproval') : null,
               ].filter(Boolean);
               return (
-                <Row
-                  key={inv.id}
-                  icon={state === 'active' ? 'link' : 'unlink-outline'}
-                  label={`…${inv.token.slice(-8)}`}
-                  sublabel={parts.join(' · ')}
-                  disabled={state !== 'active'}
-                  right={
-                    state === 'active' ? (
-                      <View style={{ flexDirection: 'row', gap: Spacing.md }}>
-                        <TouchableOpacity onPress={() => void shareLink(url, `Join "${details.name}" on Vero`)}>
-                          <Text style={{ color: Colors.accentLight }}>Share</Text>
-                        </TouchableOpacity>
-                        <TouchableOpacity onPress={() => void copyLink(url)}>
-                          <Text style={{ color: Colors.accentLight }}>Copy</Text>
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                          onPress={async () => {
-                            if (await confirmAction('Reset link', 'People can no longer join with this link.', 'Reset', true)) {
-                              void run(() => store.revokeInvite(conversationId, inv.id), 'Could not reset link');
-                            }
-                          }}
-                        >
-                          <Text style={{ color: Colors.error }}>Reset</Text>
-                        </TouchableOpacity>
-                      </View>
-                    ) : null
-                  }
-                />
+                <View key={inv.id} style={[s.invite, state !== 'active' && { opacity: 0.55 }]}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                    <View style={[s.inviteIcon, state === 'active' && { backgroundColor: c.successTint }]}>
+                      <Text style={[type.mono, { fontSize: 11, color: state === 'active' ? c.success : c.faint }]}>{state === 'active' ? '●' : '○'}</Text>
+                    </View>
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <Text style={[type.mono, { fontSize: 14 }]} numberOfLines={1}>{`…/${inv.token.slice(-8)}`}</Text>
+                      <Text style={type.caption}>{parts.join(' · ')}</Text>
+                    </View>
+                  </View>
+                  {state === 'active' && (
+                    <View style={{ flexDirection: 'row', gap: 8, flexWrap: 'wrap' }}>
+                      <Button label={t('common.share')} icon="share" size="sm" variant="secondary" onPress={() => void shareLink(url, joinTitle)} />
+                      <Button label={t('groups.copy')} icon="copy" size="sm" variant="secondary" onPress={() => void copyLink(url)} />
+                      <Button
+                        label={t('groups.reset')}
+                        size="sm"
+                        variant="dangerSoft"
+                        onPress={async () => {
+                          if (await confirmAction(t('groups.resetTitle'), t('groups.resetBody'), t('groups.reset'), true)) {
+                            void run(() => store.revokeInvite(conversationId, inv.id), t('groups.resetFailed'));
+                          }
+                        }}
+                      />
+                    </View>
+                  )}
+                </View>
               );
             })}
           </>
         )}
 
-        <SectionHeader title={`${members.length} members`} />
-        {canManageMembers(myRole) && (
-          <Row icon="person-add-outline" label="Add members" onPress={() => router.push(`/group/add/${conversationId}`)} />
-        )}
+        <SectionHeader title={t('thread.members', { count: members.length })} />
+        {canManageMembers(myRole) && <Row icon="userPlus" label={t('groups.addMembers')} onPress={() => router.push(`/group/add/${conversationId}`)} />}
         {members.map((m) => (
-          <Row
-            key={m.id}
-            label={m.id === me ? 'You' : m.displayName}
-            sublabel={m.username ? `@${m.username}` : null}
-            onPress={() => setMemberSheet(m)}
-            right={m.role !== 'member' ? <Text style={{ color: Colors.accentLight, fontSize: Typography.xs }}>{m.role === 'owner' ? 'Owner' : 'Admin'}</Text> : null}
-          />
+          <Pressy key={m.id} onPress={() => setMemberSheet(m)} scaleTo={0.985} hoverStyle={{ backgroundColor: c.tint }} style={s.member} accessibilityLabel={m.displayName}>
+            <Avatar name={m.displayName} size={42} />
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text style={s.memberName} numberOfLines={1}>
+                {m.id === me ? t('common.you') : m.displayName}
+              </Text>
+              {m.username ? <Text style={s.handle}>@{m.username}</Text> : null}
+            </View>
+            {m.role !== 'member' && <Pill label={roleLabel(m.role)} tone={m.role === 'owner' ? 'brass' : 'sage'} />}
+          </Pressy>
         ))}
 
         <SectionHeader title="" />
-        <Row icon="exit-outline" label="Leave group" danger onPress={() => void leave()} />
-        {canDeleteGroup(myRole) && !details.community?.isAnnouncements && (
-          <Row icon="trash-outline" label="Delete group for everyone" danger onPress={() => void deleteGroup()} />
-        )}
+        <Row icon="logout" label={t('thread.leave')} danger onPress={() => void leave()} />
+        {canDeleteGroup(myRole) && !details.community?.isAnnouncements && <Row icon="trash" label={t('groups.deleteTitle')} danger onPress={() => void deleteGroup()} />}
       </ScrollView>
 
       <ActionSheet
         visible={!!memberSheet}
-        title={memberSheet ? (memberSheet.id === me ? 'You' : memberSheet.displayName) : undefined}
+        title={memberSheet ? (memberSheet.id === me ? t('common.you') : memberSheet.displayName) : undefined}
         options={memberSheet ? memberOptions(memberSheet) : []}
         onClose={() => setMemberSheet(null)}
       />
 
-      <Modal visible={inviteSheet} transparent animationType="fade" onRequestClose={() => setInviteSheet(false)}>
-        <Pressable style={{ flex: 1, backgroundColor: Colors.overlay, justifyContent: 'flex-end' }} onPress={() => setInviteSheet(false)}>
-          <Pressable style={{ backgroundColor: Colors.surfaceElevated, paddingVertical: Spacing.lg }} onPress={() => undefined}>
-            <Text style={[gs.heroTitle, { fontSize: Typography.lg }]}>New invite link</Text>
-            <SectionHeader title="Expires after" />
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm, paddingHorizontal: Spacing.base }}>
-              {INVITE_EXPIRY_CHOICES.map((c) => (
-                <TouchableOpacity key={c.label} style={[gs.chip, expiry === c.seconds && gs.chipActive]} onPress={() => setExpiry(c.seconds)}>
-                  <Text style={[gs.chipText, expiry === c.seconds && gs.chipTextActive]}>{c.label}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-            <SectionHeader title="Can be used by" />
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm, paddingHorizontal: Spacing.base }}>
-              {INVITE_MAX_USES_CHOICES.map((c) => (
-                <TouchableOpacity key={c.label} style={[gs.chip, maxUses === c.uses && gs.chipActive]} onPress={() => setMaxUses(c.uses)}>
-                  <Text style={[gs.chipText, maxUses === c.uses && gs.chipTextActive]}>{c.label}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-            <ToggleRow label="Admin approval required" value={approval} onChange={setApproval} />
-            <PrimaryButton label="Create and share" onPress={() => void createInvite()} disabled={busy} />
-          </Pressable>
-        </Pressable>
-      </Modal>
+      <Sheet visible={inviteSheet} onClose={() => setInviteSheet(false)} title={t('groups.newLink')}>
+        <View style={{ gap: 10 }}>
+          <Text style={type.eyebrow}>{t('groups.expiresAfter')}</Text>
+          <View style={s.chips}>
+            {INVITE_EXPIRY_CHOICES.map((ch) => (
+              <Chip key={String(ch.seconds)} label={expiryLabel(t, ch.seconds)} active={expiry === ch.seconds} onPress={() => setExpiry(ch.seconds)} />
+            ))}
+          </View>
+          <Text style={[type.eyebrow, { marginTop: 6 }]}>{t('groups.usableBy')}</Text>
+          <View style={s.chips}>
+            {INVITE_MAX_USES_CHOICES.map((ch) => (
+              <Chip key={String(ch.uses)} label={usesLabel(t, ch.uses)} active={maxUses === ch.uses} onPress={() => setMaxUses(ch.uses)} />
+            ))}
+          </View>
+        </View>
+        <View style={{ marginHorizontal: -8 }}>
+          <ToggleRow label={t('groups.approvalRequired')} value={approval} onChange={setApproval} />
+        </View>
+        <Button label={t('groups.createAndShare')} icon="share" loading={busy} onPress={() => void createInvite()} />
+      </Sheet>
     </SafeAreaView>
   );
 }
+
+const useStyles = makeStyles((c, t, f) => ({
+  camBadge: { position: 'absolute', right: -4, bottom: -4, width: 32, height: 32, borderRadius: 16, backgroundColor: c.accent, borderWidth: 3, borderColor: c.bg, alignItems: 'center', justifyContent: 'center' },
+  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  invite: { marginHorizontal: 16, marginBottom: 10, padding: 14, gap: 12, borderRadius: 18, backgroundColor: c.panel, borderWidth: 1, borderColor: c.line },
+  inviteIcon: { width: 28, height: 28, borderRadius: 9, backgroundColor: c.raised, alignItems: 'center', justifyContent: 'center' },
+  member: { flexDirection: 'row', alignItems: 'center', gap: 12, marginHorizontal: 8, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 16 },
+  memberName: { fontFamily: f.semibold, fontSize: 15.5, color: c.text },
+  handle: { fontFamily: f.script === 'latin' ? f.mono : f.body, fontSize: 12.5, color: c.muted },
+}));

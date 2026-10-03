@@ -101,6 +101,10 @@ const FILLED = {
 
 export type IconName = keyof typeof ICONS | keyof typeof FILLED;
 
+export function isIconName(name: string): name is IconName {
+  return name in ICONS || name in FILLED;
+}
+
 interface IconProps {
   name: IconName;
   size?: number;

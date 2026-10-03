@@ -1,46 +1,30 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import {
-  ActivityIndicator,
-  FlatList,
-  Image,
-  KeyboardAvoidingView,
-  Modal,
-  Platform,
-  Pressable,
-  ScrollView,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View,
-} from 'react-native';
+import { ActivityIndicator, FlatList, Image, KeyboardAvoidingView, Platform, ScrollView, Text, TextInput, View } from 'react-native';
+import Animated, { FadeIn, FadeInDown, ZoomIn } from 'react-native-reanimated';
 import { router, useLocalSearchParams } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import dayjs from 'dayjs';
 import { friendlyError } from '../../src/core/network/supabase';
 import { useAuthStore } from '../../src/features/auth/useAuthStore';
 import { conversationRepository } from '../../src/features/chats/ConversationRepository';
 import { channelRepository } from '../../src/features/channels/ChannelRepository';
-import {
-  CHANNEL_REACTIONS,
-  CHANNELS_E2EE_NOTICE,
-  followersLabel,
-  MAX_POST_LENGTH,
-  sortedReactions,
-} from '../../src/features/channels/channelUtils';
+import { CHANNEL_REACTIONS, formatCount, MAX_POST_LENGTH, sortedReactions } from '../../src/features/channels/channelUtils';
 import { ChannelPost } from '../../src/features/channels/types';
 import { channelsStore, useChannelRealtime, useChannelsStore } from '../../src/features/channels/useChannelsStore';
 import { pickAvatarDataUri } from '../../src/features/groups/avatarPicker';
-import { Banner, EntityAvatar, groupStyles as gs, PrimaryButton, Row, ScreenHeader, SectionHeader, ToggleRow } from '../../src/features/groups/components/GroupComponents';
+import { Banner, EntityAvatar, Row, ScreenHeader, SectionHeader, ToggleRow, useGroupStyles } from '../../src/features/groups/components/GroupComponents';
 import { ActionSheet, confirmAction, notify, SheetOption, shareLink } from '../../src/features/groups/components/ui';
 import { INVITE_HOST, shareableInviteUrl } from '../../src/features/groups/config';
 import { User } from '../../src/shared/models/Message';
-import { BorderRadius, Colors, Spacing, Typography } from '../../src/shared/theme/theme';
+import { makeStyles, useTheme } from '../../src/shared/theme/ThemeProvider';
+import { useT } from '../../src/shared/i18n';
+import { Avatar, Button, DotWall, EmptyState, Icon, IconButton, Pill, Pressy, SearchField, Sheet, TextField } from '../../src/shared/ui';
 
 const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
 
 function PostImage({ path }: { path: string }) {
+  const { c } = useTheme();
   const [url, setUrl] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
@@ -49,78 +33,91 @@ function PostImage({ path }: { path: string }) {
       cancelled = true;
     };
   }, [path]);
-  if (!url) return <View style={{ height: 200, borderRadius: BorderRadius.md, backgroundColor: Colors.surfaceHighlight, marginBottom: Spacing.sm }} />;
-  return <Image source={{ uri: url }} style={{ width: '100%', height: 220, borderRadius: BorderRadius.md, marginBottom: Spacing.sm }} resizeMode="cover" />;
+  if (!url) return <View style={{ height: 220, borderRadius: 16, backgroundColor: c.field, marginBottom: 10 }} />;
+  return (
+    <Animated.View entering={FadeIn}>
+      <Image source={{ uri: url }} style={{ width: '100%', height: 240, borderRadius: 16, marginBottom: 10 }} resizeMode="cover" />
+    </Animated.View>
+  );
 }
 
-function PostCard({
-  post,
-  myReaction,
-  canReact,
-  onReact,
-  onLongPress,
-}: {
+function PostCard({ post, index, myReaction, canReact, onReact, onLongPress }: {
   post: ChannelPost;
+  index: number;
   myReaction: string | null;
   canReact: boolean;
   onReact: (emoji: string) => void;
   onLongPress?: () => void;
 }) {
+  const { c, type } = useTheme();
+  const s = useStyles();
+  const t = useT();
   const [picker, setPicker] = useState(false);
   return (
-    <Pressable onLongPress={onLongPress} style={gs.card}>
-      {post.mediaPath && <PostImage path={post.mediaPath} />}
-      {!!post.body && <Text style={gs.body}>{post.body}</Text>}
-      <Text style={[gs.muted, { marginTop: Spacing.xs, fontSize: Typography.xs }]}>
-        {dayjs(post.createdAt).format('D MMM, HH:mm')}
-        {post.editedAt ? ' · edited' : ''}
-      </Text>
-      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.xs, marginTop: Spacing.sm }}>
-        {sortedReactions(post.reactionCounts).map(({ emoji, count }) => (
-          <TouchableOpacity
-            key={emoji}
-            disabled={!canReact}
-            onPress={() => onReact(emoji)}
-            style={[gs.chip, { paddingVertical: 2 }, myReaction === emoji && gs.chipActive]}
-          >
-            <Text style={[gs.chipText, myReaction === emoji && gs.chipTextActive]}>
-              {emoji} {count}
-            </Text>
-          </TouchableOpacity>
-        ))}
-        {canReact && (
-          <TouchableOpacity onPress={() => setPicker((v) => !v)} style={[gs.chip, { paddingVertical: 2 }]} accessibilityLabel="React">
-            <Ionicons name="happy-outline" size={16} color={Colors.textSecondary} />
-          </TouchableOpacity>
-        )}
-      </View>
-      {picker && (
-        <View style={{ flexDirection: 'row', gap: Spacing.md, marginTop: Spacing.sm }}>
-          {CHANNEL_REACTIONS.map((e) => (
-            <TouchableOpacity
-              key={e}
-              onPress={() => {
-                setPicker(false);
-                onReact(e);
-              }}
+    <Animated.View entering={FadeInDown.delay(Math.min(index, 6) * 40).springify().damping(18)}>
+      <Pressy onLongPress={onLongPress} scaleTo={onLongPress ? 0.99 : 1} style={s.post}>
+        {post.mediaPath && <PostImage path={post.mediaPath} />}
+        {!!post.body && <Text style={[type.body, { fontSize: 15.5 }]}>{post.body}</Text>}
+        <Text style={[type.caption, { marginTop: 8 }]}>
+          {dayjs(post.createdAt).format('D MMM, HH:mm')}
+          {post.editedAt ? ` · ${t('thread.edited')}` : ''}
+        </Text>
+        <View style={s.reactions}>
+          {sortedReactions(post.reactionCounts).map(({ emoji, count }) => (
+            <Pressy
+              key={emoji}
+              disabled={!canReact}
+              onPress={() => onReact(emoji)}
+              scaleTo={0.9}
+              style={[s.reaction, myReaction === emoji && { backgroundColor: c.accentTint2, borderColor: c.accentLine }]}
+              accessibilityLabel={`${emoji} ${count}`}
             >
-              <Text style={{ fontSize: 24 }}>{e}</Text>
-            </TouchableOpacity>
+              <Text style={{ fontSize: 14 }}>{emoji}</Text>
+              <Text style={[s.reactionCount, myReaction === emoji && { color: c.accentText }]}>{count}</Text>
+            </Pressy>
           ))}
+          {canReact && (
+            <Pressy onPress={() => setPicker((v) => !v)} scaleTo={0.9} style={s.reaction} accessibilityLabel={t('channels.react')}>
+              <Icon name="smile" size={16} color={c.muted} />
+            </Pressy>
+          )}
         </View>
-      )}
-    </Pressable>
+        {picker && (
+          <Animated.View entering={ZoomIn.springify().damping(15)} style={s.picker}>
+            {CHANNEL_REACTIONS.map((e) => (
+              <Pressy
+                key={e}
+                onPress={() => {
+                  setPicker(false);
+                  onReact(e);
+                }}
+                scaleTo={0.8}
+                style={s.pickerItem}
+                accessibilityLabel={e}
+              >
+                <Text style={{ fontSize: 24 }}>{e}</Text>
+              </Pressy>
+            ))}
+          </Animated.View>
+        )}
+      </Pressy>
+    </Animated.View>
   );
 }
 
 export default function ChannelScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const channelId = id ?? '';
-  const isDemo = useAuthStore((s) => s.isDemo);
-  const channel = useChannelsStore((s) => s.channels[channelId]);
-  const posts = useChannelsStore((s) => s.posts[channelId]) ?? [];
-  const myReactions = useChannelsStore((s) => s.myReactions);
-  const deleted = useChannelsStore((s) => s.deleted[channelId]);
+  const insets = useSafeAreaInsets();
+  const { c, type } = useTheme();
+  const gs = useGroupStyles();
+  const s = useStyles();
+  const t = useT();
+  const isDemo = useAuthStore((st) => st.isDemo);
+  const channel = useChannelsStore((st) => st.channels[channelId]);
+  const posts = useChannelsStore((st) => st.posts[channelId]) ?? [];
+  const myReactions = useChannelsStore((st) => st.myReactions);
+  const deleted = useChannelsStore((st) => st.deleted[channelId]);
   const store = channelsStore.getState();
 
   const [loading, setLoading] = useState(true);
@@ -153,22 +150,22 @@ export default function ChannelScreen() {
   const isAdmin = !!channel?.myRole;
   const isOwner = channel?.myRole === 'owner';
   const canReact = !!channel && (channel.isFollowing || isAdmin || channel.visibility === 'public');
+  const back = () => (router.canGoBack() ? router.back() : router.replace('/channels'));
 
-  const react = (postId: string, emoji: string) =>
-    void store.react(channelId, postId, emoji).catch((e) => notify('Reaction not saved', friendlyError(e)));
+  const react = (postId: string, emoji: string) => void store.react(channelId, postId, emoji).catch((e) => notify(t('channels.reactFailed'), friendlyError(e)));
 
   const pickImage = async () => {
     try {
       const { granted } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (!granted) throw new Error('Allow photo library access in Settings to post photos.');
+      if (!granted) throw new Error(t('channels.photoPermission'));
       const r = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.8 });
       const asset = r.assets?.[0];
       if (r.canceled || !asset) return;
       const mime = asset.mimeType && ALLOWED_IMAGE_TYPES.includes(asset.mimeType) ? asset.mimeType : 'image/jpeg';
-      if ((asset.fileSize ?? 0) > 10 * 1024 * 1024) throw new Error('Images must be under 10 MB.');
+      if ((asset.fileSize ?? 0) > 10 * 1024 * 1024) throw new Error(t('channels.photoTooBig'));
       setImage({ uri: asset.uri, mime });
     } catch (e) {
-      notify('Could not add photo', friendlyError(e));
+      notify(t('channels.photoFailed'), friendlyError(e));
     }
   };
 
@@ -181,7 +178,7 @@ export default function ChannelScreen() {
       setDraft('');
       setImage(null);
     } catch (e) {
-      notify('Could not post', friendlyError(e));
+      notify(t('channels.postFailed'), friendlyError(e));
     } finally {
       setPosting(false);
     }
@@ -192,14 +189,14 @@ export default function ChannelScreen() {
     try {
       if (channel.visibility === 'private') {
         const token = await channelRepository.getInviteToken(channelId);
-        if (!token) throw new Error('No invite link yet');
-        await shareLink(shareableInviteUrl(token), `Follow "${channel.name}" on Vero`);
+        if (!token) throw new Error(t('channels.noInvite'));
+        await shareLink(shareableInviteUrl(token), t('channels.followShare', { name: channel.name }));
       } else {
         const url = INVITE_HOST ? `https://${INVITE_HOST}/channels/${channelId}` : `vero://channels/${channelId}`;
-        await shareLink(url, `Follow "${channel.name}" (@${channel.handle}) on Vero`);
+        await shareLink(url, t('channels.followShareHandle', { name: channel.name, handle: channel.handle }));
       }
     } catch (e) {
-      notify('Could not share', friendlyError(e));
+      notify(t('channels.shareFailed'), friendlyError(e));
     }
   };
 
@@ -208,48 +205,43 @@ export default function ChannelScreen() {
     const o: SheetOption[] = [];
     if (channel.isFollowing) {
       o.push({
-        label: channel.muted ? 'Unmute' : 'Mute',
-        icon: channel.muted ? 'notifications-outline' : 'notifications-off-outline',
-        onPress: () => void store.setMuted(channelId, !channel.muted).catch((e) => notify('Could not update', friendlyError(e))),
+        label: channel.muted ? t('channels.unmute') : t('channels.mute'),
+        icon: channel.muted ? 'bell' : 'bellOff',
+        onPress: () => void store.setMuted(channelId, !channel.muted).catch((e) => notify(t('channels.updateFailed'), friendlyError(e))),
       });
     }
-    if (channel.visibility === 'public' || isAdmin) o.push({ label: 'Share channel', icon: 'share-outline', onPress: () => void shareChannel() });
+    if (channel.visibility === 'public' || isAdmin) o.push({ label: t('channels.share'), icon: 'share', onPress: () => void shareChannel() });
     if (isAdmin) {
-      o.push({ label: 'Edit channel', icon: 'create-outline', onPress: () => setEditing(true) });
+      o.push({ label: t('channels.edit'), icon: 'edit', onPress: () => setEditing(true) });
       if (channel.visibility === 'private') {
         o.push({
-          label: 'Reset invite link',
-          icon: 'refresh-outline',
+          label: t('channels.resetInvite'),
+          icon: 'link',
           onPress: async () => {
-            if (await confirmAction('Reset invite link', 'The old link stops working. Current followers keep following.', 'Reset')) {
-              await channelRepository.rotateInvite(channelId).catch((e) => notify('Could not reset', friendlyError(e)));
+            if (await confirmAction(t('channels.resetInvite'), t('channels.resetInviteBody'), t('groups.reset'))) {
+              await channelRepository.rotateInvite(channelId).catch((e) => notify(t('groups.resetFailed'), friendlyError(e)));
             }
           },
         });
       }
-      o.push({ label: 'Admins', icon: 'shield-outline', onPress: () => setAdminsOpen(true) });
+      o.push({ label: t('channels.admins'), icon: 'shieldCheck', onPress: () => setAdminsOpen(true) });
     }
     if (channel.isFollowing) {
-      o.push({
-        label: 'Unfollow',
-        icon: 'remove-circle-outline',
-        destructive: true,
-        onPress: () => void store.unfollow(channelId).catch((e) => notify('Could not unfollow', friendlyError(e))),
-      });
+      o.push({ label: t('channels.unfollow'), icon: 'close', destructive: true, onPress: () => void store.unfollow(channelId).catch((e) => notify(t('channels.unfollowFailed'), friendlyError(e))) });
     }
     if (isOwner) {
       o.push({
-        label: 'Delete channel',
-        icon: 'trash-outline',
+        label: t('channels.delete'),
+        icon: 'trash',
         destructive: true,
         onPress: async () => {
-          if (await confirmAction('Delete channel', 'All posts are deleted for every follower. This cannot be undone.', 'Delete', true)) {
+          if (await confirmAction(t('channels.delete'), t('channels.deleteBody'), t('common.delete'), true)) {
             try {
               await channelRepository.remove(channelId);
               void store.loadMine().catch(() => undefined);
-              router.back();
+              back();
             } catch (e) {
-              notify('Could not delete', friendlyError(e));
+              notify(t('thread.deleteFailed'), friendlyError(e));
             }
           }
         },
@@ -258,104 +250,102 @@ export default function ChannelScreen() {
     return o;
   };
 
-  if (isDemo) {
+  if (isDemo || !channel || deleted) {
     return (
-      <SafeAreaView style={gs.container} edges={['top']}>
-        <ScreenHeader title="Channel" onBack={() => router.back()} />
+      <View style={[gs.container, { paddingTop: insets.top }]}>
+        <ScreenHeader title={t('channels.channel')} onBack={back} />
         <View style={gs.centered}>
-          <Text style={gs.muted}>Channels need a real account.</Text>
-        </View>
-      </SafeAreaView>
-    );
-  }
-
-  if (!channel || deleted) {
-    return (
-      <SafeAreaView style={gs.container} edges={['top']}>
-        <ScreenHeader title="Channel" onBack={() => router.back()} />
-        <View style={gs.centered}>
-          {loading && !deleted ? (
-            <ActivityIndicator color={Colors.accent} />
+          {isDemo ? (
+            <Text style={gs.muted}>{t('channels.demo')}</Text>
+          ) : loading && !deleted ? (
+            <ActivityIndicator color={c.accent} />
           ) : (
-            <Text style={gs.muted}>{deleted ? 'This channel was deleted.' : loadError || "This channel doesn't exist or is private."}</Text>
+            <Text style={gs.muted}>{deleted ? t('channels.deleted') : loadError || t('channels.missing')}</Text>
           )}
         </View>
-      </SafeAreaView>
+      </View>
     );
   }
 
+  const followers = t('channels.followers', { count: channel.followerCount, n: formatCount(channel.followerCount) });
+  const canPost = !!draft.trim() || !!image;
+
   return (
-    <SafeAreaView style={gs.container} edges={['top', 'bottom']}>
+    <View style={[gs.container, { paddingTop: insets.top }]}>
       <ScreenHeader
         title={channel.name}
-        subtitle={`@${channel.handle} · ${followersLabel(channel.followerCount)}${channel.visibility === 'private' ? ' · Private' : ''}`}
-        onBack={() => router.back()}
-        right={
-          <TouchableOpacity onPress={() => setMenu(true)} style={{ padding: Spacing.sm }} accessibilityLabel="Channel options">
-            <Ionicons name="ellipsis-vertical" size={20} color={Colors.textPrimary} />
-          </TouchableOpacity>
-        }
+        subtitle={`@${channel.handle} · ${followers}${channel.visibility === 'private' ? ` · ${t('channels.privateShort')}` : ''}`}
+        onBack={back}
+        right={<IconButton icon="more" label={t('channels.options')} onPress={() => setMenu(true)} />}
       />
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <DotWall />
         <FlatList
           data={posts}
           keyExtractor={(p) => p.id}
           onEndReached={() => void store.loadOlder(channelId).catch(() => undefined)}
           onEndReachedThreshold={0.4}
+          contentContainerStyle={s.feed}
           ListHeaderComponent={
-            <>
+            <View style={{ gap: 4, marginBottom: 6 }}>
               <View style={gs.hero}>
-                <EntityAvatar name={channel.name} dataUri={channel.avatarData} size={80} icon="megaphone" />
+                <Animated.View entering={ZoomIn.springify().damping(14)}>
+                  <EntityAvatar name={channel.name} dataUri={channel.avatarData} size={88} icon="megaphone" />
+                </Animated.View>
+                <Text style={gs.heroTitle}>{channel.name}</Text>
                 {!!channel.description && <Text style={gs.heroSub}>{channel.description}</Text>}
+                <View style={{ flexDirection: 'row', gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
+                  <Pill icon="users" label={followers} tone="brass" />
+                  {channel.muted && <Pill icon="bellOff" label={t('channels.muted')} tone="stage" />}
+                </View>
+                {!channel.isFollowing && !isAdmin && (
+                  <Button
+                    label={t('channels.follow')}
+                    icon="plus"
+                    size="md"
+                    onPress={() => void store.follow(channelId).catch((e) => notify(t('channels.followFailed'), friendlyError(e)))}
+                    style={{ marginTop: 6, paddingHorizontal: 28 }}
+                  />
+                )}
               </View>
-              <Banner icon="information-circle-outline" tone="warning" text={CHANNELS_E2EE_NOTICE} />
-              {!channel.isFollowing && !isAdmin && (
-                <PrimaryButton label="Follow" onPress={() => void store.follow(channelId).catch((e) => notify('Could not follow', friendlyError(e)))} />
-              )}
-            </>
-          }
-          ListEmptyComponent={
-            <View style={gs.centered}>
-              <Text style={gs.muted}>{isAdmin ? 'No updates yet. Post the first one below.' : 'No updates yet.'}</Text>
+              <View style={{ marginHorizontal: -16 }}>
+                <Banner icon="info" tone="warning" text={t('channels.notice')} />
+              </View>
             </View>
           }
-          renderItem={({ item }) => (
-            <PostCard
-              post={item}
-              myReaction={myReactions[item.id] ?? null}
-              canReact={canReact}
-              onReact={(e) => react(item.id, e)}
-              onLongPress={isAdmin ? () => setPostMenu(item) : undefined}
-            />
+          ListEmptyComponent={<EmptyState icon="megaphone" title={t('channels.noUpdates')} body={isAdmin ? t('channels.noUpdatesAdmin') : t('channels.noUpdatesBody')} />}
+          renderItem={({ item, index }) => (
+            <PostCard post={item} index={index} myReaction={myReactions[item.id] ?? null} canReact={canReact} onReact={(e) => react(item.id, e)} onLongPress={isAdmin ? () => setPostMenu(item) : undefined} />
           )}
         />
 
         {isAdmin && (
-          <View style={{ borderTopWidth: 1, borderTopColor: Colors.divider, padding: Spacing.sm }}>
-            {image && (
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, marginBottom: Spacing.sm }}>
-                <Image source={{ uri: image.uri }} style={{ width: 48, height: 48, borderRadius: BorderRadius.sm }} />
-                <TouchableOpacity onPress={() => setImage(null)}>
-                  <Text style={{ color: Colors.error }}>Remove</Text>
-                </TouchableOpacity>
+          <View style={[s.composerWrap, { paddingBottom: Math.max(insets.bottom, 12) }]}>
+            <View style={s.composerInner}>
+              {image && (
+                <Animated.View entering={FadeInDown} style={s.attachment}>
+                  <Image source={{ uri: image.uri }} style={{ width: 52, height: 52, borderRadius: 12 }} />
+                  <Text style={[type.caption, { flex: 1 }]}>{t('channels.photoAttached')}</Text>
+                  <IconButton icon="close" label={t('channels.removePhoto')} size={36} onPress={() => setImage(null)} />
+                </Animated.View>
+              )}
+              <View style={s.composer}>
+                <IconButton icon="image" label={t('channels.addPhoto')} variant="filled" size={46} onPress={() => void pickImage()} />
+                <View style={s.field}>
+                  <TextInput
+                    style={s.input}
+                    value={draft}
+                    onChangeText={setDraft}
+                    multiline
+                    maxLength={MAX_POST_LENGTH}
+                    placeholder={t('channels.postPlaceholder')}
+                    placeholderTextColor={c.faint}
+                    selectionColor={c.accent}
+                    {...(Platform.OS === 'web' ? { numberOfLines: 1 } : {})}
+                  />
+                </View>
+                <IconButton icon="send" label={t('channels.post')} variant={canPost ? 'brass' : 'filled'} size={46} disabled={posting || !canPost} onPress={() => void publish()} />
               </View>
-            )}
-            <View style={{ flexDirection: 'row', alignItems: 'flex-end', gap: Spacing.sm }}>
-              <TouchableOpacity onPress={() => void pickImage()} style={{ padding: Spacing.sm }} accessibilityLabel="Add photo">
-                <Ionicons name="image-outline" size={24} color={Colors.accent} />
-              </TouchableOpacity>
-              <TextInput
-                style={[gs.input, { flex: 1, marginHorizontal: 0, marginBottom: 0, maxHeight: 120 }]}
-                value={draft}
-                onChangeText={setDraft}
-                multiline
-                maxLength={MAX_POST_LENGTH}
-                placeholder="Post an update (not end-to-end encrypted)"
-                placeholderTextColor={Colors.textTertiary}
-              />
-              <TouchableOpacity onPress={() => void publish()} disabled={posting || (!draft.trim() && !image)} style={{ padding: Spacing.sm }} accessibilityLabel="Post">
-                {posting ? <ActivityIndicator color={Colors.accent} /> : <Ionicons name="send" size={22} color={draft.trim() || image ? Colors.accent : Colors.textTertiary} />}
-              </TouchableOpacity>
             </View>
           </View>
         )}
@@ -364,18 +354,18 @@ export default function ChannelScreen() {
       <ActionSheet visible={menu} title={channel.name} options={menuOptions()} onClose={() => setMenu(false)} />
       <ActionSheet
         visible={!!postMenu}
-        title="Update"
+        title={t('channels.update')}
         options={
           postMenu
             ? [
                 {
-                  label: 'Delete update',
-                  icon: 'trash-outline',
+                  label: t('channels.deleteUpdate'),
+                  icon: 'trash',
                   destructive: true,
                   onPress: async () => {
                     const p = postMenu;
-                    if (await confirmAction('Delete update', 'Remove this update for all followers?', 'Delete', true)) {
-                      await store.deletePost(channelId, p).catch((e) => notify('Could not delete', friendlyError(e)));
+                    if (await confirmAction(t('channels.deleteUpdate'), t('channels.deleteUpdateBody'), t('common.delete'), true)) {
+                      await store.deletePost(channelId, p).catch((e) => notify(t('thread.deleteFailed'), friendlyError(e)));
                     }
                   },
                 },
@@ -384,19 +374,29 @@ export default function ChannelScreen() {
         }
         onClose={() => setPostMenu(null)}
       />
-      {editing && <EditChannelModal channelId={channelId} onClose={() => setEditing(false)} />}
-      {adminsOpen && <AdminsModal channelId={channelId} isOwner={isOwner} onClose={() => setAdminsOpen(false)} />}
-    </SafeAreaView>
+      <EditChannelSheet channelId={channelId} visible={editing} onClose={() => setEditing(false)} />
+      {adminsOpen && <AdminsSheet channelId={channelId} isOwner={isOwner} onClose={() => setAdminsOpen(false)} />}
+    </View>
   );
 }
 
-function EditChannelModal({ channelId, onClose }: { channelId: string; onClose: () => void }) {
-  const channel = useChannelsStore((s) => s.channels[channelId]);
+function EditChannelSheet({ channelId, visible, onClose }: { channelId: string; visible: boolean; onClose: () => void }) {
+  const { c, type } = useTheme();
+  const t = useT();
+  const channel = useChannelsStore((st) => st.channels[channelId]);
   const [name, setName] = useState(channel?.name ?? '');
   const [description, setDescription] = useState(channel?.description ?? '');
   const [isPrivate, setIsPrivate] = useState(channel?.visibility === 'private');
   const [avatar, setAvatar] = useState<string | null | undefined>(undefined);
   const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!visible) return;
+    setName(channel?.name ?? '');
+    setDescription(channel?.description ?? '');
+    setIsPrivate(channel?.visibility === 'private');
+    setAvatar(undefined);
+  }, [visible]);
 
   const save = async () => {
     setSaving(true);
@@ -411,49 +411,45 @@ function EditChannelModal({ channelId, onClose }: { channelId: string; onClose: 
       await channelsStore.getState().open(channelId);
       onClose();
     } catch (e) {
-      notify('Could not save', friendlyError(e));
+      notify(t('groups.saveFailed'), friendlyError(e));
     } finally {
       setSaving(false);
     }
   };
 
+  const shown = avatar === undefined ? channel?.avatarData : avatar;
   return (
-    <Modal visible transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable style={{ flex: 1, backgroundColor: Colors.overlay, justifyContent: 'flex-end' }} onPress={onClose}>
-        <Pressable style={{ backgroundColor: Colors.surfaceElevated, paddingVertical: Spacing.lg }} onPress={() => undefined}>
-          <ScrollView keyboardShouldPersistTaps="handled">
-            <View style={gs.hero}>
-              <TouchableOpacity
-                onPress={() =>
-                  void pickAvatarDataUri()
-                    .then((u) => u && setAvatar(u))
-                    .catch((e) => notify('Could not use photo', friendlyError(e)))
-                }
-              >
-                <EntityAvatar name={name || 'Channel'} dataUri={avatar === undefined ? channel?.avatarData : avatar} size={72} icon="megaphone" />
-              </TouchableOpacity>
-              <Text style={gs.muted}>Tap to change photo</Text>
-              {(avatar ?? channel?.avatarData) && (
-                <TouchableOpacity onPress={() => setAvatar(null)}>
-                  <Text style={{ color: Colors.error }}>Remove photo</Text>
-                </TouchableOpacity>
-              )}
-            </View>
-            <SectionHeader title="Name" />
-            <TextInput style={gs.input} value={name} onChangeText={setName} maxLength={64} placeholderTextColor={Colors.textTertiary} />
-            <SectionHeader title="Description" />
-            <TextInput style={[gs.input, { minHeight: 70 }]} value={description} onChangeText={setDescription} maxLength={1024} multiline placeholderTextColor={Colors.textTertiary} />
-            <ToggleRow label="Private channel" sublabel="Hidden from search; followed via invite link" value={isPrivate} onChange={setIsPrivate} />
-            <PrimaryButton label="Save" onPress={() => void save()} disabled={saving || !name.trim()} />
-          </ScrollView>
-        </Pressable>
-      </Pressable>
-    </Modal>
+    <Sheet visible={visible} onClose={onClose} title={t('channels.edit')}>
+      <ScrollView keyboardShouldPersistTaps="handled" style={{ maxHeight: 520 }} contentContainerStyle={{ gap: 14 }}>
+        <View style={{ alignItems: 'center', gap: 8 }}>
+          <Pressy
+            onPress={() =>
+              void pickAvatarDataUri()
+                .then((u) => u && setAvatar(u))
+                .catch((e) => notify(t('groups.photoFailed'), friendlyError(e)))
+            }
+            scaleTo={0.95}
+            accessibilityLabel={t('groups.changePhoto')}
+          >
+            <EntityAvatar name={name || t('channels.channel')} dataUri={shown} size={76} icon="megaphone" />
+          </Pressy>
+          <Text style={type.caption}>{t('channels.tapPhoto')}</Text>
+          {!!shown && <Button label={t('channels.removePhoto')} variant="dangerSoft" size="sm" onPress={() => setAvatar(null)} />}
+        </View>
+        <TextField label={t('channels.name')} value={name} onChangeText={setName} maxLength={64} />
+        <TextField label={t('channels.description')} value={description} onChangeText={setDescription} maxLength={1024} multiline />
+        <View style={{ marginHorizontal: -16 }}>
+          <ToggleRow label={t('channels.private')} sublabel={t('channels.privateHint')} value={isPrivate} onChange={setIsPrivate} />
+        </View>
+        <Button label={t('common.save')} loading={saving} disabled={!name.trim()} onPress={() => void save()} />
+      </ScrollView>
+    </Sheet>
   );
 }
 
-function AdminsModal({ channelId, isOwner, onClose }: { channelId: string; isOwner: boolean; onClose: () => void }) {
-  const me = useAuthStore((s) => s.user?.id);
+function AdminsSheet({ channelId, isOwner, onClose }: { channelId: string; isOwner: boolean; onClose: () => void }) {
+  const t = useT();
+  const me = useAuthStore((st) => st.user?.id);
   const [admins, setAdmins] = useState<{ userId: string; role: 'owner' | 'admin'; displayName: string; username: string }[]>([]);
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<User[]>([]);
@@ -468,10 +464,10 @@ function AdminsModal({ channelId, isOwner, onClose }: { channelId: string; isOwn
       setResults([]);
       return;
     }
-    const t = setTimeout(() => {
+    const timer = setTimeout(() => {
       conversationRepository.searchUsers(query).then(setResults).catch(() => setResults([]));
     }, 300);
-    return () => clearTimeout(t);
+    return () => clearTimeout(timer);
   }, [query]);
 
   const act = async (fn: () => Promise<void>) => {
@@ -479,63 +475,73 @@ function AdminsModal({ channelId, isOwner, onClose }: { channelId: string; isOwn
       await fn();
       load();
     } catch (e) {
-      notify('Could not update admins', friendlyError(e));
+      notify(t('channels.adminsFailed'), friendlyError(e));
     }
   };
 
   return (
-    <Modal visible transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable style={{ flex: 1, backgroundColor: Colors.overlay, justifyContent: 'flex-end' }} onPress={onClose}>
-        <Pressable style={{ backgroundColor: Colors.surfaceElevated, paddingVertical: Spacing.lg, maxHeight: '80%' }} onPress={() => undefined}>
-          <ScrollView keyboardShouldPersistTaps="handled">
-            <SectionHeader title="Admins can post and edit the channel" />
-            {admins.map((a) => (
-              <Row
-                key={a.userId}
-                label={a.userId === me ? 'You' : a.displayName}
-                sublabel={`@${a.username} · ${a.role === 'owner' ? 'Owner' : 'Admin'}`}
-                right={
-                  a.role === 'admin' && (isOwner || a.userId === me) ? (
-                    <TouchableOpacity onPress={() => void act(() => channelRepository.removeAdmin(channelId, a.userId))}>
-                      <Text style={{ color: Colors.error }}>{a.userId === me ? 'Step down' : 'Remove'}</Text>
-                    </TouchableOpacity>
-                  ) : null
-                }
-              />
-            ))}
-            {isOwner && (
-              <>
-                <SectionHeader title="Add an admin" />
-                <TextInput
-                  style={gs.input}
-                  value={query}
-                  onChangeText={setQuery}
-                  autoCapitalize="none"
-                  placeholder="Search by name or @username"
-                  placeholderTextColor={Colors.textTertiary}
-                />
-                {results
-                  .filter((u) => !admins.some((a) => a.userId === u.id))
-                  .map((u) => (
-                    <Row
-                      key={u.id}
-                      label={u.displayName}
-                      sublabel={`@${u.username}`}
-                      onPress={() =>
-                        void act(async () => {
-                          await channelRepository.addAdmin(channelId, u.id);
-                          setQuery('');
-                        })
-                      }
-                      right={<Ionicons name="add-circle-outline" size={22} color={Colors.accent} />}
-                    />
-                  ))}
-              </>
-            )}
-            <PrimaryButton label="Done" onPress={onClose} />
-          </ScrollView>
-        </Pressable>
-      </Pressable>
-    </Modal>
+    <Sheet visible onClose={onClose} title={t('channels.admins')}>
+      <ScrollView keyboardShouldPersistTaps="handled" style={{ maxHeight: 520 }}>
+        <View style={{ marginHorizontal: -16 }}>
+          <SectionHeader title={t('channels.adminsHint')} />
+          {admins.map((a) => (
+            <Row
+              key={a.userId}
+              label={a.userId === me ? t('common.you') : a.displayName}
+              sublabel={`@${a.username} · ${a.role === 'owner' ? t('thread.role_owner') : t('thread.role_admin')}`}
+              right={
+                a.role === 'admin' && (isOwner || a.userId === me) ? (
+                  <Button
+                    label={a.userId === me ? t('groups.stepDown') : t('groups.removeConfirm')}
+                    variant="dangerSoft"
+                    size="sm"
+                    onPress={() => void act(() => channelRepository.removeAdmin(channelId, a.userId))}
+                  />
+                ) : null
+              }
+            />
+          ))}
+          {isOwner && (
+            <>
+              <SectionHeader title={t('channels.addAdmin')} />
+              <SearchField value={query} onChangeText={setQuery} placeholder={t('newGroup.search')} onClear={() => setQuery('')} style={{ marginHorizontal: 16, marginBottom: 6 }} />
+              {results
+                .filter((u) => !admins.some((a) => a.userId === u.id))
+                .map((u) => (
+                  <Row
+                    key={u.id}
+                    icon="userPlus"
+                    label={u.displayName}
+                    sublabel={`@${u.username}`}
+                    onPress={() =>
+                      void act(async () => {
+                        await channelRepository.addAdmin(channelId, u.id);
+                        setQuery('');
+                      })
+                    }
+                  />
+                ))}
+            </>
+          )}
+        </View>
+      </ScrollView>
+      <Button label={t('common.done')} variant="ghost" onPress={onClose} />
+    </Sheet>
   );
 }
+
+const useStyles = makeStyles((c, t, f) => ({
+  feed: { width: '100%', maxWidth: 680, alignSelf: 'center', paddingHorizontal: 16, paddingBottom: 24, gap: 12 },
+  post: { backgroundColor: c.panel, borderRadius: 22, borderWidth: 1, borderColor: c.line, padding: 14 },
+  reactions: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 10 },
+  reaction: { flexDirection: 'row', alignItems: 'center', gap: 5, height: 30, paddingHorizontal: 10, borderRadius: 15, backgroundColor: c.raised, borderWidth: 1, borderColor: c.line },
+  reactionCount: { fontFamily: f.mono, fontSize: 12, color: c.muted },
+  picker: { flexDirection: 'row', gap: 4, marginTop: 10, padding: 6, borderRadius: 22, backgroundColor: c.raised, alignSelf: 'flex-start', borderWidth: 1, borderColor: c.line },
+  pickerItem: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
+  composerWrap: { borderTopWidth: 1, borderTopColor: c.line, backgroundColor: c.panel, paddingTop: 10, paddingHorizontal: 12 },
+  composerInner: { width: '100%', maxWidth: 680, alignSelf: 'center', gap: 8 },
+  attachment: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 6, borderRadius: 16, backgroundColor: c.raised },
+  composer: { flexDirection: 'row', alignItems: 'flex-end', gap: 8 },
+  field: { flex: 1, minHeight: 46, borderRadius: 23, backgroundColor: c.field, borderWidth: 1, borderColor: c.line, paddingHorizontal: 16, justifyContent: 'center' },
+  input: { fontFamily: f.body, fontSize: 15.5, color: c.text, paddingVertical: 11, maxHeight: 120, outlineStyle: 'none' } as any,
+}));

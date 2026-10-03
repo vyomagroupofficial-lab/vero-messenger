@@ -1,48 +1,48 @@
 /**
- * Small presentational pieces shared by the group / channel / community
- * screens. Plain components on existing theme tokens (the UI session restyles).
+ * Presentational kit shared by the group / channel / community screens, in the Ink & Brass design.
+ * Theme-aware: every piece follows the light/dark setting.
  */
 
 import React from 'react';
-import { Image, StyleSheet, Switch, Text, TouchableOpacity, View } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
-import { BorderRadius, Colors, Spacing, Typography } from '../../../shared/theme/theme';
+import { Image, Text, View } from 'react-native';
+import Animated, { FadeIn } from 'react-native-reanimated';
+import { makeStyles, useTheme } from '../../../shared/theme/ThemeProvider';
+import { useT } from '../../../shared/i18n';
+import { Avatar, Button, Glyph, GlyphName, IconButton, Pressy, Toggle } from '../../../shared/ui';
 
-export function EntityAvatar({
-  name,
-  dataUri,
-  size = 48,
-  icon,
-}: {
-  name: string;
-  dataUri?: string | null;
-  size?: number;
-  icon?: keyof typeof Ionicons.glyphMap;
-}) {
-  const box = { width: size, height: size, borderRadius: size / 2 };
-  if (dataUri) return <Image source={{ uri: dataUri }} style={[styles.avatar, box]} accessibilityIgnoresInvertColors />;
-  return (
-    <View style={[styles.avatar, box]}>
-      {icon ? (
-        <Ionicons name={icon} size={size * 0.45} color={Colors.accentLight} />
-      ) : (
-        <Text style={[styles.avatarText, { fontSize: size * 0.4 }]}>{(name.trim()[0] || '?').toUpperCase()}</Text>
-      )}
-    </View>
-  );
+export function EntityAvatar({ name, dataUri, size = 48, icon }: { name: string; dataUri?: string | null; size?: number; icon?: GlyphName }) {
+  const { c } = useTheme();
+  const radius = Math.round(size * 0.3);
+  if (dataUri) {
+    return <Image source={{ uri: dataUri }} style={{ width: size, height: size, borderRadius: radius, backgroundColor: c.raised }} accessibilityIgnoresInvertColors />;
+  }
+  if (icon && !name.trim()) {
+    return (
+      <View style={{ width: size, height: size, borderRadius: radius, backgroundColor: c.accentTint, borderWidth: 1, borderColor: c.accentTint2, alignItems: 'center', justifyContent: 'center' }}>
+        <Glyph name={icon} size={size * 0.45} color={c.accentText} />
+      </View>
+    );
+  }
+  return <Avatar name={name || '?'} size={size} square />;
 }
 
-export function AdminsOnlyNotice({ text = 'Only admins can send messages' }: { text?: string }) {
+export function AdminsOnlyNotice({ text }: { text?: string }) {
+  const { c } = useTheme();
+  const s = useStyles();
+  const t = useT();
   return (
-    <View style={styles.notice} accessibilityRole="text">
-      <Ionicons name="megaphone-outline" size={16} color={Colors.textSecondary} />
-      <Text style={styles.noticeText}>{text}</Text>
-    </View>
+    <Animated.View entering={FadeIn} style={s.notice} accessibilityRole="text">
+      <Glyph name="megaphone" size={16} color={c.muted} />
+      <Text style={s.noticeText}>{text ?? t('thread.adminsOnly')}</Text>
+    </Animated.View>
   );
 }
 
 export function SectionHeader({ title }: { title: string }) {
-  return <Text style={styles.sectionHeader}>{title.toUpperCase()}</Text>;
+  const { f } = useTheme();
+  const s = useStyles();
+  if (!title) return <View style={{ height: 18 }} />;
+  return <Text style={s.sectionHeader}>{f.script === 'latin' ? title.toUpperCase() : title}</Text>;
 }
 
 export function Row({
@@ -54,7 +54,7 @@ export function Row({
   right,
   disabled,
 }: {
-  icon?: keyof typeof Ionicons.glyphMap;
+  icon?: GlyphName;
   label: string;
   sublabel?: string | null;
   onPress?: () => void;
@@ -62,69 +62,50 @@ export function Row({
   right?: React.ReactNode;
   disabled?: boolean;
 }) {
-  const color = danger ? Colors.error : Colors.textPrimary;
+  const { c, type } = useTheme();
+  const s = useStyles();
   const content = (
-    <View style={[styles.row, disabled && { opacity: 0.5 }]}>
-      {icon && <Ionicons name={icon} size={20} color={danger ? Colors.error : Colors.accent} style={styles.rowIcon} />}
-      <View style={{ flex: 1 }}>
-        <Text style={[styles.rowLabel, { color }]}>{label}</Text>
-        {!!sublabel && <Text style={styles.rowSub}>{sublabel}</Text>}
+    <View style={[s.row, disabled && { opacity: 0.5 }]}>
+      {icon && (
+        <View style={[s.rowIcon, danger && { backgroundColor: c.dangerTint }]}>
+          <Glyph name={icon} size={18} color={danger ? c.danger : c.accentText} />
+        </View>
+      )}
+      <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+        <Text style={[s.rowLabel, danger && { color: c.danger }]} numberOfLines={2}>
+          {label}
+        </Text>
+        {!!sublabel && <Text style={type.caption}>{sublabel}</Text>}
       </View>
-      {right}
+      {right ?? (onPress && !danger ? <Glyph name="forwardChevron" size={17} color={c.faint} /> : null)}
     </View>
   );
   return onPress ? (
-    <TouchableOpacity onPress={onPress} disabled={disabled} activeOpacity={0.7}>
+    <Pressy onPress={onPress} disabled={disabled} scaleTo={0.985} hoverStyle={{ backgroundColor: c.tint }} style={s.rowPress} accessibilityLabel={label}>
       {content}
-    </TouchableOpacity>
+    </Pressy>
   ) : (
-    content
+    <View style={s.rowPress}>{content}</View>
   );
 }
 
-export function ToggleRow({
-  label,
-  sublabel,
-  value,
-  onChange,
-  disabled,
-}: {
-  label: string;
-  sublabel?: string;
-  value: boolean;
-  onChange: (v: boolean) => void;
-  disabled?: boolean;
-}) {
-  return (
-    <Row
-      label={label}
-      sublabel={sublabel}
-      disabled={disabled}
-      right={
-        <Switch
-          value={value}
-          onValueChange={onChange}
-          disabled={disabled}
-          trackColor={{ true: Colors.accent, false: Colors.surfaceHighlight }}
-          thumbColor={Colors.white}
-        />
-      }
-    />
-  );
+export function ToggleRow({ label, sublabel, value, onChange, disabled }: { label: string; sublabel?: string; value: boolean; onChange: (v: boolean) => void; disabled?: boolean }) {
+  return <Row label={label} sublabel={sublabel} disabled={disabled} right={<Toggle label={label} value={value} onValueChange={onChange} disabled={disabled} />} />;
 }
 
 export function ScreenHeader({ title, subtitle, onBack, right }: { title: string; subtitle?: string; onBack: () => void; right?: React.ReactNode }) {
+  const { type } = useTheme();
+  const s = useStyles();
+  const t = useT();
   return (
-    <View style={styles.header}>
-      <TouchableOpacity onPress={onBack} style={styles.backBtn} accessibilityLabel="Back">
-        <Ionicons name="arrow-back" size={22} color={Colors.textPrimary} />
-      </TouchableOpacity>
-      <View style={{ flex: 1 }}>
-        <Text style={styles.headerTitle} numberOfLines={1}>
+    <View style={s.header}>
+      <IconButton icon="back" label={t('common.back')} onPress={onBack} />
+      <View style={{ flex: 1, minWidth: 0 }}>
+        <Text style={[type.name, { fontSize: 18 }]} numberOfLines={1} accessibilityRole="header">
           {title}
         </Text>
         {!!subtitle && (
-          <Text style={styles.headerSub} numberOfLines={1}>
+          <Text style={type.caption} numberOfLines={1}>
             {subtitle}
           </Text>
         )}
@@ -134,147 +115,73 @@ export function ScreenHeader({ title, subtitle, onBack, right }: { title: string
   );
 }
 
-export function Banner({ icon, text, tone = 'info' }: { icon: keyof typeof Ionicons.glyphMap; text: string; tone?: 'info' | 'warning' }) {
-  const color = tone === 'warning' ? Colors.warning : Colors.accent;
+export function Banner({ icon, text, tone = 'info' }: { icon: GlyphName; text: string; tone?: 'info' | 'warning' }) {
+  const { c } = useTheme();
+  const s = useStyles();
+  const warn = tone === 'warning';
   return (
-    <View style={[styles.banner, { borderColor: color }]}>
-      <Ionicons name={icon} size={14} color={color} />
-      <Text style={styles.bannerText}>{text}</Text>
+    <View style={[s.banner, warn && { backgroundColor: c.dangerTint, borderColor: c.dangerTint }]}>
+      <View style={[s.bannerIcon, warn && { backgroundColor: c.raised }]}>
+        <Glyph name={icon} size={15} color={warn ? c.danger : c.accentText} />
+      </View>
+      <Text style={s.bannerText}>{text}</Text>
     </View>
   );
 }
 
 export function PrimaryButton({ label, onPress, disabled, danger }: { label: string; onPress: () => void; disabled?: boolean; danger?: boolean }) {
-  return (
-    <TouchableOpacity
-      style={[styles.primaryBtn, danger && { backgroundColor: Colors.error }, disabled && { opacity: 0.5 }]}
-      onPress={onPress}
-      disabled={disabled}
-      activeOpacity={0.85}
-    >
-      <Text style={styles.primaryBtnText}>{label}</Text>
-    </TouchableOpacity>
-  );
+  return <Button label={label} onPress={onPress} disabled={disabled} variant={danger ? 'danger' : 'primary'} size="md" style={{ marginHorizontal: 16, marginVertical: 8 }} />;
 }
 
-export const groupStyles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: Colors.background },
-  scroll: { paddingBottom: Spacing['3xl'] },
-  centered: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: Spacing.xl, gap: Spacing.md },
-  hero: { alignItems: 'center', paddingVertical: Spacing.xl, gap: Spacing.sm, paddingHorizontal: Spacing.base },
-  heroTitle: { fontSize: Typography.xl, fontWeight: Typography.bold, color: Colors.textPrimary, textAlign: 'center' },
-  heroSub: { fontSize: Typography.sm, color: Colors.textSecondary, textAlign: 'center' },
-  body: { fontSize: Typography.base, color: Colors.textPrimary, lineHeight: 21 },
-  muted: { fontSize: Typography.sm, color: Colors.textTertiary },
+/** Layout styles for the group-family screens. Content is centred and capped for desktop. */
+export const useGroupStyles = makeStyles((c, t, f) => ({
+  container: { flex: 1, backgroundColor: c.bg },
+  scroll: { paddingBottom: 48, width: '100%', maxWidth: 760, alignSelf: 'center' },
+  centered: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24, gap: 12 },
+  hero: { alignItems: 'center', paddingVertical: 24, gap: 8, paddingHorizontal: 16 },
+  heroTitle: { ...t.h2, textAlign: 'center' },
+  heroSub: { ...t.bodyMuted, textAlign: 'center', maxWidth: 480 },
+  body: { ...t.body },
+  muted: { ...t.caption, textAlign: 'center' },
   input: {
-    backgroundColor: Colors.inputBackground,
-    borderColor: Colors.inputBorder,
+    backgroundColor: c.field,
+    borderColor: c.line2,
     borderWidth: 1,
-    borderRadius: BorderRadius.md,
-    color: Colors.textPrimary,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.sm,
-    fontSize: Typography.base,
-    marginHorizontal: Spacing.base,
-    marginBottom: Spacing.sm,
-  },
-  card: {
-    backgroundColor: Colors.surface,
-    borderRadius: BorderRadius.lg,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    marginHorizontal: Spacing.base,
-    marginBottom: Spacing.sm,
-    padding: Spacing.md,
-  },
-  chip: {
-    paddingHorizontal: Spacing.md,
-    paddingVertical: 6,
-    borderRadius: BorderRadius.full,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    backgroundColor: Colors.surface,
-  },
-  chipActive: { borderColor: Colors.accent, backgroundColor: Colors.accentSubtle },
-  chipText: { color: Colors.textSecondary, fontSize: Typography.sm },
-  chipTextActive: { color: Colors.accentLight, fontWeight: Typography.semibold },
-});
+    borderRadius: 14,
+    color: c.text,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontFamily: f.body,
+    fontSize: 15,
+    marginHorizontal: 16,
+    marginBottom: 10,
+    outlineStyle: 'none',
+  } as any,
+  card: { backgroundColor: c.panel, borderRadius: 20, borderWidth: 1, borderColor: c.line, marginHorizontal: 16, marginBottom: 10, padding: 14 },
+  chip: { paddingHorizontal: 14, height: 36, justifyContent: 'center', borderRadius: 18, borderWidth: 1, borderColor: c.line2, backgroundColor: c.raised },
+  chipActive: { borderColor: c.text, backgroundColor: c.text },
+  chipText: { fontFamily: f.medium, color: c.muted, fontSize: 13.5 },
+  chipTextActive: { color: c.bg, fontFamily: f.semibold },
+  sheetTitle: { ...t.h3, paddingHorizontal: 4 },
+}));
 
-const styles = StyleSheet.create({
-  avatar: {
-    backgroundColor: Colors.accentSubtle,
-    borderWidth: 1,
-    borderColor: Colors.borderAccent,
-    alignItems: 'center',
-    justifyContent: 'center',
-    overflow: 'hidden',
-  },
-  avatarText: { color: Colors.accentLight, fontWeight: Typography.bold },
-  notice: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: Spacing.sm,
-    paddingVertical: Spacing.md,
-    paddingHorizontal: Spacing.base,
-    borderTopWidth: 1,
-    borderTopColor: Colors.divider,
-    backgroundColor: Colors.surface,
-  },
-  noticeText: { color: Colors.textSecondary, fontSize: Typography.sm },
-  sectionHeader: {
-    fontSize: 11,
-    fontWeight: Typography.bold,
-    color: Colors.textTertiary,
-    letterSpacing: 0.8,
-    paddingHorizontal: Spacing.base,
-    paddingTop: Spacing.lg,
-    paddingBottom: Spacing.sm,
-  },
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: Spacing.base,
-    paddingVertical: Spacing.md,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: Colors.divider,
-    gap: Spacing.md,
-  },
-  rowIcon: { width: 22 },
-  rowLabel: { fontSize: Typography.base, fontWeight: Typography.medium },
-  rowSub: { fontSize: Typography.xs, color: Colors.textSecondary, marginTop: 2 },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: Spacing.sm,
-    paddingVertical: Spacing.sm,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-    gap: Spacing.sm,
-  },
-  backBtn: { padding: Spacing.sm },
-  headerTitle: { fontSize: Typography.md, fontWeight: Typography.bold, color: Colors.textPrimary },
-  headerSub: { fontSize: Typography.xs, color: Colors.textSecondary },
-  banner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
-    marginHorizontal: Spacing.base,
-    marginVertical: Spacing.sm,
-    padding: Spacing.sm,
-    borderRadius: BorderRadius.md,
-    borderWidth: 1,
-    backgroundColor: Colors.surface,
-  },
-  bannerText: { flex: 1, fontSize: Typography.xs, color: Colors.textSecondary },
-  primaryBtn: {
-    backgroundColor: Colors.accent,
-    borderRadius: BorderRadius.full,
-    paddingVertical: Spacing.md,
-    paddingHorizontal: Spacing.xl,
-    alignItems: 'center',
-    marginHorizontal: Spacing.base,
-    marginVertical: Spacing.sm,
-  },
-  primaryBtnText: { color: Colors.white, fontWeight: Typography.bold, fontSize: Typography.base },
-});
+const useStyles = makeStyles((c, t, f) => ({
+  notice: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 16, paddingHorizontal: 16, borderTopWidth: 1, borderTopColor: c.line, backgroundColor: c.panel },
+  noticeText: { fontFamily: f.medium, fontSize: 13.5, color: c.muted },
+  sectionHeader: { ...t.eyebrow, paddingHorizontal: 20, paddingTop: 22, paddingBottom: 8 },
+  rowPress: { marginHorizontal: 8, borderRadius: 16 },
+  row: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 10, minHeight: 58, gap: 13 },
+  rowIcon: { width: 38, height: 38, borderRadius: 12, alignItems: 'center', justifyContent: 'center', backgroundColor: c.raised },
+  rowLabel: { fontFamily: f.medium, fontSize: 15.5, color: c.text },
+  header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, paddingVertical: 8, gap: 6, borderBottomWidth: 1, borderBottomColor: c.line },
+  banner: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, marginHorizontal: 16, marginVertical: 8, padding: 12, borderRadius: 16, borderWidth: 1, borderColor: c.accentTint2, backgroundColor: c.accentTint },
+  bannerIcon: { width: 28, height: 28, borderRadius: 9, backgroundColor: c.raised, alignItems: 'center', justifyContent: 'center' },
+  bannerText: { flex: 1, fontFamily: f.body, fontSize: 13, lineHeight: f.script === 'latin' ? 19 : 22, color: c.muted, paddingTop: 4 },
+}));
+
+const INVITE_STATUSES = new Set(['joined', 'already_member', 'requested', 'already_requested', 'following', 'revoked', 'expired', 'full', 'group_full', 'rate_limited']);
+
+/** Translated message for an invite/join result status. */
+export function inviteStatusText(t: (k: string) => string, status: string): string {
+  return t(`join.status_${INVITE_STATUSES.has(status) ? status : 'invalid'}`);
+}

@@ -215,7 +215,7 @@ interface ButtonProps {
   variant?: ButtonVariant;
   loading?: boolean;
   disabled?: boolean;
-  size?: 'md' | 'lg';
+  size?: 'sm' | 'md' | 'lg';
   style?: StyleProp<ViewStyle>;
 }
 
@@ -240,7 +240,7 @@ export function Button({ label, onPress, icon, iconRight, variant = 'primary', l
   const { c, type } = useTheme();
   const s = useStyles();
   const v = buttonColors(c, variant);
-  const h = size === 'lg' ? 54 : 44;
+  const h = size === 'lg' ? 54 : size === 'md' ? 44 : 34;
   return (
     <Pressy
       onPress={onPress}
@@ -251,7 +251,8 @@ export function Button({ label, onPress, icon, iconRight, variant = 'primary', l
       hoverStyle={{ backgroundColor: v.hover }}
       style={[
         s.button,
-        { height: h, backgroundColor: v.bg, borderRadius: size === 'lg' ? 16 : 13 },
+        { height: h, backgroundColor: v.bg, borderRadius: size === 'lg' ? 16 : size === 'md' ? 13 : 10 },
+        size === 'sm' && { paddingHorizontal: 12, gap: 6 },
         v.border ? { borderWidth: 1, borderColor: v.border } : null,
         (disabled || loading) && { opacity: 0.55 },
         style,
@@ -261,8 +262,8 @@ export function Button({ label, onPress, icon, iconRight, variant = 'primary', l
         <ActivityIndicator color={v.fg} size="small" />
       ) : (
         <>
-          {icon && <Icon name={icon} size={19} color={v.fg} />}
-          <Text style={[type.button, { color: v.fg, fontSize: size === 'lg' ? 15.5 : 14 }]} numberOfLines={1}>
+          {icon && <Icon name={icon} size={size === 'sm' ? 15 : 19} color={v.fg} />}
+          <Text style={[type.button, { color: v.fg, fontSize: size === 'lg' ? 15.5 : size === 'md' ? 14 : 13 }]} numberOfLines={1}>
             {label}
           </Text>
           {iconRight && <Icon name={iconRight} size={19} color={v.fg} />}
