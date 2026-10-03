@@ -26,6 +26,7 @@ import {
 import { MessagePayload, parsePayload, serverTypeFor, timerLabel } from '../../shared/models/payload';
 import { keyDirectory } from '../keys/KeyDirectory';
 import { useSettingsStore } from '../settings/useSettingsStore';
+import { receiptKindToSend, visibleStatus } from '../settings/privacy';
 import { computeStatus } from './status';
 
 export const PAGE_SIZE = 50;
@@ -379,7 +380,7 @@ class MessageRepository {
   // ── Receipts ───────────────────────────────────────────────────────────────
 
   async markReceipt(conversationId: string, kind: 'delivered' | 'read'): Promise<void> {
-    if (kind === 'read' && !useSettingsStore.getState().readReceipts) kind = 'delivered';
+    kind = receiptKindToSend(kind, useSettingsStore.getState());
     const { error } = await supabase.rpc('mark_conversation_receipt', {
       p_conversation_id: conversationId,
       p_kind: kind,
@@ -389,7 +390,8 @@ class MessageRepository {
 
   /** Status of one of OUR messages, derived from the other members' watermarks. */
   statusFor(message: Message, members: ConversationMember[], myUserId: string): MessageStatus {
-    return computeStatus(message, members, myUserId);
+    // Read receipts off: other people's read ticks are hidden too (reciprocal).
+    return visibleStatus(computeStatus(message, members, myUserId), useSettingsStore.getState());
   }
 }
 

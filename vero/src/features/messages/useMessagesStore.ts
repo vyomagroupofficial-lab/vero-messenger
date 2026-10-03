@@ -14,6 +14,7 @@ import { MessagePayload } from '../../shared/models/payload';
 import { conversationRepository } from '../chats/ConversationRepository';
 import { memberNames, useChatsStore } from '../chats/useChatsStore';
 import { useSettingsStore } from '../settings/useSettingsStore';
+import { mayBroadcastTyping } from '../settings/privacy';
 import { messageRepository, SendOptions, ServerMessageRow } from './MessageRepository';
 
 const TYPING_TTL_MS = 6000;
@@ -259,7 +260,7 @@ export const useMessagesStore = create<MessagesState>((set, get) => {
     sendTyping: (conversationId, isTyping) => {
       const channel = channels[conversationId];
       const session = currentSession();
-      if (!channel || !session || !useSettingsStore.getState().typingIndicators) return;
+      if (!channel || !session || !mayBroadcastTyping(useSettingsStore.getState())) return;
       void channel.send({ type: 'broadcast', event: 'typing', payload: { userId: session.userId, typing: isTyping } });
     },
 

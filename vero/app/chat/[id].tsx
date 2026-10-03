@@ -41,6 +41,10 @@ import { Colors, Typography, Spacing, BorderRadius } from '../../src/shared/them
 import { useGroupChatSync } from '../../src/features/groups/useGroupChatSync';
 import { groupRepository } from '../../src/features/groups/GroupRepository';
 import { AdminsOnlyNotice } from '../../src/features/groups/components/GroupComponents';
+import { usePresence } from '../../src/features/presence/usePresence';
+import { presenceSubtitle } from '../../src/features/presence/format';
+import { useConversationMute } from '../../src/features/notifications/useMuteStore';
+import { MUTE_OPTIONS } from '../../src/features/notifications/mute';
 
 const REACTION_EMOJIS = ['❤️', '😂', '👍', '🔥', '😮', '😢'];
 const TYPING_SEND_INTERVAL_MS = 3000;
@@ -356,6 +360,8 @@ export default function ChatScreen() {
   const otherUser = conversation?.otherUser;
   const title = conversation ? conversationTitle(conversation) : 'Loading…';
   const groupChat = useGroupChatSync(conversationId, isGroup && !isDemo);
+  const presence = usePresence(!isGroup && !isDemo ? otherUser?.id : null);
+  const mute = useConversationMute(conversationId);
 
   // Typing users (expire automatically)
   const now = Date.now();
@@ -524,6 +530,21 @@ export default function ChatScreen() {
     );
   };
 
+  const chooseMute = () => {
+    setShowMenuModal(false);
+    const fail = (e: unknown) => Alert.alert('Could not change notifications', friendlyError(e));
+    Alert.alert(
+      mute.isMuted ? mute.label ?? 'Muted' : 'Mute notifications',
+      'Muted chats never send push notifications. Messages still arrive.',
+      [
+        ...(mute.isMuted
+          ? [{ text: 'Unmute', onPress: () => void mute.unmute().catch(fail) }]
+          : MUTE_OPTIONS.map((o) => ({ text: o.label, onPress: () => void mute.mute(o.value).catch(fail) }))),
+        { text: 'Cancel', style: 'cancel' as const },
+      ]
+    );
+  };
+
   const leaveGroup = () => {
     setShowMenuModal(false);
     if (!user) return;
@@ -548,7 +569,7 @@ export default function ChatScreen() {
     ? `${typingNames.join(', ')} typing…`
     : isGroup
       ? `${members.length} members · end-to-end encrypted`
-      : 'End-to-end encrypted · tap to verify';
+      : presenceSubtitle(presence) ?? 'End-to-end encrypted · tap to verify';
 
   const canDeleteForEveryone =
     !!actionMessage?.isOwn && actionMessage.status !== 'failed' && actionMessage.status !== 'sending';
@@ -826,6 +847,11 @@ export default function ChatScreen() {
                 <Text style={styles.menuItemText}>Verify safety number</Text>
               </TouchableOpacity>
             )}
+
+            <TouchableOpacity style={styles.menuItem} onPress={chooseMute}>
+              <Ionicons name={mute.isMuted ? 'notifications-off-outline' : 'notifications-outline'} size={20} color={Colors.accent} />
+              <Text style={styles.menuItemText}>{mute.isMuted ? `Unmute (${mute.label})` : 'Mute notifications'}</Text>
+            </TouchableOpacity>
 
             <TouchableOpacity style={styles.menuItem} onPress={chooseTimer}>
               <Ionicons name="timer-outline" size={20} color={Colors.warning} />
