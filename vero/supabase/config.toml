@@ -1,0 +1,10 @@
+# Supabase CLI config (only the settings Vero relies on).
+project_id = "vero"
+
+# These two are called by a Database Webhook / scheduler and authenticate with
+# their own shared secrets (PUSH_WEBHOOK_SECRET / CRON_SECRET), not user JWTs.
+[functions.send-push]
+verify_jwt = false
+
+[functions.cleanup-expired]
+verify_jwt = false
