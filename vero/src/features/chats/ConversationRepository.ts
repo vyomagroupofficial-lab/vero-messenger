@@ -5,12 +5,19 @@
 
 import { supabase } from '../../core/network/supabase';
 import { databaseService } from '../../core/storage/DatabaseService';
+import { messagingStore } from '../../core/storage/messagingStore';
 import {
   Conversation,
   ConversationMember,
   User,
-  messagePreview,
 } from '../../shared/models/Message';
+import { computeStatus } from '../messages/status';
+import { computeUnreadCount, previewBody, previewLine, sortConversations } from './chatList';
+
+interface ChatPrefs {
+  pinnedAt: string | null;
+  archivedAt: string | null;
+}
 import { applyDefaultDisappearing } from '../settings/defaultDisappearing';
 
 function toUser(p: any): User {
@@ -24,16 +31,31 @@ function toUser(p: any): User {
 }
 
 class ConversationRepository {
+  /** Read watermark last applied to local is_read flags, per conversation. */
+  private appliedReadMarks = new Map<string, string>();
+
+  /** Own pin/archive state (006 conversation_prefs). Missing table = feature unavailable. */
+  private async getPrefs(): Promise<Map<string, ChatPrefs>> {
+    const { data, error } = await supabase.from('conversation_prefs').select('conversation_id, pinned_at, archived_at');
+    if (error || !data) return new Map();
+    return new Map(
+      (data as any[]).map((r) => [r.conversation_id as string, { pinnedAt: r.pinned_at ?? null, archivedAt: r.archived_at ?? null }])
+    );
+  }
+
   /** Server conversations + locally decrypted previews/unread counts. */
   async getConversations(currentUserId: string): Promise<Conversation[]> {
-    const { data, error } = await supabase
-      .from('conversations')
-      .select(
-        `id, conversation_type, group_name, created_at, updated_at,
-         conversation_members ( user_id, role, left_at, last_delivered_at, last_read_at,
-           profiles ( id, username, display_name, avatar_reference, about ) )`
-      )
-      .order('updated_at', { ascending: false });
+    // conversation_members(*): optional columns owned by other features (e.g. muted_until) show up when present.
+    const [{ data, error }, prefs] = await Promise.all([
+      supabase
+        .from('conversations')
+        .select(
+          `id, conversation_type, group_name, created_at, updated_at,
+           conversation_members ( *, profiles ( id, username, display_name, avatar_reference, about ) )`
+        )
+        .order('updated_at', { ascending: false }),
+      this.getPrefs(),
+    ]);
     if (error) throw error;
 
     const conversations: Conversation[] = (data || []).map((raw: any) => {
@@ -46,6 +68,8 @@ class ConversationRepository {
           lastDeliveredAt: m.last_delivered_at,
           lastReadAt: m.last_read_at,
         }));
+      const mine = (raw.conversation_members || []).find((m: any) => m.user_id === currentUserId);
+      const pref = prefs.get(raw.id);
       return {
         id: raw.id,
         conversationType: raw.conversation_type,
@@ -56,6 +80,9 @@ class ConversationRepository {
         unreadCount: 0,
         createdAt: raw.created_at,
         updatedAt: raw.updated_at,
+        pinnedAt: pref?.pinnedAt ?? null,
+        archivedAt: pref?.archivedAt ?? null,
+        ...(mine && 'muted_until' in mine ? { mutedUntil: mine.muted_until ?? null } : {}),
       };
     });
 
@@ -69,26 +96,59 @@ class ConversationRepository {
   }
 
   private async withLocalState(list: Conversation[], currentUserId: string): Promise<Conversation[]> {
-    const [lastMessages, unread] = await Promise.all([
+    // My read watermark is per account: messages read on another of my devices are read here too.
+    for (const c of list) {
+      const mark = c.members.find((m) => m.id === currentUserId)?.lastReadAt;
+      if (mark && this.appliedReadMarks.get(c.id) !== mark) {
+        await messagingStore.markReadUpTo(c.id, mark);
+        this.appliedReadMarks.set(c.id, mark);
+      }
+    }
+    const [lastMessages, unreadCandidates] = await Promise.all([
       databaseService.getLastMessages(),
-      databaseService.getUnreadCounts(),
+      messagingStore.getUnreadCandidates(),
     ]);
-    return list.map((c) => {
-      const last = lastMessages[c.id];
-      return {
-        ...c,
-        unreadCount: unread[c.id] || 0,
-        lastMessage: last
-          ? {
-              content: messagePreview(last.messageType, last.content),
-              messageType: last.messageType,
-              senderName: last.senderUserId === currentUserId ? 'You' : last.senderName,
-              createdAt: last.createdAt,
-              isOwn: last.senderUserId === currentUserId,
-            }
-          : undefined,
-      };
+    const nowIso = new Date().toISOString();
+    return sortConversations(
+      list.map((c) => {
+        const last = lastMessages[c.id];
+        const isOwn = last?.senderUserId === currentUserId;
+        return {
+          ...c,
+          unreadCount: computeUnreadCount(
+            unreadCandidates[c.id] ?? [],
+            c.members.find((m) => m.id === currentUserId)?.lastReadAt,
+            nowIso
+          ),
+          lastMessage: last
+            ? {
+                content: previewBody({ ...last, isOwn }),
+                preview: previewLine({ ...last, isOwn }, c.conversationType === 'group'),
+                messageType: last.messageType,
+                senderName: isOwn ? 'You' : last.senderName,
+                createdAt: last.createdAt,
+                isOwn,
+                status: isOwn ? computeStatus({ ...last, isOwn }, c.members, currentUserId) : undefined,
+              }
+            : undefined,
+        };
+      })
+    );
+  }
+
+  async setPinned(conversationId: string, pinned: boolean): Promise<string | null> {
+    const { data, error } = await supabase.rpc('pin_conversation', { p_conversation_id: conversationId, p_pinned: pinned });
+    if (error) throw error;
+    return (data as string | null) ?? null;
+  }
+
+  async setArchived(conversationId: string, archived: boolean): Promise<string | null> {
+    const { data, error } = await supabase.rpc('archive_conversation', {
+      p_conversation_id: conversationId,
+      p_archived: archived,
     });
+    if (error) throw error;
+    return (data as string | null) ?? null;
   }
 
   async getConversation(conversationId: string, currentUserId: string): Promise<Conversation | null> {

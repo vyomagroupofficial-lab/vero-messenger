@@ -44,6 +44,15 @@ import { Colors, Typography, Spacing, BorderRadius } from '../../src/shared/them
 import { useGroupChatSync } from '../../src/features/groups/useGroupChatSync';
 import { groupRepository } from '../../src/features/groups/GroupRepository';
 import { AdminsOnlyNotice } from '../../src/features/groups/components/GroupComponents';
+import { useChatMessaging } from '../../src/features/messages/useChatMessaging';
+import { ForwardSheet } from '../../src/features/messages/components/ForwardSheet';
+import { EditBanner, EditHistorySheet, SelectionBar } from '../../src/features/messages/components/ChatExtras';
+import { FooterMarkers, ForwardedLabel, RevokedBody } from '../../src/features/messages/components/MessageLabels';
+import { ChatSearchBar } from '../../src/features/search/components/ChatSearchBar';
+import { HighlightedText } from '../../src/features/search/components/HighlightedText';
+import { useChatsStore } from '../../src/features/chats/useChatsStore';
+import { chatActionOptions } from '../../src/features/chats/components/ChatRowParts';
+import { confirmAction } from '../../src/features/groups/components/ui';
 import { usePresence } from '../../src/features/presence/usePresence';
 import { presenceSubtitle } from '../../src/features/presence/format';
 import { useConversationMute } from '../../src/features/notifications/useMuteStore';
@@ -65,6 +74,13 @@ interface MessageBubbleProps {
   showSenderName: boolean;
   onLongPress: (message: Message) => void;
   onRetry: (message: Message) => void;
+  /** Multi-select mode: taps toggle selection. */
+  selecting?: boolean;
+  selected?: boolean;
+  onToggleSelect?: (message: Message) => void;
+  /** Search terms to highlight, and whether this is the focused search result. */
+  highlight?: string | null;
+  focused?: boolean;
 }
 
 const MessageBubble = React.memo(function MessageBubble({
@@ -74,9 +90,16 @@ const MessageBubble = React.memo(function MessageBubble({
   showSenderName,
   onLongPress,
   onRetry,
+  selecting,
+  selected,
+  onToggleSelect,
+  highlight,
+  focused,
 }: MessageBubbleProps) {
-  const { isOwn, content, messageType, createdAt, senderName, media, reactions } = message;
-  if (Extras.isExtensionMessageType(messageType)) return <Extras.ExtensionMessage message={message} status={status} showSenderName={showSenderName} onLongPress={onLongPress} onRetry={onRetry} />;
+  const { isOwn, content, createdAt, senderName, media, reactions } = message;
+  const revoked = !!message.revokedAt;
+  if (!revoked && Extras.isExtensionMessageType(message.messageType)) return <Extras.ExtensionMessage message={message} status={status} showSenderName={showSenderName} onLongPress={onLongPress} onRetry={onRetry} />;
+  const messageType = revoked ? 'revoked' : message.messageType;
 
   if (messageType === 'system') {
     return (
@@ -111,7 +134,13 @@ const MessageBubble = React.memo(function MessageBubble({
   }, {});
 
   return (
-    <View style={[styles.bubbleContainer, isOwn ? styles.bubbleContainerOwn : styles.bubbleContainerOther]}>
+    <View
+      style={[
+        styles.bubbleContainer,
+        isOwn ? styles.bubbleContainerOwn : styles.bubbleContainerOther,
+        selected && extra.selectedRow,
+      ]}
+    >
       {!isOwn && showAvatar && (
         <View style={styles.messageAvatar}>
           <Text style={styles.messageAvatarText}>{(senderName || '?').slice(0, 1).toUpperCase()}</Text>
@@ -120,12 +149,18 @@ const MessageBubble = React.memo(function MessageBubble({
       {!isOwn && !showAvatar && <View style={styles.avatarPlaceholder} />}
 
       <Pressable
-        onLongPress={() => onLongPress(message)}
-        onPress={status === 'failed' ? () => onRetry(message) : undefined}
+        onLongPress={() => (selecting ? onToggleSelect?.(message) : onLongPress(message))}
+        onPress={
+          selecting ? () => onToggleSelect?.(message) : status === 'failed' ? () => onRetry(message) : undefined
+        }
         delayLongPress={300}
-        style={[styles.bubble, isOwn ? styles.bubbleOwn : styles.bubbleOther]}
+        style={[styles.bubble, isOwn ? styles.bubbleOwn : styles.bubbleOther, focused && extra.focusedBubble]}
       >
         {showSenderName && !isOwn && <Text style={extra.senderName}>{senderName}</Text>}
+
+        {!revoked && <ForwardedLabel hops={message.forwardCount} />}
+
+        {revoked && <RevokedBody isOwn={isOwn} />}
 
         {message.replyPreview ? (
           <View style={styles.replyPreview}>
@@ -137,7 +172,11 @@ const MessageBubble = React.memo(function MessageBubble({
         ) : null}
 
         {messageType === 'text' && (
-          <Text style={[styles.messageText, isOwn ? styles.messageTextOwn : styles.messageTextOther]}>{content}</Text>
+          <HighlightedText
+            style={[styles.messageText, isOwn ? styles.messageTextOwn : styles.messageTextOther]}
+            text={content ?? ''}
+            query={highlight}
+          />
         )}
 
         {messageType === 'unavailable' && (
@@ -160,6 +199,7 @@ const MessageBubble = React.memo(function MessageBubble({
             <Ionicons name="timer-outline" size={11} color={Colors.textTertiary} style={styles.timerIcon} />
           )}
           {status === 'failed' && <Text style={extra.failedText}>Not sent · tap to retry</Text>}
+          <FooterMarkers message={message} />
           <Text style={[styles.messageTime, isOwn ? styles.timeOwn : styles.timeOther]}>
             {dayjs(createdAt).format('HH:mm')}
           </Text>
@@ -222,7 +262,11 @@ function TypingIndicator() {
 // ──────────────────────────────────────────────────────────────────────────
 
 export default function ChatScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, messageId: jumpMessageId, q: jumpQuery } = useLocalSearchParams<{
+    id: string;
+    messageId?: string;
+    q?: string;
+  }>();
   const conversationId = id ?? '';
   const user = useAuthStore((s) => s.user);
   const isDemo = useAuthStore((s) => s.isDemo);
@@ -237,6 +281,9 @@ export default function ChatScreen() {
   const [showAttachModal, setShowAttachModal] = useState(false);
   const [showMenuModal, setShowMenuModal] = useState(false);
   const [, forceTick] = useState(0);
+  const messaging = useChatMessaging(conversationId, user?.id);
+  const listRef = useRef<FlatList<Message>>(null);
+  const chatListEntry = useChatsStore((s) => s.conversations.find((c) => c.id === conversationId) ?? null);
 
   const lastTypingSent = useRef(0);
   const typingIdle = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -288,6 +335,23 @@ export default function ChatScreen() {
   // Newest first for the inverted list.
   const listData = useMemo(() => [...messages].reverse(), [messages]);
 
+  // Opened from search / starred: jump to that message once the chat has loaded.
+  const jumped = useRef(false);
+  useEffect(() => {
+    if (!jumpMessageId || jumped.current || !chat || chat.isLoading) return;
+    jumped.current = true;
+    void useMessagesStore.getState().jumpTo(conversationId, jumpMessageId);
+  }, [jumpMessageId, chat?.isLoading, conversationId]);
+
+  // Scroll to the focused message (search result / jump target).
+  const focusId = messaging.focusMessageId;
+  useEffect(() => {
+    if (!focusId) return;
+    const index = listData.findIndex((m) => m.id === focusId);
+    if (index >= 0) listRef.current?.scrollToIndex({ index, animated: true, viewPosition: 0.5 });
+  }, [focusId, listData.length]);
+  const highlight = messaging.searchOpen ? messaging.search.query : jumpQuery ?? null;
+
   const statusOf = useCallback(
     (m: Message) => (user ? messageRepository.statusFor(m, members, user.id) : m.status),
     [members, user]
@@ -316,6 +380,13 @@ export default function ChatScreen() {
   };
 
   const handleSend = async () => {
+    if (messaging.editing) {
+      const text = inputText;
+      setInputText('');
+      stopTyping();
+      if (!(await messaging.submitEdit(text))) setInputText(text);
+      return;
+    }
     const text = inputText.trim();
     if (!text || !conversationId) return;
     setInputText('');
@@ -329,6 +400,13 @@ export default function ChatScreen() {
   };
 
   const handleRetry = (message: Message) => {
+    if (Platform.OS === 'web') {
+      // react-native-web's Alert ignores buttons.
+      void confirmAction('Message not sent', 'Try sending it again?', 'Retry').then((ok) => {
+        if (ok) void retry(message);
+      });
+      return;
+    }
     Alert.alert('Message not sent', 'Try sending it again?', [
       { text: 'Delete', style: 'destructive', onPress: () => void deleteMessage(message, false) },
       { text: 'Cancel', style: 'cancel' },
@@ -382,6 +460,17 @@ export default function ChatScreen() {
       await react(target, mine?.emoji === emoji ? null : emoji);
     } catch (e) {
       Alert.alert('Reaction not sent', friendlyError(e));
+    }
+  };
+
+  const handleEdit = () => {
+    const target = actionMessage;
+    setActionMessage(null);
+    if (!target) return;
+    const prefill = messaging.startEdit(target);
+    if (prefill !== null) {
+      setReplyTo(null);
+      setInputText(prefill);
     }
   };
 
@@ -464,12 +553,34 @@ export default function ChatScreen() {
       ? `${members.length} members · end-to-end encrypted`
       : presenceSubtitle(presence) ?? 'End-to-end encrypted · tap to verify';
 
-  const canDeleteForEveryone =
-    !!actionMessage?.isOwn && actionMessage.status !== 'failed' && actionMessage.status !== 'sending';
+  const canDeleteForEveryone = messaging.canDeleteEveryone(actionMessage);
+  const actionRevoked = !!actionMessage?.revokedAt;
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
-      {/* Header */}
+      {messaging.selecting ? (
+        <SelectionBar
+          count={messaging.selectedMessages.length}
+          allStarred={messaging.selectedMessages.length > 0 && messaging.selectedMessages.every((m) => m.starred)}
+          canForward={messaging.selectedMessages.length > 0}
+          onCancel={messaging.clearSelection}
+          onStar={() => void messaging.toggleStar(messaging.selectedMessages)}
+          onForward={() => messaging.openForward(messaging.selectedMessages)}
+          onCopy={() => void messaging.copySelection()}
+          onDelete={() => void messaging.deleteSelectionForMe()}
+        />
+      ) : messaging.searchOpen ? (
+        <ChatSearchBar
+          query={messaging.search.query}
+          onChangeQuery={messaging.search.setQuery}
+          index={messaging.search.index}
+          total={messaging.search.results.length}
+          searching={messaging.search.searching}
+          onOlder={messaging.search.older}
+          onNewer={messaging.search.newer}
+          onClose={messaging.closeSearch}
+        />
+      ) : (
       <View style={styles.header}>
         <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
           <Ionicons name="arrow-back" size={22} color={Colors.textPrimary} />
@@ -520,6 +631,7 @@ export default function ChatScreen() {
           </TouchableOpacity>
         </View>
       </View>
+      )}
 
       {(chat?.timerSeconds ?? 0) > 0 && (
         <View style={styles.disappearingBanner}>
@@ -543,8 +655,14 @@ export default function ChatScreen() {
           </View>
         ) : (
           <FlatList
+            ref={listRef}
             inverted
             data={listData}
+            extraData={messaging.selectedIds}
+            onScrollToIndexFailed={({ index, averageItemLength }) => {
+              listRef.current?.scrollToOffset({ offset: index * averageItemLength, animated: false });
+              setTimeout(() => listRef.current?.scrollToIndex({ index, animated: true, viewPosition: 0.5 }), 120);
+            }}
             keyExtractor={(item) => item.id}
             renderItem={({ item, index }) => {
               const older = listData[index + 1];
@@ -557,6 +675,11 @@ export default function ChatScreen() {
                   showSenderName={isGroup && showAvatar}
                   onLongPress={setActionMessage}
                   onRetry={handleRetry}
+                  selecting={messaging.selecting}
+                  selected={messaging.selectedIds.includes(item.id)}
+                  onToggleSelect={messaging.toggleSelect}
+                  highlight={highlight}
+                  focused={item.id === focusId}
                 />
               );
             }}
@@ -590,7 +713,17 @@ export default function ChatScreen() {
           />
         )}
 
-        {replyTo && (
+        {messaging.editing && (
+          <EditBanner
+            message={messaging.editing}
+            onCancel={() => {
+              messaging.cancelEdit();
+              setInputText('');
+            }}
+          />
+        )}
+
+        {replyTo && !messaging.editing && (
           <View style={styles.replyPreviewBar}>
             <View style={styles.replyPreviewContent}>
               <Ionicons name="return-up-forward" size={16} color={Colors.accent} />
@@ -631,7 +764,19 @@ export default function ChatScreen() {
             </>
           )}
 
-          {inputText.trim() ? (
+          {messaging.editing ? (
+            <TouchableOpacity
+              style={[
+                styles.sendBtn,
+                !inputText.trim() && messaging.editing.messageType === 'text' && styles.sendBtnDisabled,
+              ]}
+              onPress={handleSend}
+              disabled={!inputText.trim() && messaging.editing.messageType === 'text'}
+              accessibilityLabel="Save edit"
+            >
+              <Ionicons name="checkmark" size={18} color={Colors.white} />
+            </TouchableOpacity>
+          ) : inputText.trim() ? (
             <TouchableOpacity style={styles.sendBtn} onPress={handleSend} accessibilityLabel="Send message">
               <Ionicons name="send" size={18} color={Colors.white} />
             </TouchableOpacity>
@@ -672,7 +817,7 @@ export default function ChatScreen() {
       <Modal visible={actionMessage !== null} transparent animationType="fade" onRequestClose={() => setActionMessage(null)}>
         <Pressable style={styles.modalBackdrop} onPress={() => setActionMessage(null)}>
           <View style={styles.actionSheet}>
-            {actionMessage?.messageType !== 'unavailable' && actionMessage?.status !== 'failed' && (
+            {actionMessage?.messageType !== 'unavailable' && actionMessage?.status !== 'failed' && !actionRevoked && (
               <View style={styles.reactionsBar}>
                 {REACTION_EMOJIS.map((emoji) => (
                   <TouchableOpacity key={emoji} style={styles.reactionBtn} onPress={() => handleReact(emoji)}>
@@ -682,6 +827,7 @@ export default function ChatScreen() {
               </View>
             )}
 
+            {!actionRevoked && (
             <TouchableOpacity
               style={styles.actionRow}
               onPress={() => {
@@ -692,6 +838,70 @@ export default function ChatScreen() {
               <Ionicons name="return-up-forward" size={20} color={Colors.accent} />
               <Text style={styles.actionText}>Reply</Text>
             </TouchableOpacity>
+            )}
+
+            {messaging.canEdit(actionMessage) && (
+              <TouchableOpacity style={styles.actionRow} onPress={handleEdit}>
+                <Ionicons name="create-outline" size={20} color={Colors.accent} />
+                <Text style={styles.actionText}>Edit</Text>
+              </TouchableOpacity>
+            )}
+
+            {!!actionMessage && !actionRevoked && actionMessage.messageType !== 'system' && actionMessage.messageType !== 'unavailable' && (
+              <TouchableOpacity
+                style={styles.actionRow}
+                onPress={() => {
+                  const m = actionMessage;
+                  setActionMessage(null);
+                  messaging.openForward([m]);
+                }}
+              >
+                <Ionicons name="arrow-redo-outline" size={20} color={Colors.textPrimary} />
+                <Text style={styles.actionText}>Forward</Text>
+              </TouchableOpacity>
+            )}
+
+            {!!actionMessage && !actionRevoked && actionMessage.messageType !== 'system' && (
+              <TouchableOpacity
+                style={styles.actionRow}
+                onPress={() => {
+                  const m = actionMessage;
+                  setActionMessage(null);
+                  void messaging.toggleStar([m]);
+                }}
+              >
+                <Ionicons name={actionMessage.starred ? 'star' : 'star-outline'} size={20} color={Colors.warning} />
+                <Text style={styles.actionText}>{actionMessage.starred ? 'Unstar' : 'Star'}</Text>
+              </TouchableOpacity>
+            )}
+
+            {!!actionMessage?.editedAt && !actionRevoked && (
+              <TouchableOpacity
+                style={styles.actionRow}
+                onPress={() => {
+                  const m = actionMessage;
+                  setActionMessage(null);
+                  void messaging.showHistory(m);
+                }}
+              >
+                <Ionicons name="time-outline" size={20} color={Colors.textPrimary} />
+                <Text style={styles.actionText}>Edit history</Text>
+              </TouchableOpacity>
+            )}
+
+            {!!actionMessage && actionMessage.messageType !== 'system' && (
+              <TouchableOpacity
+                style={styles.actionRow}
+                onPress={() => {
+                  const m = actionMessage;
+                  setActionMessage(null);
+                  messaging.startSelect(m);
+                }}
+              >
+                <Ionicons name="checkmark-circle-outline" size={20} color={Colors.textPrimary} />
+                <Text style={styles.actionText}>Select</Text>
+              </TouchableOpacity>
+            )}
 
             {!!actionMessage?.content && actionMessage.messageType === 'text' && (
               <TouchableOpacity style={styles.actionRow} onPress={handleCopyText}>
@@ -739,6 +949,45 @@ export default function ChatScreen() {
               </TouchableOpacity>
             )}
 
+            <TouchableOpacity
+              style={styles.menuItem}
+              onPress={() => {
+                setShowMenuModal(false);
+                messaging.openSearch();
+              }}
+            >
+              <Ionicons name="search-outline" size={20} color={Colors.accent} />
+              <Text style={styles.menuItemText}>Search in chat</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.menuItem}
+              onPress={() => {
+                setShowMenuModal(false);
+                router.push({ pathname: '/starred', params: { conversationId } });
+              }}
+            >
+              <Ionicons name="star-outline" size={20} color={Colors.warning} />
+              <Text style={styles.menuItemText}>Starred messages</Text>
+            </TouchableOpacity>
+
+            {chatListEntry &&
+              chatActionOptions(chatListEntry)
+                .filter((o) => o.label !== 'Mark as read')
+                .map((o) => (
+                  <TouchableOpacity
+                    key={o.label}
+                    style={styles.menuItem}
+                    onPress={() => {
+                      setShowMenuModal(false);
+                      o.onPress();
+                    }}
+                  >
+                    <Ionicons name={o.icon ?? 'ellipse-outline'} size={20} color={Colors.accent} />
+                    <Text style={styles.menuItemText}>{o.label}</Text>
+                  </TouchableOpacity>
+                ))}
+
             {otherUser && (
               <TouchableOpacity
                 style={styles.menuItem}
@@ -785,11 +1034,20 @@ export default function ChatScreen() {
           </View>
         </Pressable>
       </Modal>
+      <ForwardSheet
+        visible={messaging.forwarding !== null}
+        messages={messaging.forwarding ?? []}
+        onClose={messaging.closeForward}
+        onForward={messaging.doForward}
+      />
+      <EditHistorySheet entries={messaging.history} onClose={messaging.closeHistory} />
     </SafeAreaView>
   );
 }
 
 const extra = StyleSheet.create({
+  selectedRow: { backgroundColor: 'rgba(6, 182, 212, 0.14)' },
+  focusedBubble: { borderWidth: 2, borderColor: Colors.warning },
   systemRow: { alignItems: 'center', marginVertical: 8 },
   systemText: {
     fontSize: 12,

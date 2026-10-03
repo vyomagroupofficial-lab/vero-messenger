@@ -41,6 +41,9 @@ export const TRANSFER_TABLES: Record<string, { conflict: ConflictMode; key: stri
   conversation_settings: { conflict: 'replace', key: 'conversation_id' },
   call_logs: { conflict: 'ignore', key: 'id' },
   device_keys: { conflict: 'ignore', key: 'device_id' },
+  // Messaging extras (src/core/storage/messagingSchema.ts): stars and local edit history.
+  message_stars: { conflict: 'ignore', key: 'message_id' },
+  message_edits: { conflict: 'ignore', key: 'id' },
 };
 
 const IDENT_RE = /^[a-z_][a-z0-9_]{0,39}$/;
