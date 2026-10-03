@@ -1,42 +1,48 @@
-// Supabase Edge Function: cleanup-expired
-// Cleans up expired disappearing messages and old one-time prekeys
-// Implements Section 33 & 39 of Master Plan
+// cleanup-expired: deletes expired disappearing messages and the encrypted
+// blobs of deleted/expired media.
+//
+// Schedule it (e.g. every 15 minutes) with:
+//   Authorization: Bearer <CRON_SECRET>
+// (pg_cron already runs the SQL part every 5 minutes when enabled; this
+// function additionally removes the blobs from Drive / Storage.)
 
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { adminClient, corsHeaders, errorResponse, env, json, safeEqual } from "../_shared/http.ts";
+import { deleteBlob } from "../_shared/blobStore.ts";
 
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const SUPABASE_SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const BATCH = 200;
 
-serve(async (req: Request) => {
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
+
+  const token = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
+  if (!safeEqual(token, env("CRON_SECRET"))) return errorResponse("Unauthorized", 401);
+
   try {
-    const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
+    const admin = adminClient();
 
-    // Call database cleanup function
-    const { error: cleanupError } = await supabase.rpc("cleanup_expired_messages");
-    if (cleanupError) throw cleanupError;
+    const { data: expired, error } = await admin.rpc("cleanup_expired_messages");
+    if (error) throw error;
 
-    // Delete one-time prekeys older than 30 days that have been used
-    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-    await supabase
-      .from("device_prekeys")
-      .delete()
-      .lt("created_at", thirtyDaysAgo);
+    const { data: media } = await admin
+      .from("media")
+      .select("id, storage_object_id")
+      .not("deleted_at", "is", null)
+      .limit(BATCH);
 
-    return new Response(
-      JSON.stringify({
-        success: true,
-        timestamp: new Date().toISOString(),
-      }),
-      {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
+    let blobsDeleted = 0;
+    for (const m of media ?? []) {
+      try {
+        await deleteBlob(admin, m.storage_object_id);
+        await admin.from("media").delete().eq("id", m.id);
+        blobsDeleted++;
+      } catch (e) {
+        console.error("[cleanup-expired] blob delete failed:", e instanceof Error ? e.message : "unknown");
       }
-    );
-  } catch (e: any) {
-    return new Response(JSON.stringify({ error: e.message }), {
-      status: 500,
-      headers: { "Content-Type": "application/json" },
-    });
+    }
+
+    return json({ messagesDeleted: expired ?? 0, blobsDeleted });
+  } catch (e) {
+    console.error("[cleanup-expired] failed:", e instanceof Error ? e.message : "unknown error");
+    return errorResponse("Cleanup failed", 500);
   }
 });
