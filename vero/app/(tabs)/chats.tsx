@@ -18,6 +18,7 @@ import { useChatsStore } from '../../src/features/chats/useChatsStore';
 import { Conversation, Message, conversationTitle, messagePreview } from '../../src/shared/models/Message';
 import { databaseService } from '../../src/core/storage/DatabaseService';
 import { Colors, Typography, Spacing, BorderRadius } from '../../src/shared/theme/theme';
+import { StoriesTray } from '../../src/features/stories/components/StoriesTray';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
 
@@ -255,6 +256,8 @@ export default function ChatsScreen() {
           </>
         )}
       </View>
+
+      {!showSearch && <StoriesTray />}
 
       {/* Category Pills Navigation */}
       {!showSearch && (

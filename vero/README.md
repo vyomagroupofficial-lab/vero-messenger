@@ -61,6 +61,31 @@ Supabase Storage bucket (default) or a Google Drive Shared Drive folder.
 `media-download` is a membership-checked proxy; the client verifies the hash
 and decrypts.
 
+### Stories (24-hour status)
+
+Code: `src/features/stories/`, screens in `app/stories/`, schema in
+`supabase/migrations/008_stories.sql`.
+
+- The audience is resolved **on device** from the story privacy setting
+  ("My contacts", "My contacts except…", "Only share with…"; contacts = people
+  you share a direct chat with). The setting is kept locally and synced to your
+  own `story_privacy` row.
+- The story is encrypted once with the message envelope, bound to
+  `story:<author>|<storyId>|<authorDevice>`, and its key is wrapped for every
+  active device of the author and every audience member. The key slots are
+  stored per recipient (`story_recipients`), so each person downloads only their
+  own slots. Photos/videos (≤ 30 s) are encrypted on device and stored in the
+  private `vero-stories` bucket; storage policies allow downloads only to the
+  story's audience.
+- RLS hides stories from everyone but the author and recipients, and from
+  everyone once they expire (24 h). View receipts (`story_views`) are visible
+  only to the author and are not sent when read receipts are off. Replies and
+  emoji reactions are ordinary E2EE direct messages quoting the story.
+- `cleanup_expired_stories()` hard-deletes expired stories (pg_cron every
+  10 min when enabled) and flags their blobs; deploy and schedule the
+  `stories-cleanup` function (`Authorization: Bearer <CRON_SECRET>`) to remove
+  the flagged blobs from Storage.
+
 ### What the server can and cannot see
 
 | Server can see | Server cannot see |

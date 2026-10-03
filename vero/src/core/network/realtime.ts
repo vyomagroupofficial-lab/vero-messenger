@@ -10,6 +10,10 @@ import { supabase } from './supabase';
 
 export type BroadcastHandler = (payload: any) => void;
 
+/** Server-sent events on the personal user:<id> topic (story.* from 008_stories.sql). */
+const USER_EVENTS = ['inbox.message', 'call.invite', 'story.new', 'story.deleted', 'story.viewed'] as const;
+export type UserEvent = (typeof USER_EVENTS)[number];
+
 export function privateChannel(topic: string): RealtimeChannel {
   return supabase.channel(topic, { config: { private: true, broadcast: { self: false } } });
 }
@@ -26,7 +30,7 @@ class UserChannel {
     this.userId = userId;
     await supabase.realtime.setAuth();
     const channel = privateChannel(`user:${userId}`);
-    for (const event of ['inbox.message', 'call.invite']) {
+    for (const event of USER_EVENTS) {
       channel.on('broadcast', { event }, ({ payload }) => {
         this.handlers.get(event)?.forEach((h) => h(payload));
       });
@@ -43,7 +47,7 @@ class UserChannel {
     this.userId = null;
   }
 
-  on(event: 'inbox.message' | 'call.invite', handler: BroadcastHandler): () => void {
+  on(event: UserEvent, handler: BroadcastHandler): () => void {
     if (!this.handlers.has(event)) this.handlers.set(event, new Set());
     this.handlers.get(event)!.add(handler);
     return () => this.handlers.get(event)?.delete(handler);
