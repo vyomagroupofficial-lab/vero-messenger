@@ -189,6 +189,35 @@ Then, in the dashboard:
   storage quota of its own, so the folder must be inside a **Shared Drive**
   that the service account is a member of.
 
+### Stickers, GIFs, payments, bots (optional configuration)
+
+```bash
+supabase functions deploy gif-search payment-link bot-admin
+```
+
+| Feature | Needs | Without it |
+| --- | --- | --- |
+| Stickers (2 bundled packs, recents, favourites, photo → sticker) | nothing | - |
+| GIF search (`gif-search`) | `TENOR_API_KEY` (Tenor v2) **or** `GIPHY_API_KEY`; `GIF_PROVIDER=giphy` if both | GIF tab says "GIFs aren't set up yet" |
+| UPI payments (request / pay / QR) | nothing (standard `upi://pay` links) | - |
+| Card / netbanking links (`payment-link`) | `RAZORPAY_KEY_ID` + `RAZORPAY_KEY_SECRET`, and allow-listed users in `payment_link_merchants` | option hidden |
+| Bots (`bot-admin`) | nothing; optional `BOT_EMAIL_DOMAIN`; `pg_net` for webhook pings | bots use realtime only |
+
+Keys can be Edge Function secrets (`supabase secrets set TENOR_API_KEY=...`),
+Vault secrets with the same name, or rows in `public.app_config`
+(`insert into app_config (key, value) values ('TENOR_API_KEY', '...')`); only
+the service role can read them (`get_app_secret`). Razorpay links collect into
+the operator's Razorpay account, so they are enabled per account:
+`insert into payment_link_merchants (user_id) values ('<uuid>')`.
+
+Privacy notes: bundled stickers are sent as an encrypted pack/id reference;
+custom stickers and GIFs are re-encrypted on device and uploaded like photos
+(the recipient never gets the GIF provider URL, and searches/previews go
+through the `gif-search` proxy). Payment cards and their status updates are
+E2EE messages; UPI ids are stored only in the device keystore. Vero can't see
+UPI transactions, so "paid" means a member reported it. Bot SDK, examples and
+mini-app docs: [`bots/README.md`](bots/README.md).
+
 ### 2. App
 
 ```bash
