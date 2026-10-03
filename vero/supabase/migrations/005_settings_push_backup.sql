@@ -545,6 +545,7 @@ returns table (
   device_id    uuid,
   user_id      uuid,
   token        text,
+  previews     boolean,
   channel_id   uuid,
   channel_name text
 )
@@ -555,12 +556,13 @@ set search_path = ''
 as $$
 begin
   return query
-    select pt.device_id, pt.user_id, pt.token, ch.id, ch.name
+    select pt.device_id, pt.user_id, pt.token, coalesce(us.notification_previews, false), ch.id, ch.name
     from public.channel_posts p
     join public.channels ch on ch.id = p.channel_id
     join public.channel_followers f on f.channel_id = p.channel_id and not f.muted
     join public.devices d on d.user_id = f.user_id and d.revoked_at is null
     join public.push_tokens pt on pt.device_id = d.id
+    left join public.user_settings us on us.user_id = f.user_id
     where p.id = p_post_id
       and p.created_at > now() - interval '10 minutes'
       and f.user_id is distinct from p.author_id;
