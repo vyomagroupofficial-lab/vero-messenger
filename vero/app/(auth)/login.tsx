@@ -15,6 +15,8 @@ import {
 } from 'react-native';
 import { router } from 'expo-router';
 import { useAuthStore } from '../../src/features/auth/useAuthStore';
+import { authRepository } from '../../src/features/auth/AuthRepository';
+import { isSupabaseConfigured } from '../../src/core/network/supabase';
 import { Colors, Typography, Spacing, BorderRadius } from '../../src/shared/theme/theme';
 import { Ionicons } from '@expo/vector-icons';
 
@@ -31,9 +33,22 @@ export default function LoginScreen() {
 
   const { login, loginAsDemo, isLoading } = useAuthStore();
 
-  const handleDemoLogin = async () => {
-    await loginAsDemo();
+  const handleDemoLogin = () => {
+    loginAsDemo();
     router.replace('/(tabs)/chats');
+  };
+
+  const handleForgotPassword = async () => {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+      setEmailError('Enter your email above first');
+      shake();
+      return;
+    }
+    const res = await authRepository.sendPasswordReset(email);
+    Alert.alert(
+      res.success ? 'Check your inbox' : 'Could not send reset email',
+      res.success ? `We sent a password reset link to ${email.trim()}.` : res.error
+    );
   };
 
   const shakeAnim = useRef(new Animated.Value(0)).current;
@@ -73,6 +88,10 @@ export default function LoginScreen() {
   };
 
   const handleLogin = async () => {
+    if (!isSupabaseConfigured) {
+      Alert.alert('Backend not configured', 'Set EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY in .env, or explore the demo.');
+      return;
+    }
     if (!validateForm()) {
       shake();
       return;
@@ -81,7 +100,7 @@ export default function LoginScreen() {
     const result = await login(email.trim(), password);
     if (!result.success) {
       shake();
-      Alert.alert('Authentication Failed', result.error || 'Invalid cryptographic credentials');
+      Alert.alert('Sign in failed', result.error || 'Check your email and password.');
     } else {
       router.replace('/(tabs)/chats');
     }
@@ -107,15 +126,15 @@ export default function LoginScreen() {
           <Text style={styles.appName}>VERO</Text>
           <View style={styles.cryptoBadge}>
             <View style={styles.liveDot} />
-            <Text style={styles.cryptoBadgeText}>ZERO-KNOWLEDGE PROTOCOL</Text>
+            <Text style={styles.cryptoBadgeText}>END-TO-END ENCRYPTED</Text>
           </View>
-          <Text style={styles.tagline}>Provably Private • Ephemeral by Design</Text>
+          <Text style={styles.tagline}>Private by design</Text>
         </View>
 
         {/* Glassmorphic Form Card */}
         <Animated.View style={[styles.form, { transform: [{ translateX: shakeAnim }] }]}>
           <Text style={styles.welcomeTitle}>Sign In</Text>
-          <Text style={styles.welcomeSubtitle}>Unlock your local encrypted vault</Text>
+          <Text style={styles.welcomeSubtitle}>Your keys never leave this device</Text>
 
           {/* Email Input */}
           <View style={styles.inputGroup}>
@@ -153,9 +172,9 @@ export default function LoginScreen() {
           {/* Password Input */}
           <View style={styles.inputGroup}>
             <View style={styles.passwordLabelRow}>
-              <Text style={styles.inputLabel}>MASTER PASSPHRASE</Text>
-              <TouchableOpacity>
-                <Text style={styles.forgotPasswordText}>Recover vault?</Text>
+              <Text style={styles.inputLabel}>PASSWORD</Text>
+              <TouchableOpacity onPress={handleForgotPassword}>
+                <Text style={styles.forgotPasswordText}>Forgot password?</Text>
               </TouchableOpacity>
             </View>
             <View
@@ -207,7 +226,7 @@ export default function LoginScreen() {
             ) : (
               <View style={styles.btnContent}>
                 <Ionicons name="key-outline" size={18} color={Colors.white} style={{ marginRight: 8 }} />
-                <Text style={styles.loginButtonText}>Decrypt & Sign In</Text>
+                <Text style={styles.loginButtonText}>Sign In</Text>
               </View>
             )}
           </TouchableOpacity>
@@ -227,21 +246,21 @@ export default function LoginScreen() {
             activeOpacity={0.85}
           >
             <Ionicons name="sparkles" size={17} color={Colors.accent} style={{ marginRight: 8 }} />
-            <Text style={styles.demoButtonText}>Launch Instant Demo Mode</Text>
+            <Text style={styles.demoButtonText}>Explore offline demo</Text>
           </TouchableOpacity>
 
           {/* E2EE notice */}
           <View style={styles.e2eeNotice}>
             <Ionicons name="shield-checkmark" size={13} color={Colors.online} />
-            <Text style={styles.e2eeText}>Curve25519 & XSalsa20 Encrypted On-Device</Text>
+            <Text style={styles.e2eeText}>X25519 + XChaCha20-Poly1305, encrypted on-device</Text>
           </View>
         </Animated.View>
 
         {/* Sign Up Footer */}
         <View style={styles.footer}>
-          <Text style={styles.footerText}>Need a cryptographic identity?</Text>
+          <Text style={styles.footerText}>New to Vero?</Text>
           <TouchableOpacity onPress={() => router.push('/(auth)/signup')}>
-            <Text style={styles.signUpLink}> Create Identity</Text>
+            <Text style={styles.signUpLink}> Create an account</Text>
           </TouchableOpacity>
         </View>
       </ScrollView>

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -10,13 +10,20 @@ import {
   Modal,
   Pressable,
   ActivityIndicator,
+  TextInput,
 } from 'react-native';
 import { router } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import dayjs from 'dayjs';
 import { useAuthStore } from '../../src/features/auth/useAuthStore';
-import { cryptoManager, DeviceKeys } from '../../src/core/crypto/CryptoManager';
+import { authRepository } from '../../src/features/auth/AuthRepository';
+import { cryptoManager } from '../../src/core/crypto/CryptoManager';
+import { databaseService } from '../../src/core/storage/DatabaseService';
+import { friendlyError } from '../../src/core/network/supabase';
 import { mediaRepository } from '../../src/features/media/MediaRepository';
+import { useSettingsStore } from '../../src/features/settings/useSettingsStore';
+import { registerForPush, unregisterPush } from '../../src/features/notifications/pushRegistration';
 import { Colors, Typography, Spacing, BorderRadius } from '../../src/shared/theme/theme';
 
 interface SettingItem {
@@ -36,21 +43,15 @@ function SettingRow({ item }: { item: SettingItem }) {
     <TouchableOpacity
       style={styles.settingRow}
       onPress={item.onPress}
-      disabled={item.toggle}
+      disabled={item.toggle || !item.onPress}
       activeOpacity={item.onPress ? 0.7 : 1}
     >
       <View style={[styles.settingIcon, { backgroundColor: `${item.iconColor || Colors.accent}20` }]}>
-        <Ionicons
-          name={item.icon}
-          size={20}
-          color={item.iconColor || Colors.accent}
-        />
+        <Ionicons name={item.icon} size={20} color={item.iconColor || Colors.accent} />
       </View>
       <View style={styles.settingContent}>
-        <Text style={[styles.settingLabel, item.danger && styles.settingLabelDanger]}>
-          {item.label}
-        </Text>
-        {item.value && <Text style={styles.settingValue}>{item.value}</Text>}
+        <Text style={[styles.settingLabel, item.danger && styles.settingLabelDanger]}>{item.label}</Text>
+        {item.value ? <Text style={styles.settingValue}>{item.value}</Text> : null}
       </View>
       {item.toggle ? (
         <Switch
@@ -82,37 +83,74 @@ function SettingSection({ title, items }: { title: string; items: SettingItem[] 
   );
 }
 
-export default function SettingsScreen() {
-  const { user, deviceId, logout } = useAuthStore();
-  const [notificationsEnabled, setNotificationsEnabled] = useState(true);
-  const [readReceipts, setReadReceipts] = useState(true);
-  const [typingIndicators, setTypingIndicators] = useState(true);
-  const [onlineStatus, setOnlineStatus] = useState(true);
-  const [appLockEnabled, setAppLockEnabled] = useState(false);
-  const [disappearingDefault, setDisappearingDefault] = useState('Off');
+type LinkedDevice = Awaited<ReturnType<typeof authRepository.listDevices>>[number];
 
-  // Modals
+export default function SettingsScreen() {
+  const user = useAuthStore((s) => s.user);
+  const deviceId = useAuthStore((s) => s.deviceId);
+  const isDemo = useAuthStore((s) => s.isDemo);
+  const logout = useAuthStore((s) => s.logout);
+  const updateProfile = useAuthStore((s) => s.updateProfile);
+  const settings = useSettingsStore();
+
   const [showKeysModal, setShowKeysModal] = useState(false);
   const [showDevicesModal, setShowDevicesModal] = useState(false);
   const [showAuditModal, setShowAuditModal] = useState(false);
-  const [showBackupModal, setShowBackupModal] = useState(false);
-  const [deviceKeys, setDeviceKeys] = useState<DeviceKeys | null>(null);
-  const [isBackingUp, setIsBackingUp] = useState(false);
+  const [showProfileModal, setShowProfileModal] = useState(false);
+  const [publicKey, setPublicKey] = useState<string | null>(null);
+  const [devices, setDevices] = useState<LinkedDevice[] | null>(null);
+  const [draftName, setDraftName] = useState('');
+  const [draftAbout, setDraftAbout] = useState('');
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    cryptoManager.getDeviceKeys().then((keys) => {
-      setDeviceKeys(keys);
-    });
+    if (user && !isDemo) void cryptoManager.getIdentityPublicKey(user.id).then(setPublicKey);
+  }, [user?.id, isDemo]);
+
+  const loadDevices = useCallback(async () => {
+    setDevices(null);
+    try {
+      setDevices(await authRepository.listDevices());
+    } catch (e) {
+      setDevices([]);
+      Alert.alert('Could not load devices', friendlyError(e));
+    }
   }, []);
 
-  const handleLogout = () => {
+  const activeDevices = devices?.filter((d) => !d.revokedAt) ?? [];
+
+  const handleRevoke = (device: LinkedDevice) => {
     Alert.alert(
-      'Log Out',
-      'Are you sure you want to log out? Your local private encryption keys will be securely cleared from this device.',
+      'Unlink device',
+      `Unlink "${device.deviceLabel}"? New messages will no longer be encrypted for it and it will be signed out of encryption.`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
-          text: 'Log Out',
+          text: 'Unlink',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await authRepository.revokeDevice(device.id);
+              await loadDevices();
+            } catch (e) {
+              Alert.alert('Could not unlink device', friendlyError(e));
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleLogout = () => {
+    Alert.alert(
+      isDemo ? 'Leave demo' : 'Log out',
+      isDemo
+        ? 'Return to the sign-in screen?'
+        : 'Your encryption keys and message history stay on this device so you can sign back in. To remove them, use "Erase this device" instead.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: isDemo ? 'Leave' : 'Log out',
           style: 'destructive',
           onPress: async () => {
             await logout();
@@ -123,33 +161,71 @@ export default function SettingsScreen() {
     );
   };
 
-  const handleClearCache = async () => {
+  const handleEraseDevice = () => {
     Alert.alert(
-      'Clear Media Cache',
-      'This will remove temporary decrypted media files from device storage. Your encrypted chats remain intact.',
+      'Erase this device',
+      'This deletes all decrypted messages, cached media and this device\'s encryption keys, unlinks it from your account and signs out. Messages sent before now can no longer be read here.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
-          text: 'Clear',
+          text: 'Erase',
           style: 'destructive',
           onPress: async () => {
-            await mediaRepository.clearMediaCache();
-            Alert.alert('Success', 'Media cache cleared successfully.');
+            try {
+              if (user && deviceId && !isDemo) {
+                await authRepository.revokeDevice(deviceId).catch(() => undefined);
+                await cryptoManager.clearIdentity(user.id);
+              }
+              await databaseService.clearAllData();
+              mediaRepository.clearCache();
+            } finally {
+              await logout();
+              router.replace('/(auth)/login');
+            }
           },
         },
       ]
     );
   };
 
-  const handleStartBackup = async () => {
-    setIsBackingUp(true);
-    setTimeout(() => {
-      setIsBackingUp(false);
-      Alert.alert(
-        'Encrypted Backup Completed',
-        'Your local database and chat index were encrypted using AES-256 and backed up to your Google Drive encrypted container.'
-      );
-    }, 2000);
+  const handleClearCache = () => {
+    Alert.alert('Clear media cache', 'Removes decrypted copies of photos, videos and files from this device. They can be downloaded again.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Clear',
+        style: 'destructive',
+        onPress: () => {
+          try {
+            mediaRepository.clearCache();
+            Alert.alert('Done', 'Media cache cleared.');
+          } catch (e) {
+            Alert.alert('Could not clear cache', friendlyError(e));
+          }
+        },
+      },
+    ]);
+  };
+
+  const toggleNotifications = async (enabled: boolean) => {
+    settings.set({ notifications: enabled });
+    if (!deviceId || isDemo) return;
+    if (enabled) await registerForPush(deviceId);
+    else await unregisterPush(deviceId).catch(() => undefined);
+  };
+
+  const openProfileEditor = () => {
+    setDraftName(user?.displayName || '');
+    setDraftAbout(user?.about || '');
+    setShowProfileModal(true);
+  };
+
+  const saveProfile = async () => {
+    if (!draftName.trim()) return Alert.alert('Name required', 'Please enter a display name.');
+    setSaving(true);
+    const result = await updateProfile({ displayName: draftName, about: draftAbout });
+    setSaving(false);
+    if (result.success) setShowProfileModal(false);
+    else Alert.alert('Could not save profile', result.error);
   };
 
   const initials = (user?.displayName || user?.email || 'U').slice(0, 2).toUpperCase();
@@ -157,13 +233,11 @@ export default function SettingsScreen() {
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <ScrollView showsVerticalScrollIndicator={false}>
-        {/* Header */}
         <View style={styles.header}>
           <Text style={styles.headerTitle}>Settings</Text>
         </View>
 
-        {/* Profile Card */}
-        <View style={styles.profileCard}>
+        <TouchableOpacity style={styles.profileCard} onPress={openProfileEditor} activeOpacity={0.8}>
           <View style={styles.profileAvatar}>
             <Text style={styles.profileAvatarText}>{initials}</Text>
           </View>
@@ -171,162 +245,152 @@ export default function SettingsScreen() {
             <Text style={styles.profileName}>{user?.displayName || 'Set your name'}</Text>
             <Text style={styles.profileUsername}>@{user?.username || 'username'}</Text>
             <View style={styles.profileStatus}>
-              <Ionicons name="shield-checkmark" size={13} color={Colors.accent} />
-              <Text style={styles.profileStatusText}>Encrypted Account</Text>
+              <Ionicons name={isDemo ? 'sparkles' : 'create-outline'} size={13} color={Colors.accent} />
+              <Text style={styles.profileStatusText}>{isDemo ? 'Demo account' : 'Tap to edit profile'}</Text>
             </View>
           </View>
-        </View>
+        </TouchableOpacity>
 
-        {/* Privacy Settings */}
         <SettingSection
           title="Privacy"
           items={[
             {
-              icon: 'eye-outline',
-              label: 'Online Status',
-              toggle: true,
-              toggleValue: onlineStatus,
-              onToggle: setOnlineStatus,
-              iconColor: Colors.accent,
-            },
-            {
               icon: 'checkmark-done-outline',
-              label: 'Read Receipts',
+              label: 'Read receipts',
+              value: 'If off, others only see that messages were delivered',
               toggle: true,
-              toggleValue: readReceipts,
-              onToggle: setReadReceipts,
+              toggleValue: settings.readReceipts,
+              onToggle: (v) => settings.set({ readReceipts: v }),
               iconColor: Colors.teal,
             },
             {
               icon: 'create-outline',
-              label: 'Typing Indicators',
+              label: 'Typing indicators',
+              value: 'Let others see when you are typing',
               toggle: true,
-              toggleValue: typingIndicators,
-              onToggle: setTypingIndicators,
+              toggleValue: settings.typingIndicators,
+              onToggle: (v) => settings.set({ typingIndicators: v }),
               iconColor: Colors.purple,
             },
             {
-              icon: 'time-outline',
-              label: 'Disappearing Messages Default',
-              value: disappearingDefault,
-              onPress: () => {
-                Alert.alert(
-                  'Default Disappearing Timer',
-                  'Choose default timer for newly started chats:',
-                  [
-                    { text: 'Off', onPress: () => setDisappearingDefault('Off') },
-                    { text: '24 Hours', onPress: () => setDisappearingDefault('24 Hours') },
-                    { text: '7 Days', onPress: () => setDisappearingDefault('7 Days') },
-                    { text: '90 Days', onPress: () => setDisappearingDefault('90 Days') },
-                  ]
-                );
-              },
+              icon: 'notifications-outline',
+              label: 'Notifications',
+              value: 'Push alerts never include message content',
+              toggle: true,
+              toggleValue: settings.notifications,
+              onToggle: (v) => void toggleNotifications(v),
               iconColor: Colors.warning,
             },
           ]}
         />
 
-        {/* Security */}
         <SettingSection
-          title="Security & Keys"
+          title="Security"
           items={[
-            {
-              icon: 'phone-portrait-outline',
-              label: 'Linked Devices',
-              value: '1 device (Current)',
-              onPress: () => setShowDevicesModal(true),
-              iconColor: Colors.accent,
-            },
-            {
-              icon: 'finger-print-outline',
-              label: 'App Lock (Biometrics/PIN)',
-              toggle: true,
-              toggleValue: appLockEnabled,
-              onToggle: (v) => {
-                setAppLockEnabled(v);
-                Alert.alert('App Lock', v ? 'Biometric / PIN lock enabled.' : 'App lock disabled.');
-              },
-              iconColor: Colors.purple,
-            },
-            {
-              icon: 'key-outline',
-              label: 'Encryption Keys',
-              value: 'View Public Keys',
-              onPress: () => setShowKeysModal(true),
-              iconColor: Colors.warning,
-            },
+            ...(isDemo
+              ? []
+              : [
+                  {
+                    icon: 'phone-portrait-outline' as const,
+                    label: 'Linked devices',
+                    value: 'See and unlink devices that can read your messages',
+                    onPress: () => {
+                      setShowDevicesModal(true);
+                      void loadDevices();
+                    },
+                    iconColor: Colors.accent,
+                  },
+                  {
+                    icon: 'key-outline' as const,
+                    label: 'This device\'s identity key',
+                    value: 'Public key only',
+                    onPress: () => setShowKeysModal(true),
+                    iconColor: Colors.warning,
+                  },
+                ]),
             {
               icon: 'shield-checkmark-outline',
-              label: 'Security Audit & Guarantees',
+              label: 'How Vero protects you',
               onPress: () => setShowAuditModal(true),
               iconColor: Colors.teal,
             },
           ]}
         />
 
-        {/* Storage & Backup */}
         <SettingSection
-          title="Storage & Google Drive"
+          title="Storage"
           items={[
+            { icon: 'images-outline', label: 'Clear media cache', onPress: handleClearCache, iconColor: Colors.warning },
             {
-              icon: 'cloud-outline',
-              label: 'Google Drive Encrypted Backup',
-              value: 'Client-side AES-256',
-              onPress: () => setShowBackupModal(true),
-              iconColor: Colors.teal,
-            },
-            {
-              icon: 'trash-outline',
-              label: 'Clear Media Cache',
-              onPress: handleClearCache,
-              iconColor: Colors.warning,
+              icon: 'nuclear-outline',
+              label: 'Erase this device',
+              value: 'Delete local messages and keys, then sign out',
+              onPress: handleEraseDevice,
+              iconColor: Colors.error,
+              danger: true,
             },
           ]}
         />
 
-        {/* Danger Zone */}
         <View style={styles.section}>
           <TouchableOpacity style={styles.logoutBtn} onPress={handleLogout}>
             <Ionicons name="log-out-outline" size={20} color={Colors.error} />
-            <Text style={styles.logoutText}>Log Out</Text>
+            <Text style={styles.logoutText}>{isDemo ? 'Leave demo' : 'Log out'}</Text>
           </TouchableOpacity>
         </View>
       </ScrollView>
 
-      {/* Encryption Keys Modal */}
-      <Modal
-        visible={showKeysModal}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setShowKeysModal(false)}
-      >
+      {/* Edit profile */}
+      <Modal visible={showProfileModal} transparent animationType="slide" onRequestClose={() => setShowProfileModal(false)}>
+        <Pressable style={styles.modalBackdrop} onPress={() => setShowProfileModal(false)}>
+          <Pressable style={styles.sheet} onPress={() => undefined}>
+            <View style={styles.sheetHandle} />
+            <Text style={styles.sheetTitle}>Edit profile</Text>
+            <Text style={styles.keyLabel}>Display name</Text>
+            <TextInput style={styles.input} value={draftName} onChangeText={setDraftName} maxLength={64} />
+            <Text style={styles.keyLabel}>About</Text>
+            <TextInput
+              style={[styles.input, { minHeight: 70 }]}
+              value={draftAbout}
+              onChangeText={setDraftAbout}
+              maxLength={280}
+              multiline
+            />
+            <Text style={styles.sheetDescription}>Your profile is visible to other Vero users. It is not end-to-end encrypted.</Text>
+            <TouchableOpacity style={[styles.primaryActionBtn, saving && { opacity: 0.6 }]} onPress={saveProfile} disabled={saving}>
+              {saving ? <ActivityIndicator color={Colors.white} /> : <Text style={styles.primaryActionText}>Save</Text>}
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.closeBtn} onPress={() => setShowProfileModal(false)}>
+              <Text style={styles.closeBtnText}>Cancel</Text>
+            </TouchableOpacity>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* Identity key */}
+      <Modal visible={showKeysModal} transparent animationType="slide" onRequestClose={() => setShowKeysModal(false)}>
         <Pressable style={styles.modalBackdrop} onPress={() => setShowKeysModal(false)}>
           <View style={styles.sheet}>
             <View style={styles.sheetHandle} />
-            <Text style={styles.sheetTitle}>Device Cryptographic Keys</Text>
-
+            <Text style={styles.sheetTitle}>This device</Text>
             <View style={styles.keyBlock}>
-              <Text style={styles.keyLabel}>Identity Public Key (X25519 ECDH)</Text>
-              <Text style={styles.keyValue}>{deviceKeys?.identityPublicKey || 'Loading key...'}</Text>
+              <Text style={styles.keyLabel}>Identity public key (X25519)</Text>
+              <Text style={styles.keyValue} selectable>
+                {publicKey || '—'}
+              </Text>
             </View>
-
             <View style={styles.keyBlock}>
-              <Text style={styles.keyLabel}>Signing Public Key (Ed25519)</Text>
-              <Text style={styles.keyValue}>{deviceKeys?.signingPublicKey || 'Loading key...'}</Text>
+              <Text style={styles.keyLabel}>Device ID</Text>
+              <Text style={styles.keyValue} selectable>
+                {deviceId || '—'}
+              </Text>
             </View>
-
-            <View style={styles.keyBlock}>
-              <Text style={styles.keyLabel}>Registration ID</Text>
-              <Text style={styles.keyValue}>{deviceKeys?.registrationId || '12345'}</Text>
-            </View>
-
             <View style={styles.noticeBox}>
               <Ionicons name="shield-checkmark" size={16} color={Colors.accent} />
               <Text style={styles.noticeText}>
-                Private keys are stored in your device's Secure Enclave and NEVER leave your device.
+                The matching private key is stored in this device's secure keystore and never leaves it.
               </Text>
             </View>
-
             <TouchableOpacity style={styles.closeBtn} onPress={() => setShowKeysModal(false)}>
               <Text style={styles.closeBtnText}>Done</Text>
             </TouchableOpacity>
@@ -334,118 +398,75 @@ export default function SettingsScreen() {
         </Pressable>
       </Modal>
 
-      {/* Linked Devices Modal */}
-      <Modal
-        visible={showDevicesModal}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setShowDevicesModal(false)}
-      >
+      {/* Linked devices */}
+      <Modal visible={showDevicesModal} transparent animationType="slide" onRequestClose={() => setShowDevicesModal(false)}>
         <Pressable style={styles.modalBackdrop} onPress={() => setShowDevicesModal(false)}>
-          <View style={styles.sheet}>
+          <Pressable style={styles.sheet} onPress={() => undefined}>
             <View style={styles.sheetHandle} />
-            <Text style={styles.sheetTitle}>Linked Devices</Text>
-
-            <View style={styles.deviceRow}>
-              <View style={styles.deviceIcon}>
-                <Ionicons name="phone-portrait" size={24} color={Colors.accent} />
-              </View>
-              <View style={styles.deviceInfo}>
-                <Text style={styles.deviceName}>This Device (Primary)</Text>
-                <Text style={styles.deviceIdText}>ID: {deviceId?.slice(0, 16)}...</Text>
-                <View style={styles.activeTag}>
-                  <View style={styles.activeDot} />
-                  <Text style={styles.activeTagText}>Active Now</Text>
-                </View>
-              </View>
-            </View>
-
+            <Text style={styles.sheetTitle}>Linked devices</Text>
+            {devices === null ? (
+              <ActivityIndicator color={Colors.accent} style={{ marginVertical: 20 }} />
+            ) : (
+              <ScrollView style={{ maxHeight: 320 }}>
+                {activeDevices.map((d) => (
+                  <View key={d.id} style={styles.deviceRow}>
+                    <View style={styles.deviceIcon}>
+                      <Ionicons name="phone-portrait" size={24} color={Colors.accent} />
+                    </View>
+                    <View style={styles.deviceInfo}>
+                      <Text style={styles.deviceName}>
+                        {d.deviceLabel}
+                        {d.id === deviceId ? ' (this device)' : ''}
+                      </Text>
+                      <Text style={styles.deviceIdText}>
+                        Added {dayjs(d.createdAt).format('MMM D, YYYY')} · last active {dayjs(d.lastSeenAt).format('MMM D')}
+                      </Text>
+                    </View>
+                    {d.id !== deviceId && (
+                      <TouchableOpacity onPress={() => handleRevoke(d)}>
+                        <Ionicons name="close-circle-outline" size={22} color={Colors.error} />
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                ))}
+              </ScrollView>
+            )}
             <View style={styles.noticeBox}>
               <Ionicons name="information-circle" size={16} color={Colors.accent} />
               <Text style={styles.noticeText}>
-                Each device holds its own separate cryptographic key pair. Vero synchronizes encrypted messages across authorized devices.
+                Each device has its own key. Messages are encrypted separately for every linked device, so a new
+                device can't read messages sent before it was linked.
               </Text>
             </View>
-
             <TouchableOpacity style={styles.closeBtn} onPress={() => setShowDevicesModal(false)}>
               <Text style={styles.closeBtnText}>Done</Text>
             </TouchableOpacity>
-          </View>
+          </Pressable>
         </Pressable>
       </Modal>
 
-      {/* Google Drive Backup Modal */}
-      <Modal
-        visible={showBackupModal}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setShowBackupModal(false)}
-      >
-        <Pressable style={styles.modalBackdrop} onPress={() => setShowBackupModal(false)}>
-          <View style={styles.sheet}>
-            <View style={styles.sheetHandle} />
-            <Text style={styles.sheetTitle}>Google Drive Backup</Text>
-
-            <Text style={styles.sheetDescription}>
-              Back up your message database to Google Drive. Your backup is encrypted on-device before uploading so Google Drive cannot read your messages.
-            </Text>
-
-            <View style={styles.backupStatsCard}>
-              <View style={styles.backupStatRow}>
-                <Text style={styles.backupStatLabel}>Encryption:</Text>
-                <Text style={styles.backupStatVal}>AES-256-GCM</Text>
-              </View>
-              <View style={styles.backupStatRow}>
-                <Text style={styles.backupStatLabel}>Target Storage:</Text>
-                <Text style={styles.backupStatVal}>Google Drive (Encrypted Blob)</Text>
-              </View>
-              <View style={styles.backupStatRow}>
-                <Text style={styles.backupStatLabel}>Last Backup:</Text>
-                <Text style={styles.backupStatVal}>Never</Text>
-              </View>
-            </View>
-
-            <TouchableOpacity
-              style={[styles.primaryActionBtn, isBackingUp && { opacity: 0.6 }]}
-              onPress={handleStartBackup}
-              disabled={isBackingUp}
-            >
-              {isBackingUp ? (
-                <ActivityIndicator size="small" color={Colors.white} />
-              ) : (
-                <Text style={styles.primaryActionText}>Back Up Now</Text>
-              )}
-            </TouchableOpacity>
-
-            <TouchableOpacity style={styles.closeBtn} onPress={() => setShowBackupModal(false)}>
-              <Text style={styles.closeBtnText}>Cancel</Text>
-            </TouchableOpacity>
-          </View>
-        </Pressable>
-      </Modal>
-
-      {/* Security Audit Modal */}
-      <Modal
-        visible={showAuditModal}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setShowAuditModal(false)}
-      >
+      {/* Security overview (honest, including limitations) */}
+      <Modal visible={showAuditModal} transparent animationType="slide" onRequestClose={() => setShowAuditModal(false)}>
         <Pressable style={styles.modalBackdrop} onPress={() => setShowAuditModal(false)}>
           <View style={styles.sheet}>
             <View style={styles.sheetHandle} />
-            <Text style={styles.sheetTitle}>Vero Security Architecture</Text>
-
-            <ScrollView style={{ maxHeight: 350 }} showsVerticalScrollIndicator={false}>
+            <Text style={styles.sheetTitle}>How Vero protects you</Text>
+            <ScrollView style={{ maxHeight: 380 }} showsVerticalScrollIndicator={false}>
               {[
-                { title: 'Zero Plaintext Server Storage', desc: 'Supabase stores only encrypted ciphertext envelopes.' },
-                { title: 'End-to-End Media Encryption', desc: 'All media is AES-GCM encrypted client-side before Google Drive upload.' },
-                { title: 'Secure Key Storage', desc: 'Private keys never leave Expo SecureStore.' },
-                { title: 'Row-Level Security (RLS)', desc: 'PostgreSQL RLS isolates cross-user database access.' },
-                { title: 'Peer-to-Peer WebRTC Calls', desc: 'Audio and video stream directly between devices with STUN/TURN.' },
-              ].map((item, i) => (
-                <View key={i} style={styles.auditItem}>
-                  <Ionicons name="checkmark-circle" size={20} color={Colors.online} />
+                { ok: true, title: 'End-to-end encrypted messages', desc: 'Messages are encrypted on your device for each recipient device (X25519 + XChaCha20-Poly1305). Servers store ciphertext only.' },
+                { ok: true, title: 'Encrypted attachments', desc: 'Every file gets its own random key before upload; Google Drive only stores ciphertext.' },
+                { ok: true, title: 'Keys stay on your device', desc: 'Private keys live in the platform keystore (Keychain / Keystore).' },
+                { ok: true, title: 'Server-side access control', desc: 'Row-level security and private realtime channels limit metadata to conversation members.' },
+                { ok: true, title: 'Key pinning & safety numbers', desc: 'A device key change is rejected, and safety numbers let you rule out key substitution.' },
+                { ok: false, title: 'Not yet: forward secrecy', desc: 'Messages use long-term device keys. A ratcheting protocol (Double Ratchet/MLS) is on the roadmap.' },
+                { ok: false, title: 'Visible metadata', desc: 'Servers can see who talks to whom and when, group names, and profile details.' },
+              ].map((item) => (
+                <View key={item.title} style={styles.auditItem}>
+                  <Ionicons
+                    name={item.ok ? 'checkmark-circle' : 'alert-circle'}
+                    size={20}
+                    color={item.ok ? Colors.online : Colors.warning}
+                  />
                   <View style={{ flex: 1 }}>
                     <Text style={styles.auditTitle}>{item.title}</Text>
                     <Text style={styles.auditDesc}>{item.desc}</Text>
@@ -453,9 +474,8 @@ export default function SettingsScreen() {
                 </View>
               ))}
             </ScrollView>
-
             <TouchableOpacity style={styles.closeBtn} onPress={() => setShowAuditModal(false)}>
-              <Text style={styles.closeBtnText}>Understood</Text>
+              <Text style={styles.closeBtnText}>Got it</Text>
             </TouchableOpacity>
           </View>
         </Pressable>
@@ -465,6 +485,17 @@ export default function SettingsScreen() {
 }
 
 const styles = StyleSheet.create({
+  input: {
+    backgroundColor: '#0B1322',
+    borderRadius: BorderRadius.md,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    color: Colors.textPrimary,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+    marginBottom: Spacing.md,
+    fontSize: Typography.base,
+  },
   container: { flex: 1, backgroundColor: Colors.background },
   header: {
     paddingHorizontal: Spacing.base,

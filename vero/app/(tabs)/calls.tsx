@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useState, useCallback } from 'react';
 import {
   View,
   Text,
@@ -7,24 +7,22 @@ import {
   FlatList,
   RefreshControl,
   StatusBar,
+  Alert,
 } from 'react-native';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors, Typography, Spacing, BorderRadius } from '../../src/shared/theme/theme';
 import { databaseService, LocalCallRecord } from '../../src/core/storage/DatabaseService';
 import { callService } from '../../src/features/calls/CallService';
 import { useAuthStore } from '../../src/features/auth/useAuthStore';
+import { useChatsStore } from '../../src/features/chats/useChatsStore';
+import { conversationRepository } from '../../src/features/chats/ConversationRepository';
+import { friendlyError } from '../../src/core/network/supabase';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
 
 dayjs.extend(relativeTime);
-
-const SEED_CALLS: LocalCallRecord[] = [
-  { id: '1', peerId: 'p1', peerName: 'Sarah Connor', callType: 'voice', direction: 'incoming', duration: 323, createdAt: new Date(Date.now() - 1000 * 60 * 15).toISOString() },
-  { id: '2', peerId: 'p2', peerName: 'Marcus Vance', callType: 'video', direction: 'missed', duration: 0, createdAt: new Date(Date.now() - 1000 * 60 * 60 * 2).toISOString() },
-  { id: '3', peerId: 'p3', peerName: 'Security Ops Core', callType: 'voice', direction: 'outgoing', duration: 767, createdAt: new Date(Date.now() - 1000 * 60 * 60 * 24).toISOString() },
-];
 
 function CallListItem({ call, onRecall }: { call: LocalCallRecord; onRecall: () => void }) {
   const initials = call.peerName.slice(0, 2).toUpperCase();
@@ -85,34 +83,34 @@ function CallListItem({ call, onRecall }: { call: LocalCallRecord; onRecall: () 
 }
 
 export default function CallsScreen() {
-  const { user } = useAuthStore();
+  const user = useAuthStore((s) => s.user);
+  const isDemo = useAuthStore((s) => s.isDemo);
   const [calls, setCalls] = useState<LocalCallRecord[]>([]);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   const loadCalls = useCallback(async () => {
-    const logs = await databaseService.getCallLogs(50);
-    if (logs.length === 0) {
-      setCalls(SEED_CALLS);
-    } else {
-      setCalls(logs);
-    }
+    setCalls(await databaseService.getCallLogs(50));
     setIsRefreshing(false);
   }, []);
 
-  useEffect(() => {
-    loadCalls();
-  }, [loadCalls]);
+  useFocusEffect(
+    useCallback(() => {
+      void loadCalls();
+    }, [loadCalls])
+  );
 
   const handleStartCall = async (peerId: string, peerName: string, callType: 'voice' | 'video' = 'voice') => {
     if (!user?.id) return;
-    const callId = await callService.startCall({
-      peerId,
-      peerName,
-      callType,
-      currentUserId: user.id,
-      currentUserName: user.displayName || user.username || 'You',
-    });
-    router.push(`/call/${callId}` as any);
+    try {
+      const existing = useChatsStore.getState().conversations.find((c) => c.otherUser?.id === peerId);
+      const conversationId =
+        existing?.id ?? (isDemo ? null : await conversationRepository.createDirectConversation(peerId));
+      if (!conversationId) return;
+      const callId = await callService.startCall({ conversationId, peerId, peerName, callType });
+      router.push(`/call/${callId}`);
+    } catch (e) {
+      Alert.alert('Call failed', friendlyError(e));
+    }
   };
 
   return (
@@ -125,12 +123,12 @@ export default function CallsScreen() {
           <Text style={styles.headerTitle}>Calls</Text>
           <View style={styles.webrtcPill}>
             <Ionicons name="radio" size={11} color={Colors.emerald} />
-            <Text style={styles.webrtcPillText}>P2P DTLS-SRTP</Text>
+            <Text style={styles.webrtcPillText}>BETA</Text>
           </View>
         </View>
         <TouchableOpacity
           style={styles.headerButton}
-          onPress={() => router.push('/contacts' as any)}
+          onPress={() => router.push('/(tabs)/contacts')}
           activeOpacity={0.8}
         >
           <Ionicons name="call" size={18} color={Colors.accentLight} />
@@ -143,9 +141,9 @@ export default function CallsScreen() {
           <Ionicons name="shield-checkmark" size={16} color={Colors.emerald} />
         </View>
         <View style={{ flex: 1 }}>
-          <Text style={styles.securityTitle}>Zero Central Relays</Text>
+          <Text style={styles.securityTitle}>Calling is in beta</Text>
           <Text style={styles.securityText}>
-            Direct peer-to-peer WebRTC audio/video encryption. Media packets never touch servers.
+            Ringing, answering and call history work today. Encrypted audio/video streaming (WebRTC) is coming next.
           </Text>
         </View>
       </View>
@@ -168,20 +166,20 @@ export default function CallsScreen() {
             refreshing={isRefreshing}
             onRefresh={() => {
               setIsRefreshing(true);
-              loadCalls();
+              void loadCalls();
             }}
             tintColor={Colors.accent}
           />
         }
         ListHeaderComponent={
-          <Text style={styles.listHeader}>Recent Encrypted Logs</Text>
+          <Text style={styles.listHeader}>{calls.length ? 'Recent calls (stored on this device)' : 'No calls yet'}</Text>
         }
       />
 
       {/* New Call FAB */}
       <TouchableOpacity
         style={styles.fab}
-        onPress={() => router.push('/contacts' as any)}
+        onPress={() => router.push('/(tabs)/contacts')}
         activeOpacity={0.85}
       >
         <Ionicons name="call" size={24} color="#FFF" />

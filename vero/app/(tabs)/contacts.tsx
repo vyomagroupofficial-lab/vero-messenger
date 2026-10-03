@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -7,64 +7,92 @@ import {
   TouchableOpacity,
   TextInput,
   StatusBar,
+  ActivityIndicator,
+  Alert,
 } from 'react-native';
 import { router } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuthStore } from '../../src/features/auth/useAuthStore';
 import { conversationRepository } from '../../src/features/chats/ConversationRepository';
+import { useChatsStore } from '../../src/features/chats/useChatsStore';
+import { DEMO_CONTACTS } from '../../src/features/demo/demoData';
+import { friendlyError } from '../../src/core/network/supabase';
 import { User } from '../../src/shared/models/Message';
 import { Colors, Typography, Spacing, BorderRadius } from '../../src/shared/theme/theme';
 
-const SEED_CONTACTS: User[] = [
-  { id: 'sarah-connor-01', username: 'sarah_c', displayName: 'Sarah Connor (Security Lead)', about: 'X25519 Verified · 0x8a1...9b2' },
-  { id: 'marcus-vance-02', username: 'marcus_v', displayName: 'Marcus Vance', about: 'Core Protocol Engineer · 0x4f2...7c1' },
-  { id: 'elena-rostova-03', username: 'elena_r', displayName: 'Elena Rostova', about: 'Zero-Knowledge Cryptographer · 0x9e1...12a' },
-  { id: 'david-kim-04', username: 'david_k', displayName: 'David Kim', about: 'Vero Systems Auditor · 0x3d4...88f' },
-];
-
 export default function ContactsScreen() {
-  const { user } = useAuthStore();
+  const isDemo = useAuthStore((s) => s.isDemo);
+  const conversations = useChatsStore((s) => s.conversations);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<User[]>([]);
   const [isSearching, setIsSearching] = useState(false);
+  const [openingId, setOpeningId] = useState<string | null>(null);
 
-  const handleSearch = async (query: string) => {
-    setSearchQuery(query);
-    if (!query.trim() || !user?.id) {
+  // People you already talk to (from your direct chats).
+  const knownContacts = useMemo<User[]>(() => {
+    if (isDemo) return DEMO_CONTACTS;
+    const seen = new Map<string, User>();
+    for (const c of conversations) if (c.otherUser) seen.set(c.otherUser.id, c.otherUser);
+    return [...seen.values()].sort((a, b) => a.displayName.localeCompare(b.displayName));
+  }, [conversations, isDemo]);
+
+  // Debounced directory search.
+  useEffect(() => {
+    const q = searchQuery.trim();
+    if (q.length < 2) {
       setSearchResults([]);
+      setIsSearching(false);
+      return;
+    }
+    if (isDemo) {
+      setSearchResults(
+        DEMO_CONTACTS.filter((u) => `${u.displayName} ${u.username}`.toLowerCase().includes(q.toLowerCase()))
+      );
       return;
     }
     setIsSearching(true);
-    try {
-      const results = await conversationRepository.searchUsers(query, user.id);
-      setSearchResults(results);
-    } finally {
-      setIsSearching(false);
-    }
-  };
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      try {
+        const results = await conversationRepository.searchUsers(q);
+        if (!cancelled) setSearchResults(results);
+      } catch {
+        if (!cancelled) setSearchResults([]);
+      } finally {
+        if (!cancelled) setIsSearching(false);
+      }
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [searchQuery, isDemo]);
+
+  const handleSearch = (query: string) => setSearchQuery(query);
 
   const handleStartChat = async (otherUser: User) => {
-    if (!user?.id) return;
-    const result = await conversationRepository.createDirectConversation(user.id, otherUser.id);
-    if (result) {
-      router.push(`/chat/${result.conversationId}` as any);
-    } else {
-      // Fallback for demo contacts
-      router.push(`/chat/demo-chat-${otherUser.username.split('_')[0]}` as any);
+    if (isDemo) {
+      const existing = conversations.find((c) => c.otherUser?.id === otherUser.id);
+      if (existing) router.push(`/chat/${existing.id}`);
+      else Alert.alert('Demo mode', 'Create a real account to start new encrypted chats.');
+      return;
+    }
+    setOpeningId(otherUser.id);
+    try {
+      const conversationId = await conversationRepository.createDirectConversation(otherUser.id);
+      router.push(`/chat/${conversationId}`);
+    } catch (e) {
+      Alert.alert('Could not start chat', friendlyError(e));
+    } finally {
+      setOpeningId(null);
     }
   };
 
   const renderUser = ({ item }: { item: User }) => {
     const initials = item.displayName.slice(0, 2).toUpperCase();
-    const avatarGradients = [
-      ['#06B6D4', '#0284C7'],
-      ['#8B5CF6', '#6D28D9'],
-      ['#10B981', '#059669'],
-      ['#F59E0B', '#D97706'],
-    ];
-    const colorIndex = Math.abs(item.displayName.charCodeAt(0)) % avatarGradients.length;
-    const [bgStart] = avatarGradients[colorIndex];
+    const avatarColors = ['#06B6D4', '#8B5CF6', '#10B981', '#F59E0B'];
+    const bgStart = avatarColors[Math.abs(item.id.charCodeAt(item.id.length - 1)) % avatarColors.length];
 
     return (
       <TouchableOpacity
@@ -79,20 +107,23 @@ export default function ContactsScreen() {
         <View style={styles.userInfo}>
           <View style={styles.nameRow}>
             <Text style={styles.displayName}>{item.displayName}</Text>
-            <Ionicons name="shield-checkmark" size={13} color={Colors.emerald} />
           </View>
           <Text style={styles.username}>@{item.username}</Text>
           {item.about && <Text style={styles.userBio}>{item.about}</Text>}
         </View>
 
         <View style={styles.chatIconWrapper}>
-          <Ionicons name="chatbubble-ellipses" size={17} color={Colors.accentLight} />
+          {openingId === item.id ? (
+            <ActivityIndicator size="small" color={Colors.accentLight} />
+          ) : (
+            <Ionicons name="chatbubble-ellipses" size={17} color={Colors.accentLight} />
+          )}
         </View>
       </TouchableOpacity>
     );
   };
 
-  const displayedList = searchQuery ? searchResults : SEED_CONTACTS;
+  const displayedList = searchQuery.trim().length >= 2 ? searchResults : knownContacts;
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -100,7 +131,7 @@ export default function ContactsScreen() {
 
       {/* Header */}
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>Contacts & Directory</Text>
+        <Text style={styles.headerTitle}>Contacts</Text>
       </View>
 
       {/* Search Bar */}
@@ -109,7 +140,7 @@ export default function ContactsScreen() {
           <Ionicons name="search" size={18} color={Colors.accentLight} />
           <TextInput
             style={styles.searchInput}
-            placeholder="Search by username or identity key..."
+            placeholder="Search people by name or @username"
             placeholderTextColor={Colors.textTertiary}
             value={searchQuery}
             onChangeText={handleSearch}
@@ -127,15 +158,15 @@ export default function ContactsScreen() {
       {!searchQuery && (
         <TouchableOpacity
           style={styles.newGroupBtn}
-          onPress={() => router.push('/new-group' as any)}
+          onPress={() => router.push('/new-group')}
           activeOpacity={0.8}
         >
           <View style={styles.newGroupIcon}>
             <Ionicons name="people" size={22} color={Colors.purpleLight} />
           </View>
           <View style={styles.newGroupText}>
-            <Text style={styles.newGroupTitle}>Create Encrypted Group</Text>
-            <Text style={styles.newGroupSubtitle}>Pairwise sender keys & admin roles</Text>
+            <Text style={styles.newGroupTitle}>New group</Text>
+            <Text style={styles.newGroupSubtitle}>Every member's devices get their own key slot</Text>
           </View>
           <Ionicons name="chevron-forward" size={18} color={Colors.textTertiary} />
         </TouchableOpacity>
@@ -151,9 +182,13 @@ export default function ContactsScreen() {
         showsVerticalScrollIndicator={false}
         ListHeaderComponent={
           <Text style={styles.resultsHeader}>
-            {searchQuery
-              ? `${searchResults.length} matching result${searchResults.length !== 1 ? 's' : ''}`
-              : 'Verified Encrypted Directory'}
+            {searchQuery.trim().length >= 2
+              ? isSearching
+                ? 'Searching…'
+                : `${searchResults.length} result${searchResults.length !== 1 ? 's' : ''}`
+              : knownContacts.length
+                ? 'People you chat with'
+                : 'Search for someone by name or username to start a chat'}
           </Text>
         }
       />

@@ -7,192 +7,197 @@ import {
   ScrollView,
   Alert,
   Share,
-  Clipboard,
   StatusBar,
+  ActivityIndicator,
 } from 'react-native';
 import { useLocalSearchParams, router } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import * as Clipboard from 'expo-clipboard';
 import { Colors, Typography, Spacing, BorderRadius } from '../src/shared/theme/theme';
 import { cryptoManager } from '../src/core/crypto/CryptoManager';
 import { databaseService } from '../src/core/storage/DatabaseService';
+import { keyDirectory } from '../src/features/keys/KeyDirectory';
+import { useAuthStore } from '../src/features/auth/useAuthStore';
+import { friendlyError } from '../src/core/network/supabase';
+
+type VerifyState = 'loading' | 'unverified' | 'verified' | 'changed' | 'unavailable';
 
 export default function VerifySafetyNumberScreen() {
-  const { userId, displayName, publicKey } = useLocalSearchParams<{
-    userId: string;
-    displayName: string;
-    publicKey?: string;
-  }>();
+  const { userId, displayName } = useLocalSearchParams<{ userId: string; displayName?: string }>();
+  const me = useAuthStore((s) => s.user);
+  const isDemo = useAuthStore((s) => s.isDemo);
 
-  const [safetyNumber, setSafetyNumber] = useState<string>('45210 99823 10452 77312 88124 00192 34109 65521 11842 59021 84729 44012');
-  const [isVerified, setIsVerified] = useState<boolean>(false);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
-  const [copied, setCopied] = useState<boolean>(false);
+  const [safetyNumber, setSafetyNumber] = useState<string | null>(null);
+  const [state, setState] = useState<VerifyState>('loading');
+  const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
+    let cancelled = false;
     async function load() {
-      if (!userId) return;
-
-      const saved = await databaseService.getSafetyNumber(userId);
-      if (saved) {
-        setSafetyNumber(saved.safetyNumber);
-        setIsVerified(saved.isVerified);
-      } else {
-        try {
-          const myPublicKey = await cryptoManager.getIdentityPublicKey();
-          const peerKey = publicKey || 'PeerIdentityPublicKeyPlaceholderMockKey12345';
-          if (myPublicKey) {
-            const num = await cryptoManager.generateSafetyNumber(myPublicKey, peerKey);
-            setSafetyNumber(num);
-            await databaseService.saveSafetyNumber(userId, num);
-          }
-        } catch (e) {
-          const demoNumber = '45210 99823 10452 77312 88124 00192 34109 65521 11842 59021 84729 44012';
-          setSafetyNumber(demoNumber);
-          await databaseService.saveSafetyNumber(userId, demoNumber);
-        }
+      if (!userId || !me) return;
+      if (isDemo) {
+        setError('Safety numbers are computed from real device keys. Sign in with a real account to verify contacts.');
+        setState('unavailable');
+        return;
       }
-      setIsLoading(false);
+      try {
+        const [myKeys, theirKeys] = await Promise.all([
+          keyDirectory.getUserKeys(me.id),
+          keyDirectory.getUserKeys(userId),
+        ]);
+        if (!theirKeys.length) throw new Error(`${displayName || 'This contact'} has no active devices yet.`);
+        const number = await cryptoManager.computeSafetyNumber(
+          { userId: me.id, keys: myKeys },
+          { userId, keys: theirKeys }
+        );
+        const verified = await databaseService.getVerifiedSafetyNumber(userId);
+        if (cancelled) return;
+        setSafetyNumber(number);
+        setState(verified === null ? 'unverified' : verified === number ? 'verified' : 'changed');
+      } catch (e) {
+        if (cancelled) return;
+        setError(friendlyError(e, 'Could not compute the safety number.'));
+        setState('unavailable');
+      }
     }
-    load();
-  }, [userId, publicKey]);
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [userId, me?.id, isDemo]);
+
+  const isVerified = state === 'verified';
 
   const toggleVerified = async () => {
-    const newState = !isVerified;
-    setIsVerified(newState);
-    if (userId) {
-      await databaseService.setSafetyNumberVerified(userId, newState);
+    if (!userId || !safetyNumber) return;
+    if (isVerified) {
+      await databaseService.setVerifiedSafetyNumber(userId, null);
+      setState('unverified');
+      return;
     }
-    if (newState) {
-      Alert.alert(
-        'Marked as Verified',
-        `You have marked ${displayName || 'this contact'} as verified. You will be alerted if their encryption keys ever change.`
-      );
-    }
+    await databaseService.setVerifiedSafetyNumber(userId, safetyNumber);
+    setState('verified');
+    Alert.alert(
+      'Marked as verified',
+      `If ${displayName || 'this contact'} adds or replaces a device, the number will change and Vero will show it as changed.`
+    );
   };
 
-  const handleCopy = () => {
-    Clipboard.setString(safetyNumber);
+  const handleCopy = async () => {
+    if (!safetyNumber) return;
+    await Clipboard.setStringAsync(safetyNumber);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
 
   const handleShare = async () => {
+    if (!safetyNumber) return;
     try {
-      await Share.share({
-        message: `Vero E2EE Safety Number with ${displayName || 'contact'}:\n\n${safetyNumber}`,
-      });
-    } catch (e) {
-      // Ignored
+      await Share.share({ message: `Our Vero safety number:\n\n${safetyNumber}` });
+    } catch {
+      // dismissed
     }
   };
 
-  const numberBlocks = safetyNumber.split(/\s+/);
+  const numberBlocks = safetyNumber ? safetyNumber.split(/\s+/) : [];
+  const bannerTitle =
+    state === 'verified'
+      ? 'Verified'
+      : state === 'changed'
+        ? 'Safety number changed'
+        : state === 'unavailable'
+          ? 'Not available'
+          : state === 'loading'
+            ? 'Computing…'
+            : 'Not verified yet';
+  const bannerSubtitle =
+    state === 'verified'
+      ? 'You confirmed this number matches on both devices.'
+      : state === 'changed'
+        ? `${displayName || 'This contact'} (or you) added or replaced a device since you verified. Compare the new number again.`
+        : state === 'unavailable'
+          ? error
+          : 'Compare this number with the one on their phone, in person or over a trusted channel.';
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <StatusBar barStyle="light-content" backgroundColor={Colors.background} />
 
-      {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
           <Ionicons name="arrow-back" size={22} color={Colors.textPrimary} />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Verify Safety Number</Text>
-        <TouchableOpacity style={styles.backBtn} onPress={handleShare}>
-          <Ionicons name="share-outline" size={22} color={Colors.textPrimary} />
+        <Text style={styles.headerTitle}>Verify safety number</Text>
+        <TouchableOpacity style={styles.backBtn} onPress={handleShare} disabled={!safetyNumber}>
+          <Ionicons name="share-outline" size={22} color={safetyNumber ? Colors.textPrimary : Colors.textTertiary} />
         </TouchableOpacity>
       </View>
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        {/* Verification Status Banner */}
-        <View
-          style={[
-            styles.statusBanner,
-            isVerified ? styles.statusBannerVerified : styles.statusBannerUnverified,
-          ]}
-        >
+        <View style={[styles.statusBanner, isVerified ? styles.statusBannerVerified : styles.statusBannerUnverified]}>
           <Ionicons
-            name={isVerified ? 'shield-checkmark' : 'shield-outline'}
+            name={isVerified ? 'shield-checkmark' : state === 'changed' ? 'warning' : 'shield-outline'}
             size={28}
             color={isVerified ? Colors.emerald : Colors.warning}
           />
           <View style={styles.bannerText}>
-            <Text style={[styles.bannerTitle, isVerified && { color: Colors.emerald }]}>
-              {isVerified ? 'Cryptographically Verified' : 'Fingerprint Unverified'}
+            <Text style={[styles.bannerTitle, isVerified && { color: Colors.emerald }]}>{bannerTitle}</Text>
+            <Text style={styles.bannerSubtitle}>{bannerSubtitle}</Text>
+          </View>
+        </View>
+
+        {state === 'loading' && <ActivityIndicator color={Colors.accent} style={{ marginVertical: 24 }} />}
+
+        {safetyNumber && (
+          <View style={styles.codeCard}>
+            <View style={styles.codeHeader}>
+              <Text style={styles.codeTitle}>Safety number with {displayName || 'contact'}</Text>
+              <TouchableOpacity style={styles.copyBtn} onPress={handleCopy} activeOpacity={0.7}>
+                <Ionicons
+                  name={copied ? 'checkmark' : 'copy-outline'}
+                  size={14}
+                  color={copied ? Colors.emerald : Colors.accentLight}
+                />
+                <Text style={[styles.copyBtnText, copied && { color: Colors.emerald }]}>{copied ? 'Copied' : 'Copy'}</Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.blocksGrid}>
+              {numberBlocks.map((block, i) => (
+                <View key={i} style={styles.blockChip}>
+                  <Text style={styles.blockText}>{block}</Text>
+                </View>
+              ))}
+            </View>
+
+            <Text style={styles.codeHint}>
+              Both of you see the same 60 digits. If they match, nobody (including Vero's servers) has swapped in
+              their own keys between you.
             </Text>
-            <Text style={styles.bannerSubtitle}>
-              {isVerified
-                ? 'Identity confirmed. Zero man-in-the-middle interception risk.'
-                : 'Compare this 60-digit fingerprint with their device to confirm encryption.'}
-            </Text>
           </View>
-        </View>
+        )}
 
-        {/* QR Code Matrix Simulation Card */}
-        <View style={styles.qrCard}>
-          <View style={styles.qrMatrixFrame}>
-            <Ionicons name="qr-code" size={140} color={Colors.accentLight} />
-          </View>
-          <Text style={styles.qrHint}>Scan QR code on peer device for instant zero-knowledge pairing</Text>
-        </View>
+        {safetyNumber && (
+          <TouchableOpacity
+            style={[styles.verifyButton, isVerified ? styles.verifyButtonActive : styles.verifyButtonInactive]}
+            onPress={toggleVerified}
+            activeOpacity={0.85}
+          >
+            <Ionicons name={isVerified ? 'checkmark-circle' : 'shield-checkmark'} size={22} color="#FFF" />
+            <Text style={styles.verifyButtonText}>{isVerified ? 'Verified (tap to clear)' : 'Mark as verified'}</Text>
+          </TouchableOpacity>
+        )}
 
-        {/* 60-Digit Monospace Grid */}
-        <View style={styles.codeCard}>
-          <View style={styles.codeHeader}>
-            <Text style={styles.codeTitle}>60-Digit Numeric Fingerprint</Text>
-            <TouchableOpacity style={styles.copyBtn} onPress={handleCopy} activeOpacity={0.7}>
-              <Ionicons
-                name={copied ? 'checkmark' : 'copy-outline'}
-                size={14}
-                color={copied ? Colors.emerald : Colors.accentLight}
-              />
-              <Text style={[styles.copyBtnText, copied && { color: Colors.emerald }]}>
-                {copied ? 'Copied' : 'Copy'}
-              </Text>
-            </TouchableOpacity>
-          </View>
-
-          <View style={styles.blocksGrid}>
-            {numberBlocks.map((block, i) => (
-              <View key={i} style={styles.blockChip}>
-                <Text style={styles.blockText}>{block}</Text>
-              </View>
-            ))}
-          </View>
-
-          <Text style={styles.codeHint}>
-            This number is unique to your pairwise X25519 session with {displayName || 'this contact'}. If the numbers match on both phones, your encryption is 100% secure.
-          </Text>
-        </View>
-
-        {/* Verification Action Button */}
-        <TouchableOpacity
-          style={[
-            styles.verifyButton,
-            isVerified ? styles.verifyButtonActive : styles.verifyButtonInactive,
-          ]}
-          onPress={toggleVerified}
-          activeOpacity={0.85}
-        >
-          <Ionicons
-            name={isVerified ? 'checkmark-circle' : 'shield-checkmark'}
-            size={22}
-            color="#FFF"
-          />
-          <Text style={styles.verifyButtonText}>
-            {isVerified ? 'Marked as Verified (Tap to Revoke)' : 'Mark as Verified'}
-          </Text>
-        </TouchableOpacity>
-
-        {/* Technical Explainer */}
         <View style={styles.explainerCard}>
           <View style={styles.explainerRow}>
             <Ionicons name="key" size={18} color={Colors.accentLight} />
-            <Text style={styles.explainerHeading}>Zero-Knowledge Guarantee</Text>
+            <Text style={styles.explainerHeading}>How it works</Text>
           </View>
           <Text style={styles.explainerBody}>
-            Derived directly via Libsodium SHA-512 over both identity public keys. Plaintexts are strictly held in device Secure Enclave and SQLite.
+            The number is derived (iterated BLAKE2b) from the public identity keys of every active device on both
+            accounts. Private keys never leave your devices.
           </Text>
         </View>
       </ScrollView>

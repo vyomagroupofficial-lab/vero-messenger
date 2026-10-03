@@ -8,18 +8,16 @@ import {
   TextInput,
   RefreshControl,
   ActivityIndicator,
-  Animated,
   StatusBar,
-  Platform,
 } from 'react-native';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuthStore } from '../../src/features/auth/useAuthStore';
-import { conversationRepository } from '../../src/features/chats/ConversationRepository';
-import { Conversation, Message } from '../../src/shared/models/Message';
+import { useChatsStore } from '../../src/features/chats/useChatsStore';
+import { Conversation, Message, conversationTitle, messagePreview } from '../../src/shared/models/Message';
 import { databaseService } from '../../src/core/storage/DatabaseService';
-import { Colors, Typography, Spacing, BorderRadius, Shadows } from '../../src/shared/theme/theme';
+import { Colors, Typography, Spacing, BorderRadius } from '../../src/shared/theme/theme';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
 
@@ -27,6 +25,14 @@ dayjs.extend(relativeTime);
 
 const CATEGORIES = ['All', 'Direct', 'Groups', 'Unread'] as const;
 type Category = typeof CATEGORIES[number];
+
+const AVATAR_COLORS = ['#06B6D4', '#8B5CF6', '#10B981', '#F59E0B', '#EC4899'];
+
+export function avatarColor(seed: string): string {
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) | 0;
+  return AVATAR_COLORS[Math.abs(h) % AVATAR_COLORS.length];
+}
 
 // ──────────────────────────────────────────────────────────────────────────
 // Chat List Item Component
@@ -37,60 +43,35 @@ interface ChatListItemProps {
   onPress: () => void;
 }
 
-function ChatListItem({ conversation, onPress }: ChatListItemProps) {
+const ChatListItem = React.memo(function ChatListItem({ conversation, onPress }: ChatListItemProps) {
   const isDirect = conversation.conversationType === 'direct';
-  const name = isDirect
-    ? (conversation.otherUser?.displayName || 'Unknown')
-    : (conversation.groupName || 'Vero Group');
-
+  const name = conversationTitle(conversation);
   const initials = name.slice(0, 2).toUpperCase();
-  const lastMsgTime = conversation.lastMessage
-    ? dayjs(conversation.lastMessage.createdAt).fromNow(true)
-    : '';
-
   const lastMsg = conversation.lastMessage;
+  const lastMsgTime = lastMsg ? dayjs(lastMsg.createdAt).fromNow(true) : '';
   const isOwn = lastMsg?.isOwn;
-
-  const avatarGradients = [
-    ['#06B6D4', '#0284C7'],
-    ['#8B5CF6', '#6D28D9'],
-    ['#10B981', '#059669'],
-    ['#F59E0B', '#D97706'],
-    ['#EC4899', '#BE185D'],
-  ];
-  const colorIndex = Math.abs(name.charCodeAt(0)) % avatarGradients.length;
-  const [bgStart, bgEnd] = avatarGradients[colorIndex];
+  const preview = lastMsg
+    ? `${!isDirect && lastMsg.senderName ? `${lastMsg.senderName}: ` : ''}${lastMsg.content || ''}`
+    : '🔒 End-to-end encrypted';
 
   return (
-    <TouchableOpacity
-      style={styles.chatItem}
-      onPress={onPress}
-      activeOpacity={0.75}
-    >
-      {/* Avatar with Glow and Badge */}
+    <TouchableOpacity style={styles.chatItem} onPress={onPress} activeOpacity={0.75}>
       <View style={styles.avatarWrapper}>
-        <View style={[styles.avatar, { backgroundColor: bgStart }]}>
+        <View style={[styles.avatar, { backgroundColor: avatarColor(conversation.id) }]}>
           {isDirect ? (
             <Text style={styles.avatarText}>{initials}</Text>
           ) : (
             <Ionicons name="people" size={24} color="#FFF" />
           )}
         </View>
-
-        {/* Live Status indicator */}
-        <View style={styles.onlineDot} />
       </View>
 
-      {/* Conversation Details */}
       <View style={styles.chatContent}>
         <View style={styles.chatHeader}>
           <View style={styles.nameRow}>
             <Text style={styles.chatName} numberOfLines={1}>
               {name}
             </Text>
-            <View style={styles.e2eeShieldMini}>
-              <Ionicons name="shield-checkmark" size={12} color={Colors.emerald} />
-            </View>
           </View>
           <Text style={styles.chatTime}>{lastMsgTime}</Text>
         </View>
@@ -98,30 +79,21 @@ function ChatListItem({ conversation, onPress }: ChatListItemProps) {
         <View style={styles.chatFooter}>
           <View style={styles.previewRow}>
             {isOwn && (
-              <Ionicons
-                name="checkmark-done"
-                size={15}
-                color={lastMsg?.content ? Colors.accentLight : Colors.textTertiary}
-                style={styles.receiptIcon}
-              />
+              <Ionicons name="checkmark" size={15} color={Colors.textTertiary} style={styles.receiptIcon} />
             )}
             <Text
-              style={[
-                styles.chatPreview,
-                (conversation.unreadCount || 0) > 0 && styles.chatPreviewUnread,
-              ]}
+              style={[styles.chatPreview, conversation.unreadCount > 0 && styles.chatPreviewUnread]}
               numberOfLines={1}
             >
-              {lastMsg?.content || '🔒 End-to-end encrypted message'}
+              {preview}
             </Text>
           </View>
 
-          {/* Meta & Unread Pill */}
           <View style={styles.chatMeta}>
-            {(conversation.unreadCount || 0) > 0 && (
+            {conversation.unreadCount > 0 && (
               <View style={styles.unreadBadge}>
                 <Text style={styles.unreadCount}>
-                  {conversation.unreadCount! > 99 ? '99+' : conversation.unreadCount}
+                  {conversation.unreadCount > 99 ? '99+' : conversation.unreadCount}
                 </Text>
               </View>
             )}
@@ -130,155 +102,73 @@ function ChatListItem({ conversation, onPress }: ChatListItemProps) {
       </View>
     </TouchableOpacity>
   );
-}
-
-// ──────────────────────────────────────────────────────────────────────────
-// Demo Conversations Seed
-// ──────────────────────────────────────────────────────────────────────────
-
-const DEMO_CONVERSATIONS: Conversation[] = [
-  {
-    id: 'demo-chat-sarah',
-    conversationType: 'direct',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    otherUser: {
-      id: 'sarah-connor-01',
-      username: 'sarah_c',
-      displayName: 'Sarah Connor',
-      avatarReference: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=200&q=80',
-    },
-    lastMessage: {
-      content: 'Verified our 60-digit safety number! All green 🔒',
-      messageType: 'text',
-      senderDisplayName: 'Sarah Connor',
-      isOwn: false,
-      createdAt: new Date(Date.now() - 1000 * 60 * 12).toISOString(),
-    },
-    unreadCount: 0,
-  },
-  {
-    id: 'demo-chat-marcus',
-    conversationType: 'direct',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    otherUser: {
-      id: 'marcus-vance-02',
-      username: 'marcus_v',
-      displayName: 'Marcus Vance (DevOps)',
-      avatarReference: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=200&q=80',
-    },
-    lastMessage: {
-      content: '📷 Encrypted media transfer complete via Drive proxy',
-      messageType: 'image',
-      senderDisplayName: 'Alex Chen',
-      isOwn: true,
-      createdAt: new Date(Date.now() - 1000 * 60 * 45).toISOString(),
-    },
-    unreadCount: 2,
-  },
-  {
-    id: 'demo-group-core',
-    conversationType: 'group',
-    groupName: 'Vero Security Core',
-    groupAvatar: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?auto=format&fit=crop&w=200&q=80',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    lastMessage: {
-      content: 'Zero-Knowledge audit verified: No plaintexts in Supabase.',
-      messageType: 'text',
-      senderDisplayName: 'Security Ops',
-      isOwn: false,
-      createdAt: new Date(Date.now() - 1000 * 60 * 120).toISOString(),
-    },
-    unreadCount: 0,
-  },
-];
+});
 
 // ──────────────────────────────────────────────────────────────────────────
 // Main Chats Screen
 // ──────────────────────────────────────────────────────────────────────────
 
 export default function ChatsScreen() {
-  const { user } = useAuthStore();
-  const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [filteredConversations, setFilteredConversations] = useState<Conversation[]>([]);
+  const userId = useAuthStore((s) => s.user?.id);
+  const isDemo = useAuthStore((s) => s.isDemo);
+  const conversations = useChatsStore((s) => s.conversations);
+  const isLoading = useChatsStore((s) => s.isLoading);
+  const isOffline = useChatsStore((s) => s.isOffline);
+  const load = useChatsStore((s) => s.load);
+
   const [selectedCategory, setSelectedCategory] = useState<Category>('All');
-  const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [showSearch, setShowSearch] = useState(false);
   const [matchedMessages, setMatchedMessages] = useState<Message[]>([]);
 
-  const loadConversations = useCallback(async () => {
-    if (!user?.id) return;
-    try {
-      const data = await conversationRepository.getConversations(user.id);
-      const list = data && data.length > 0 ? data : DEMO_CONVERSATIONS;
-      setConversations(list);
-      setFilteredConversations(list);
-    } catch (e) {
-      console.error('[ChatsScreen] load error:', e);
-      setConversations(DEMO_CONVERSATIONS);
-      setFilteredConversations(DEMO_CONVERSATIONS);
-    } finally {
-      setIsLoading(false);
-      setIsRefreshing(false);
-    }
-  }, [user?.id]);
+  useFocusEffect(
+    useCallback(() => {
+      if (userId) void load({ sync: true });
+    }, [userId, load])
+  );
 
+  // Local (on-device) full-text search over decrypted messages, debounced.
   useEffect(() => {
-    loadConversations();
-  }, [loadConversations]);
-
-  useEffect(() => {
-    if (!searchQuery.trim()) {
-      setFilteredConversations(conversations);
+    const q = searchQuery.trim();
+    if (q.length < 2) {
       setMatchedMessages([]);
       return;
     }
-    const query = searchQuery.toLowerCase();
-    setFilteredConversations(
-      conversations.filter((c) => {
-        const name = c.conversationType === 'direct'
-          ? c.otherUser?.displayName?.toLowerCase()
-          : c.groupName?.toLowerCase();
-        return name?.includes(query);
-      })
-    );
-
-    databaseService.searchMessages(searchQuery).then((results) => {
-      setMatchedMessages(results);
-    });
-  }, [searchQuery, conversations]);
+    const t = setTimeout(() => {
+      void databaseService.searchMessages(q).then(setMatchedMessages);
+    }, 250);
+    return () => clearTimeout(t);
+  }, [searchQuery]);
 
   const displayedConversations = useMemo(() => {
-    let list = filteredConversations;
-    if (selectedCategory === 'Direct') {
-      list = list.filter((c) => c.conversationType === 'direct');
-    } else if (selectedCategory === 'Groups') {
-      list = list.filter((c) => c.conversationType === 'group');
-    } else if (selectedCategory === 'Unread') {
-      list = list.filter((c) => (c.unreadCount || 0) > 0);
-    }
+    const q = searchQuery.trim().toLowerCase();
+    let list = q ? conversations.filter((c) => conversationTitle(c).toLowerCase().includes(q)) : conversations;
+    if (selectedCategory === 'Direct') list = list.filter((c) => c.conversationType === 'direct');
+    else if (selectedCategory === 'Groups') list = list.filter((c) => c.conversationType === 'group');
+    else if (selectedCategory === 'Unread') list = list.filter((c) => c.unreadCount > 0);
     return list;
-  }, [filteredConversations, selectedCategory]);
+  }, [conversations, searchQuery, selectedCategory]);
 
-  const handleRefresh = () => {
+  const handleRefresh = async () => {
     setIsRefreshing(true);
-    loadConversations();
+    try {
+      await load({ sync: true });
+    } finally {
+      setIsRefreshing(false);
+    }
   };
 
   const handleChatPress = (conversation: Conversation) => {
-    router.push(`/chat/${conversation.id}` as any);
+    router.push(`/chat/${conversation.id}`);
   };
 
   const handleNewChat = () => {
-    router.push('/contacts' as any);
+    router.push('/(tabs)/contacts');
   };
 
   const handleNewGroup = () => {
-    router.push('/new-group' as any);
+    router.push('/new-group');
   };
 
   if (isLoading) {
@@ -289,7 +179,7 @@ export default function ChatsScreen() {
             <Ionicons name="shield-checkmark" size={38} color={Colors.accent} />
           </View>
           <ActivityIndicator size="small" color={Colors.accent} style={{ marginTop: 16 }} />
-          <Text style={styles.loadingText}>Decrypting local enclave...</Text>
+          <Text style={styles.loadingText}>Loading your chats…</Text>
         </View>
       </SafeAreaView>
     );
@@ -332,7 +222,7 @@ export default function ChatsScreen() {
                 <Text style={styles.brandTitle}>VERO</Text>
                 <View style={styles.statusBadge}>
                   <View style={styles.statusDotLive} />
-                  <Text style={styles.statusText}>E2EE ACTIVE</Text>
+                  <Text style={styles.statusText}>{isDemo ? 'DEMO MODE' : isOffline ? 'OFFLINE' : 'E2EE ACTIVE'}</Text>
                 </View>
               </View>
             </View>
@@ -388,7 +278,7 @@ export default function ChatsScreen() {
       )}
 
       {/* Main Conversation List */}
-      {displayedConversations.length === 0 ? (
+      {displayedConversations.length === 0 && matchedMessages.length === 0 ? (
         <View style={styles.emptyState}>
           <View style={styles.emptyIcon}>
             <Ionicons name="chatbubbles-outline" size={42} color={Colors.accent} />
@@ -443,12 +333,12 @@ export default function ChatsScreen() {
                   <TouchableOpacity
                     key={msg.id}
                     style={styles.messageSearchResult}
-                    onPress={() => router.push(`/chat/${msg.conversationId}` as any)}
+                    onPress={() => router.push(`/chat/${msg.conversationId}`)}
                   >
                     <Ionicons name="chatbubble-ellipses-outline" size={18} color={Colors.accentLight} />
                     <View style={{ flex: 1 }}>
                       <Text style={styles.messageSearchText} numberOfLines={1}>
-                        {msg.content}
+                        {messagePreview(msg.messageType, msg.content)}
                       </Text>
                       <Text style={styles.messageSearchMeta}>
                         {dayjs(msg.createdAt).format('MMM D, h:mm A')}

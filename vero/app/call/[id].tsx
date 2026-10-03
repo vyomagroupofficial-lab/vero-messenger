@@ -11,52 +11,42 @@ import { useLocalSearchParams, router } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors, Typography, Spacing, BorderRadius } from '../../src/shared/theme/theme';
-import { callService, ActiveCall } from '../../src/features/calls/CallService';
+import { callService, ActiveCall, CALL_MEDIA_AVAILABLE } from '../../src/features/calls/CallService';
 
 export default function CallScreen() {
-  const { id } = useLocalSearchParams<{ id: string; name?: string; type?: string }>();
+  const { id } = useLocalSearchParams<{ id: string }>();
   const [callState, setCallState] = useState<ActiveCall | null>(callService.getActiveCall());
-  const [isMuted, setIsMuted] = useState(false);
-  const [isSpeakerOn, setIsSpeakerOn] = useState(true);
-  const [isVideoEnabled, setIsVideoEnabled] = useState(false);
-  const [cameraFacing, setCameraFacing] = useState<'front' | 'back'>('front');
 
   // Pulse animation for avatar ring
   const pulseAnim = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
+    let left = false;
+    const leave = () => {
+      if (left) return;
+      left = true;
+      setTimeout(() => (router.canGoBack() ? router.back() : router.replace('/(tabs)/calls')), 1200);
+    };
     const unsubscribe = callService.subscribe((currentCall) => {
       setCallState(currentCall);
-      if (!currentCall || currentCall.status === 'ended' || currentCall.status === 'rejected') {
-        setTimeout(() => {
-          if (router.canGoBack()) {
-            router.back();
-          } else {
-            router.replace('/(tabs)/calls');
-          }
-        }, 1200);
+      if (!currentCall || currentCall.id !== id || ['ended', 'rejected', 'missed', 'failed'].includes(currentCall.status)) {
+        leave();
       }
     });
 
-    Animated.loop(
+    const loop = Animated.loop(
       Animated.sequence([
-        Animated.timing(pulseAnim, {
-          toValue: 1.15,
-          duration: 1200,
-          useNativeDriver: true,
-        }),
-        Animated.timing(pulseAnim, {
-          toValue: 1,
-          duration: 1200,
-          useNativeDriver: true,
-        }),
+        Animated.timing(pulseAnim, { toValue: 1.15, duration: 1200, useNativeDriver: true }),
+        Animated.timing(pulseAnim, { toValue: 1, duration: 1200, useNativeDriver: true }),
       ])
-    ).start();
+    );
+    loop.start();
 
     return () => {
       unsubscribe();
+      loop.stop();
     };
-  }, []);
+  }, [id]);
 
   const formatDuration = (sec: number) => {
     const mins = Math.floor(sec / 60);
@@ -64,13 +54,9 @@ export default function CallScreen() {
     return `${mins.toString().padStart(2, '0')}:${remainingSecs.toString().padStart(2, '0')}`;
   };
 
-  const handleEndCall = () => {
-    callService.endCall();
-  };
-
-  const handleAcceptCall = () => {
-    callService.acceptCall();
-  };
+  const handleEndCall = () => void callService.endCall();
+  const handleDecline = () => void callService.rejectCall();
+  const handleAcceptCall = () => void callService.acceptCall();
 
   const peerName = callState?.peerName || 'Contact';
   const initials = peerName.slice(0, 2).toUpperCase();
@@ -85,7 +71,7 @@ export default function CallScreen() {
       <View style={styles.topSecurity}>
         <View style={styles.securityBadge}>
           <Ionicons name="lock-closed" size={13} color={Colors.accent} />
-          <Text style={styles.securityText}>End-to-End Encrypted</Text>
+          <Text style={styles.securityText}>Private signalling channel</Text>
         </View>
       </View>
 
@@ -109,14 +95,16 @@ export default function CallScreen() {
             : callState?.status === 'ended'
             ? 'Call Ended'
             : callState?.status === 'rejected'
-            ? 'Call Declined'
+            ? 'Call declined'
+            : callState?.status === 'missed'
+            ? 'No answer'
             : 'Connecting...'}
         </Text>
 
         {callState?.callType === 'video' && (
           <View style={styles.videoBadge}>
             <Ionicons name="videocam" size={14} color={Colors.textSecondary} />
-            <Text style={styles.videoBadgeText}>Encrypted Video Channel</Text>
+            <Text style={styles.videoBadgeText}>Video call</Text>
           </View>
         )}
       </View>
@@ -128,7 +116,7 @@ export default function CallScreen() {
           <View style={styles.incomingActions}>
             <TouchableOpacity
               style={[styles.actionBtn, styles.declineBtn]}
-              onPress={handleEndCall}
+              onPress={handleDecline}
               activeOpacity={0.8}
             >
               <Ionicons name="close" size={32} color={Colors.white} />
@@ -147,55 +135,14 @@ export default function CallScreen() {
         ) : (
           /* In-Call Controls */
           <View style={styles.inCallControls}>
-            <View style={styles.controlsRow}>
-              {/* Mute */}
-              <TouchableOpacity
-                style={[styles.controlBtn, isMuted && styles.controlBtnActive]}
-                onPress={() => setIsMuted(!isMuted)}
-                activeOpacity={0.7}
-              >
-                <Ionicons
-                  name={isMuted ? 'mic-off' : 'mic'}
-                  size={24}
-                  color={isMuted ? Colors.white : Colors.textPrimary}
-                />
-              </TouchableOpacity>
-
-              {/* Video toggle */}
-              <TouchableOpacity
-                style={[styles.controlBtn, isVideoEnabled && styles.controlBtnActive]}
-                onPress={() => setIsVideoEnabled(!isVideoEnabled)}
-                activeOpacity={0.7}
-              >
-                <Ionicons
-                  name={isVideoEnabled ? 'videocam' : 'videocam-off'}
-                  size={24}
-                  color={isVideoEnabled ? Colors.white : Colors.textPrimary}
-                />
-              </TouchableOpacity>
-
-              {/* Camera flip */}
-              <TouchableOpacity
-                style={styles.controlBtn}
-                onPress={() => setCameraFacing(cameraFacing === 'front' ? 'back' : 'front')}
-                activeOpacity={0.7}
-              >
-                <Ionicons name="camera-reverse-outline" size={24} color={Colors.textPrimary} />
-              </TouchableOpacity>
-
-              {/* Speaker */}
-              <TouchableOpacity
-                style={[styles.controlBtn, isSpeakerOn && styles.controlBtnActive]}
-                onPress={() => setIsSpeakerOn(!isSpeakerOn)}
-                activeOpacity={0.7}
-              >
-                <Ionicons
-                  name={isSpeakerOn ? 'volume-high' : 'volume-medium-outline'}
-                  size={24}
-                  color={isSpeakerOn ? Colors.white : Colors.textPrimary}
-                />
-              </TouchableOpacity>
-            </View>
+            {!CALL_MEDIA_AVAILABLE && (
+              <View style={styles.videoBadge}>
+                <Ionicons name="information-circle-outline" size={14} color={Colors.textSecondary} />
+                <Text style={styles.videoBadgeText}>
+                  Audio/video streaming isn't available in this version yet.
+                </Text>
+              </View>
+            )}
 
             {/* End Call Button */}
             <View style={styles.endCallWrapper}>

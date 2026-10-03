@@ -12,75 +12,129 @@ import { useLocalSearchParams, router } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors, Typography, Spacing, BorderRadius } from '../../src/shared/theme/theme';
-import { supabase } from '../../src/core/network/supabase';
+import { friendlyError } from '../../src/core/network/supabase';
 import { useAuthStore } from '../../src/features/auth/useAuthStore';
+import { useChatsStore } from '../../src/features/chats/useChatsStore';
+import { DEMO_CONTACTS } from '../../src/features/demo/demoData';
 import { conversationRepository } from '../../src/features/chats/ConversationRepository';
 import { callService } from '../../src/features/calls/CallService';
 import { databaseService } from '../../src/core/storage/DatabaseService';
 
 export default function ProfileScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { user } = useAuthStore();
+  const isDemo = useAuthStore((s) => s.isDemo);
+  const conversations = useChatsStore((s) => s.conversations);
 
   const [displayName, setDisplayName] = useState('Contact');
-  const [username, setUsername] = useState('user');
-  const [about, setAbout] = useState('🔐 Privacy is not a crime. Zero-knowledge is freedom.');
+  const [username, setUsername] = useState('');
+  const [about, setAbout] = useState<string | null>(null);
   const [isVerified, setIsVerified] = useState(false);
+  const [isBlocked, setIsBlocked] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
 
+  const directConversation = conversations.find((c) => c.otherUser?.id === id);
+
   useEffect(() => {
+    let cancelled = false;
     async function loadProfile() {
       if (!id) return;
       try {
-        const { data } = await supabase
-          .from('profiles')
-          .select('id, display_name, username, about')
-          .eq('id', id)
-          .single();
-
-        if (data) {
-          setDisplayName(data.display_name || 'Contact');
-          setUsername(data.username || 'user');
-          if (data.about) setAbout(data.about);
+        const demo = DEMO_CONTACTS.find((u) => u.id === id);
+        const profile = isDemo ? demo ?? null : await conversationRepository.getProfile(id);
+        if (cancelled) return;
+        if (profile) {
+          setDisplayName(profile.displayName);
+          setUsername(profile.username);
+          setAbout(profile.about ?? null);
         }
-
-        // Check verification status
-        const safetyInfo = await databaseService.getSafetyNumber(id);
-        if (safetyInfo) {
-          setIsVerified(safetyInfo.isVerified);
+        if (!isDemo) {
+          const [verified, blocked] = await Promise.all([
+            databaseService.getVerifiedSafetyNumber(id),
+            conversationRepository.isBlocked(id),
+          ]);
+          if (cancelled) return;
+          setIsVerified(verified !== null);
+          setIsBlocked(blocked);
         }
-      } catch (e) {
-        // Fallback demo info
       } finally {
-        setIsLoading(false);
+        if (!cancelled) setIsLoading(false);
       }
     }
-    loadProfile();
-  }, [id]);
+    void loadProfile();
+    return () => {
+      cancelled = true;
+    };
+  }, [id, isDemo]);
 
   const handleStartChat = async () => {
-    if (!user?.id || !id) return;
-    const res = await conversationRepository.createDirectConversation(user.id, id);
-    if (res) {
-      router.push(`/chat/${res.conversationId}` as any);
+    if (!id) return;
+    if (directConversation) {
+      router.push(`/chat/${directConversation.id}`);
+      return;
+    }
+    if (isDemo) return;
+    try {
+      const conversationId = await conversationRepository.createDirectConversation(id);
+      router.push(`/chat/${conversationId}`);
+    } catch (e) {
+      Alert.alert('Could not start chat', friendlyError(e));
     }
   };
 
   const handleStartCall = async (type: 'voice' | 'video') => {
-    if (!user?.id || !id) return;
-    const callId = await callService.startCall({
-      peerId: id,
-      peerName: displayName,
-      callType: type,
-      currentUserId: user.id,
-      currentUserName: user.displayName || user.username || 'You',
-    });
-    router.push(`/call/${callId}` as any);
+    if (!id) return;
+    try {
+      const conversationId =
+        directConversation?.id ?? (isDemo ? null : await conversationRepository.createDirectConversation(id));
+      if (!conversationId) return;
+      const callId = await callService.startCall({ conversationId, peerId: id, peerName: displayName, callType: type });
+      router.push(`/call/${callId}`);
+    } catch (e) {
+      Alert.alert('Call failed', friendlyError(e));
+    }
   };
 
   const handleOpenVerification = () => {
     if (!id) return;
-    router.push(`/verify-safety-number?userId=${id}&displayName=${displayName}` as any);
+    router.push({ pathname: '/verify-safety-number', params: { userId: id, displayName } });
+  };
+
+  const handleToggleBlock = () => {
+    if (!id || isDemo) return;
+    if (isBlocked) {
+      conversationRepository
+        .unblockUser(id)
+        .then(() => setIsBlocked(false))
+        .catch((e) => Alert.alert('Could not unblock', friendlyError(e)));
+      return;
+    }
+    Alert.alert('Block contact', `Block ${displayName}? They won't be able to message or call you.`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Block',
+        style: 'destructive',
+        onPress: () =>
+          conversationRepository
+            .blockUser(id)
+            .then(() => setIsBlocked(true))
+            .catch((e) => Alert.alert('Could not block', friendlyError(e))),
+      },
+    ]);
+  };
+
+  const handleReport = () => {
+    if (!id || isDemo) return;
+    const submit = (reason: string) =>
+      conversationRepository
+        .reportUser(id, reason, directConversation?.id)
+        .then(() => Alert.alert('Report sent', 'Thanks. Reports never include your message content.'))
+        .catch((e) => Alert.alert('Could not send report', friendlyError(e)));
+    Alert.alert('Report contact', 'Why are you reporting this account?', [
+      { text: 'Spam', onPress: () => submit('spam') },
+      { text: 'Harassment', onPress: () => submit('harassment') },
+      { text: 'Impersonation', onPress: () => submit('impersonation') },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
   };
 
   const initials = displayName.slice(0, 2).toUpperCase();
@@ -93,7 +147,7 @@ export default function ProfileScreen() {
           <TouchableOpacity style={styles.backBtn} onPress={() => router.back()} activeOpacity={0.7}>
             <Ionicons name="arrow-back" size={20} color={Colors.textPrimary} />
           </TouchableOpacity>
-          <Text style={styles.headerTitle}>Cryptographic Identity</Text>
+          <Text style={styles.headerTitle}>Contact</Text>
           <TouchableOpacity style={styles.moreBtn} activeOpacity={0.7}>
             <Ionicons name="shield-outline" size={20} color={Colors.accent} />
           </TouchableOpacity>
@@ -108,9 +162,6 @@ export default function ProfileScreen() {
               <View style={styles.avatarHalo}>
                 <View style={styles.avatar}>
                   <Text style={styles.avatarText}>{initials}</Text>
-                </View>
-                <View style={styles.onlineBadge}>
-                  <View style={styles.onlineInner} />
                 </View>
               </View>
 
@@ -128,7 +179,7 @@ export default function ProfileScreen() {
                 )}
               </View>
 
-              <Text style={styles.username}>@{username} • Curve25519</Text>
+              {username ? <Text style={styles.username}>@{username}</Text> : null}
 
               {about ? (
                 <View style={styles.aboutCard}>
@@ -144,27 +195,27 @@ export default function ProfileScreen() {
                 <View style={[styles.actionIconWrap, { borderColor: 'rgba(6, 182, 212, 0.4)' }]}>
                   <Ionicons name="chatbubble-ellipses-outline" size={22} color={Colors.accent} />
                 </View>
-                <Text style={styles.actionLabel}>Encrypted Chat</Text>
+                <Text style={styles.actionLabel}>Message</Text>
               </TouchableOpacity>
 
               <TouchableOpacity style={styles.actionBtn} onPress={() => handleStartCall('voice')} activeOpacity={0.8}>
                 <View style={[styles.actionIconWrap, { borderColor: 'rgba(139, 92, 246, 0.4)' }]}>
                   <Ionicons name="call-outline" size={22} color="#8B5CF6" />
                 </View>
-                <Text style={[styles.actionLabel, { color: '#8B5CF6' }]}>P2P Voice</Text>
+                <Text style={[styles.actionLabel, { color: '#8B5CF6' }]}>Voice</Text>
               </TouchableOpacity>
 
               <TouchableOpacity style={styles.actionBtn} onPress={() => handleStartCall('video')} activeOpacity={0.8}>
                 <View style={[styles.actionIconWrap, { borderColor: 'rgba(16, 185, 129, 0.4)' }]}>
                   <Ionicons name="videocam-outline" size={22} color={Colors.online} />
                 </View>
-                <Text style={[styles.actionLabel, { color: Colors.online }]}>P2P Video</Text>
+                <Text style={[styles.actionLabel, { color: Colors.online }]}>Video</Text>
               </TouchableOpacity>
             </View>
 
             {/* Cryptographic Verification Card */}
             <View style={styles.section}>
-              <Text style={styles.sectionTitle}>CRYPTOGRAPHIC VERIFICATION</Text>
+              <Text style={styles.sectionTitle}>ENCRYPTION</Text>
               <View style={styles.card}>
                 <TouchableOpacity
                   style={styles.cardRowInteractive}
@@ -179,18 +230,18 @@ export default function ProfileScreen() {
                       <Text style={styles.rowTitle}>Verify Safety Number</Text>
                       {isVerified ? (
                         <View style={styles.statusPillActive}>
-                          <Text style={styles.statusPillActiveText}>MATCH CONFIRMED</Text>
+                          <Text style={styles.statusPillActiveText}>VERIFIED</Text>
                         </View>
                       ) : (
                         <View style={styles.statusPillPending}>
-                          <Text style={styles.statusPillPendingText}>COMPARE FINGERPRINT</Text>
+                          <Text style={styles.statusPillPendingText}>NOT VERIFIED</Text>
                         </View>
                       )}
                     </View>
                     <Text style={styles.rowSub}>
                       {isVerified
-                        ? '60-digit public key fingerprint verified via QR code'
-                        : 'Compare 60-digit safety numbers to prevent MITM attacks'}
+                        ? 'You confirmed the safety number matches'
+                        : 'Compare safety numbers to rule out key substitution'}
                     </Text>
                   </View>
                   <Ionicons name="chevron-forward" size={16} color={Colors.textTertiary} />
@@ -204,69 +255,30 @@ export default function ProfileScreen() {
                   </View>
                   <View style={styles.rowContent}>
                     <Text style={styles.rowTitle}>Cipher Suite</Text>
-                    <Text style={styles.rowSub}>Curve25519 • XSalsa20 • Poly1305 MAC</Text>
+                    <Text style={styles.rowSub}>X25519 • XChaCha20-Poly1305 • BLAKE2b</Text>
                   </View>
                   <View style={styles.badgePill}>
                     <Text style={styles.badgePillText}>256-BIT</Text>
                   </View>
                 </View>
-
-                <View style={styles.divider} />
-
-                <View style={styles.cardRow}>
-                  <View style={styles.rowIconWrap}>
-                    <Ionicons name="timer-outline" size={20} color="#F59E0B" />
-                  </View>
-                  <View style={styles.rowContent}>
-                    <Text style={styles.rowTitle}>Disappearing Messages</Text>
-                    <Text style={styles.rowSub}>Ephemeral self-destruct timers available</Text>
-                  </View>
-                  <Ionicons name="chevron-forward" size={16} color={Colors.textTertiary} />
-                </View>
-              </View>
-            </View>
-
-            {/* Media & Shared Links */}
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>SHARED ASSETS</Text>
-              <View style={styles.card}>
-                <TouchableOpacity style={styles.cardRow} activeOpacity={0.7}>
-                  <View style={styles.rowIconWrap}>
-                    <Ionicons name="images-outline" size={20} color={Colors.accent} />
-                  </View>
-                  <View style={styles.rowContent}>
-                    <Text style={styles.rowTitle}>Media, Files & Links</Text>
-                    <Text style={styles.rowSub}>Encrypted attachments stored in Google Drive</Text>
-                  </View>
-                  <Ionicons name="chevron-forward" size={16} color={Colors.textTertiary} />
-                </TouchableOpacity>
               </View>
             </View>
 
             {/* Privacy Controls & Danger Zone */}
             <View style={styles.section}>
-              <Text style={styles.sectionTitle}>SECURITY & PRIVACY ACTIONS</Text>
+              <Text style={styles.sectionTitle}>PRIVACY</Text>
               <View style={styles.card}>
                 <TouchableOpacity
                   style={styles.cardRow}
                   activeOpacity={0.7}
-                  onPress={() =>
-                    Alert.alert(
-                      'Block Identity',
-                      `Block ${displayName}? All incoming sessions and calls will be rejected at the cryptographic handshake layer.`,
-                      [
-                        { text: 'Cancel', style: 'cancel' },
-                        { text: 'Block Identity', style: 'destructive' },
-                      ]
-                    )
-                  }
+                  onPress={handleToggleBlock}
                 >
                   <View style={[styles.rowIconWrap, { backgroundColor: 'rgba(239, 68, 68, 0.1)' }]}>
                     <Ionicons name="ban-outline" size={20} color={Colors.error} />
                   </View>
                   <View style={styles.rowContent}>
-                    <Text style={[styles.rowTitle, { color: Colors.error }]}>Block {displayName}</Text>
-                    <Text style={styles.rowSub}>Prevent any incoming ratcheted handshakes</Text>
+                    <Text style={[styles.rowTitle, { color: Colors.error }]}>{isBlocked ? `Unblock ${displayName}` : `Block ${displayName}`}</Text>
+                    <Text style={styles.rowSub}>{isBlocked ? 'They currently cannot message or call you' : 'Stop messages and calls from this person'}</Text>
                   </View>
                 </TouchableOpacity>
 
@@ -275,23 +287,14 @@ export default function ProfileScreen() {
                 <TouchableOpacity
                   style={styles.cardRow}
                   activeOpacity={0.7}
-                  onPress={() =>
-                    Alert.alert(
-                      'Report Abuse',
-                      `Submit an encrypted diagnostic report for spam or malicious key rotation?`,
-                      [
-                        { text: 'Cancel', style: 'cancel' },
-                        { text: 'Report', style: 'destructive' },
-                      ]
-                    )
-                  }
+                  onPress={handleReport}
                 >
                   <View style={[styles.rowIconWrap, { backgroundColor: 'rgba(239, 68, 68, 0.1)' }]}>
                     <Ionicons name="flag-outline" size={20} color={Colors.error} />
                   </View>
                   <View style={styles.rowContent}>
                     <Text style={[styles.rowTitle, { color: Colors.error }]}>Report Contact</Text>
-                    <Text style={styles.rowSub}>Flag identity impersonation or abuse</Text>
+                    <Text style={styles.rowSub}>Spam, harassment or impersonation</Text>
                   </View>
                 </TouchableOpacity>
               </View>

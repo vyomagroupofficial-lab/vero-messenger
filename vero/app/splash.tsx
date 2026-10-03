@@ -92,18 +92,18 @@ export default function SplashScreen() {
         </View>
 
         <Text style={styles.appName}>VERO</Text>
-        <Text style={styles.tagline}>Provably Private • End-to-End Encrypted</Text>
+        <Text style={styles.tagline}>Private messaging • End-to-end encrypted</Text>
 
         <View style={styles.protocolBadge}>
           <View style={styles.liveDot} />
-          <Text style={styles.protocolText}>LIBSODIUM • CURVE25519 • WEBRTC P2P</Text>
+          <Text style={styles.protocolText}>LIBSODIUM • X25519 • XCHACHA20-POLY1305</Text>
         </View>
       </Animated.View>
 
       {/* Footer Zero-Knowledge Assertion */}
       <View style={styles.footer}>
         <Ionicons name="lock-closed" size={13} color={Colors.online} />
-        <Text style={styles.footerText}>Zero-Knowledge Client Architecture</Text>
+        <Text style={styles.footerText}>Your keys never leave your device</Text>
       </View>
     </View>
   );

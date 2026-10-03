@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   View,
   Text,
@@ -16,6 +16,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { Colors, Typography, Spacing, BorderRadius } from '../src/shared/theme/theme';
 import { useAuthStore } from '../src/features/auth/useAuthStore';
 import { conversationRepository } from '../src/features/chats/ConversationRepository';
+import { useChatsStore } from '../src/features/chats/useChatsStore';
+import { friendlyError } from '../src/core/network/supabase';
 import { User } from '../src/shared/models/Message';
 
 const AVATAR_GRADIENTS = [
@@ -28,82 +30,94 @@ const AVATAR_GRADIENTS = [
 ];
 
 export default function NewGroupScreen() {
-  const { user } = useAuthStore();
+  const isDemo = useAuthStore((s) => s.isDemo);
+  const conversations = useChatsStore((s) => s.conversations);
   const [groupName, setGroupName] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
-  const [contacts, setContacts] = useState<User[]>([]);
-  const [selectedUserIds, setSelectedUserIds] = useState<Set<string>>(new Set());
+  const [searchResults, setSearchResults] = useState<User[]>([]);
+  const [selected, setSelected] = useState<Map<string, User>>(new Map());
   const [isLoading, setIsLoading] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
 
-  useEffect(() => {
-    loadContacts();
-  }, [user?.id]);
+  const knownContacts = useMemo<User[]>(() => {
+    const seen = new Map<string, User>();
+    for (const c of conversations) if (c.otherUser) seen.set(c.otherUser.id, c.otherUser);
+    return [...seen.values()];
+  }, [conversations]);
 
-  const loadContacts = async () => {
-    if (!user?.id) return;
-    setIsLoading(true);
-    try {
-      const results = await conversationRepository.searchUsers('a', user.id);
-      setContacts(results);
-    } catch {
-      // Fallback
-    } finally {
-      setIsLoading(false);
+  // Directory search for people you haven't chatted with yet.
+  useEffect(() => {
+    const q = searchQuery.trim();
+    if (q.length < 2 || isDemo) {
+      setSearchResults([]);
+      return;
     }
-  };
+    setIsLoading(true);
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      try {
+        const results = await conversationRepository.searchUsers(q);
+        if (!cancelled) setSearchResults(results);
+      } catch {
+        if (!cancelled) setSearchResults([]);
+      } finally {
+        if (!cancelled) setIsLoading(false);
+      }
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [searchQuery, isDemo]);
+
+  const selectedUserIds = useMemo(() => new Set(selected.keys()), [selected]);
 
   const toggleSelectUser = (id: string) => {
-    const updated = new Set(selectedUserIds);
-    if (updated.has(id)) {
-      updated.delete(id);
-    } else {
-      updated.add(id);
+    const updated = new Map(selected);
+    if (updated.has(id)) updated.delete(id);
+    else {
+      const u = [...knownContacts, ...searchResults].find((c) => c.id === id);
+      if (u) updated.set(id, u);
     }
-    setSelectedUserIds(updated);
+    setSelected(updated);
   };
 
   const removeSelectedUser = (id: string) => {
-    const updated = new Set(selectedUserIds);
+    const updated = new Map(selected);
     updated.delete(id);
-    setSelectedUserIds(updated);
+    setSelected(updated);
   };
 
   const handleCreateGroup = async () => {
+    if (isDemo) {
+      Alert.alert('Demo mode', 'Create a real account to start encrypted groups.');
+      return;
+    }
     if (!groupName.trim()) {
-      Alert.alert('Group Subject Required', 'Please enter a name or subject for this group.');
+      Alert.alert('Group name required', 'Please enter a name for this group.');
       return;
     }
-    if (selectedUserIds.size === 0) {
-      Alert.alert('Add Participants', 'Please select at least one participant.');
+    if (selected.size === 0) {
+      Alert.alert('Add participants', 'Please select at least one participant.');
       return;
     }
-    if (!user?.id) return;
-
     setIsCreating(true);
     try {
-      const result = await conversationRepository.createGroupConversation(
-        user.id,
-        Array.from(selectedUserIds),
-        groupName.trim()
-      );
-
-      if (result) {
-        router.replace(`/chat/${result.conversationId}` as any);
-      } else {
-        Alert.alert('Encryption Error', 'Failed to establish pairwise group sessions.');
-      }
+      const conversationId = await conversationRepository.createGroupConversation(groupName.trim(), [...selected.keys()]);
+      void useChatsStore.getState().load({ sync: false });
+      router.replace(`/chat/${conversationId}`);
+    } catch (e) {
+      Alert.alert('Could not create group', friendlyError(e));
     } finally {
       setIsCreating(false);
     }
   };
 
-  const selectedUsersList = contacts.filter((c) => selectedUserIds.has(c.id));
-
-  const filteredContacts = contacts.filter(
-    (c) =>
-      c.displayName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      c.username.toLowerCase().includes(searchQuery.toLowerCase())
+  const selectedUsersList = [...selected.values()];
+  const q = searchQuery.trim().toLowerCase();
+  const pool = q.length >= 2 ? [...knownContacts, ...searchResults.filter((r) => !knownContacts.some((k) => k.id === r.id))] : knownContacts;
+  const filteredContacts = pool.filter(
+    (c) => !q || c.displayName.toLowerCase().includes(q) || c.username.toLowerCase().includes(q)
   );
 
   return (
@@ -114,8 +128,8 @@ export default function NewGroupScreen() {
           <Ionicons name="arrow-back" size={20} color={Colors.textPrimary} />
         </TouchableOpacity>
         <View style={styles.headerTitleContainer}>
-          <Text style={styles.headerTitle}>New Encrypted Group</Text>
-          <Text style={styles.headerSub}>Pairwise Double Ratchet</Text>
+          <Text style={styles.headerTitle}>New group</Text>
+          <Text style={styles.headerSub}>End-to-end encrypted</Text>
         </View>
         <TouchableOpacity
           style={[styles.createBtn, (!groupName.trim() || selectedUserIds.size === 0) && styles.createBtnDisabled]}
@@ -211,7 +225,7 @@ export default function NewGroupScreen() {
           ) : (
             <View style={styles.emptyWrap}>
               <Ionicons name="search-outline" size={36} color={Colors.textTertiary} />
-              <Text style={styles.emptyText}>No contacts found</Text>
+              <Text style={styles.emptyText}>{q.length >= 2 ? 'No one found' : 'Search for people by name or @username'}</Text>
             </View>
           )
         }

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -14,178 +14,261 @@ import {
   Modal,
   Image,
   Alert,
-  Clipboard,
-  Dimensions,
 } from 'react-native';
 import { useLocalSearchParams, router } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import * as Clipboard from 'expo-clipboard';
+import * as Sharing from 'expo-sharing';
+import dayjs from 'dayjs';
 import { useAuthStore } from '../../src/features/auth/useAuthStore';
 import { useMessagesStore } from '../../src/features/messages/useMessagesStore';
 import { messageRepository } from '../../src/features/messages/MessageRepository';
 import { conversationRepository } from '../../src/features/chats/ConversationRepository';
-import { mediaRepository } from '../../src/features/media/MediaRepository';
+import { mediaRepository, MediaTooLargeError, PickedMedia } from '../../src/features/media/MediaRepository';
 import { callService } from '../../src/features/calls/CallService';
-import { Message, Conversation, User } from '../../src/shared/models/Message';
+import { friendlyError } from '../../src/core/network/supabase';
+import {
+  ConversationMember,
+  MediaAttachment,
+  Message,
+  MessageStatus,
+  conversationTitle,
+  messagePreview,
+} from '../../src/shared/models/Message';
+import { DISAPPEARING_OPTIONS, MAX_TEXT_LENGTH, timerLabel } from '../../src/shared/models/payload';
 import { Colors, Typography, Spacing, BorderRadius } from '../../src/shared/theme/theme';
-import dayjs from 'dayjs';
 
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const REACTION_EMOJIS = ['❤️', '😂', '👍', '🔥', '😮', '😢'];
+const TYPING_SEND_INTERVAL_MS = 3000;
+const TYPING_IDLE_MS = 4000;
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
 
 // ──────────────────────────────────────────────────────────────────────────
-// Message Bubble Component
+// Encrypted media: downloads + decrypts on demand, caches on device
+// ──────────────────────────────────────────────────────────────────────────
+
+function useDecryptedMedia(media: MediaAttachment | undefined, autoLoad: boolean) {
+  const [uri, setUri] = useState<string | null>(media?.localUri ?? null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    if (!media) return null;
+    setLoading(true);
+    setError(null);
+    try {
+      const file = await mediaRepository.getDecryptedFile(media);
+      setUri(file);
+      return file;
+    } catch (e) {
+      setError(friendlyError(e, 'Could not load media'));
+      return null;
+    } finally {
+      setLoading(false);
+    }
+  }, [media]);
+
+  useEffect(() => {
+    if (autoLoad && media && !uri) void load();
+  }, [autoLoad, media, uri, load]);
+
+  return { uri, loading, error, load };
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Message Bubble
 // ──────────────────────────────────────────────────────────────────────────
 
 interface MessageBubbleProps {
   message: Message;
+  status: MessageStatus;
   showAvatar: boolean;
+  showSenderName: boolean;
   onLongPress: (message: Message) => void;
-  onMediaPress: (message: Message) => void;
+  onRetry: (message: Message) => void;
 }
 
-function MessageBubble({ message, showAvatar, onLongPress, onMediaPress }: MessageBubbleProps) {
-  const { isOwn, content, messageType, status, createdAt, senderProfile, media, reactions } = message;
+const MessageBubble = React.memo(function MessageBubble({
+  message,
+  status,
+  showAvatar,
+  showSenderName,
+  onLongPress,
+  onRetry,
+}: MessageBubbleProps) {
+  const { isOwn, content, messageType, createdAt, senderName, media, reactions } = message;
+  const isImage = messageType === 'image';
+  const { uri, loading, error, load } = useDecryptedMedia(media, isImage);
+
+  if (messageType === 'system') {
+    return (
+      <View style={extra.systemRow}>
+        <Text style={extra.systemText}>{content}</Text>
+      </View>
+    );
+  }
+
+  const openMedia = async () => {
+    const file = uri ?? (await load());
+    if (!file) return;
+    if (messageType === 'document') {
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(file, { mimeType: media?.mimeType, dialogTitle: media?.fileName });
+      } else {
+        Alert.alert('Saved', 'The decrypted file is stored in the app cache.');
+      }
+      return;
+    }
+    router.push({
+      pathname: '/media-viewer',
+      params: { uri: file, type: messageType, caption: content ?? '' },
+    });
+  };
 
   const renderStatusIcon = () => {
     if (!isOwn) return null;
     const iconProps = { size: 14, style: styles.statusIcon };
     switch (status) {
-      case 'sending': return <Ionicons name="time-outline" color={Colors.textTertiary} {...iconProps} />;
-      case 'sent': return <Ionicons name="checkmark-outline" color={Colors.textTertiary} {...iconProps} />;
-      case 'delivered': return <Ionicons name="checkmark-done-outline" color={Colors.textTertiary} {...iconProps} />;
-      case 'read': return <Ionicons name="checkmark-done" color={Colors.accentLight} {...iconProps} />;
-      default: return null;
+      case 'sending':
+        return <Ionicons name="time-outline" color={Colors.textTertiary} {...iconProps} />;
+      case 'sent':
+        return <Ionicons name="checkmark-outline" color={Colors.textTertiary} {...iconProps} />;
+      case 'delivered':
+        return <Ionicons name="checkmark-done-outline" color={Colors.textTertiary} {...iconProps} />;
+      case 'read':
+        return <Ionicons name="checkmark-done" color={Colors.accentLight} {...iconProps} />;
+      case 'failed':
+        return <Ionicons name="alert-circle" color={Colors.error} {...iconProps} />;
+      default:
+        return null;
     }
   };
 
-  const time = dayjs(createdAt).format('HH:mm');
+  const reactionCounts = (reactions || []).reduce<Record<string, number>>((acc, r) => {
+    acc[r.emoji] = (acc[r.emoji] || 0) + 1;
+    return acc;
+  }, {});
 
   return (
     <View style={[styles.bubbleContainer, isOwn ? styles.bubbleContainerOwn : styles.bubbleContainerOther]}>
       {!isOwn && showAvatar && (
         <View style={styles.messageAvatar}>
-          <Text style={styles.messageAvatarText}>
-            {(senderProfile?.displayName || 'U').slice(0, 1).toUpperCase()}
-          </Text>
+          <Text style={styles.messageAvatarText}>{(senderName || '?').slice(0, 1).toUpperCase()}</Text>
         </View>
       )}
       {!isOwn && !showAvatar && <View style={styles.avatarPlaceholder} />}
 
       <Pressable
         onLongPress={() => onLongPress(message)}
+        onPress={status === 'failed' ? () => onRetry(message) : undefined}
+        delayLongPress={300}
         style={[styles.bubble, isOwn ? styles.bubbleOwn : styles.bubbleOther]}
       >
-        {/* Reply preview */}
-        {message.replyToMessage && (
+        {showSenderName && !isOwn && <Text style={extra.senderName}>{senderName}</Text>}
+
+        {message.replyPreview ? (
           <View style={styles.replyPreview}>
             <View style={styles.replyBar} />
             <Text style={styles.replyText} numberOfLines={1}>
-              {message.replyToMessage.content || '[message]'}
+              {message.replyPreview}
             </Text>
+          </View>
+        ) : null}
+
+        {messageType === 'text' && (
+          <Text style={[styles.messageText, isOwn ? styles.messageTextOwn : styles.messageTextOther]}>{content}</Text>
+        )}
+
+        {messageType === 'unavailable' && (
+          <View style={extra.unavailableRow}>
+            <Ionicons name="lock-closed" size={13} color={Colors.textTertiary} />
+            <Text style={extra.unavailableText}>{content}</Text>
           </View>
         )}
 
-        {/* Text message */}
-        {messageType === 'text' && (
-          <Text style={[styles.messageText, isOwn ? styles.messageTextOwn : styles.messageTextOther]}>
-            {content || '🔒'}
-          </Text>
-        )}
-
-        {/* Image message */}
-        {messageType === 'image' && (
-          <TouchableOpacity
-            activeOpacity={0.9}
-            onPress={() => onMediaPress(message)}
-            style={styles.mediaBubble}
-          >
-            {media?.localUri ? (
-              <Image source={{ uri: media.localUri }} style={styles.mediaImage} />
+        {(messageType === 'image' || messageType === 'video') && (
+          <TouchableOpacity activeOpacity={0.9} onPress={openMedia} style={styles.mediaBubble}>
+            {isImage && uri ? (
+              <Image source={{ uri }} style={styles.mediaImage} />
             ) : (
               <View style={styles.mediaPlaceholder}>
-                <Ionicons name="image" size={32} color={Colors.textSecondary} />
-                <Text style={styles.mediaLabel}>Encrypted Photo</Text>
+                {loading ? (
+                  <ActivityIndicator color={Colors.accent} />
+                ) : (
+                  <Ionicons
+                    name={error ? 'alert-circle-outline' : isImage ? 'image' : 'videocam'}
+                    size={34}
+                    color={error ? Colors.error : Colors.accent}
+                  />
+                )}
+                <Text style={styles.mediaLabel}>
+                  {error ? 'Tap to retry' : isImage ? 'Decrypting photo…' : `Video · ${formatBytes(media?.size || 0)}`}
+                </Text>
+                {!isImage && !loading && !error && (
+                  <View style={styles.playOverlay}>
+                    <Ionicons name="play" size={24} color={Colors.white} />
+                  </View>
+                )}
               </View>
             )}
             {content ? <Text style={styles.mediaCaption}>{content}</Text> : null}
           </TouchableOpacity>
         )}
 
-        {/* Video message */}
-        {messageType === 'video' && (
-          <TouchableOpacity
-            activeOpacity={0.9}
-            onPress={() => onMediaPress(message)}
-            style={styles.mediaBubble}
-          >
-            <View style={styles.mediaPlaceholder}>
-              <Ionicons name="videocam" size={36} color={Colors.accent} />
-              <Text style={styles.mediaLabel}>Encrypted Video</Text>
-              <View style={styles.playOverlay}>
-                <Ionicons name="play" size={24} color={Colors.white} />
-              </View>
-            </View>
-          </TouchableOpacity>
-        )}
-
-        {/* Voice message */}
-        {(messageType === 'audio' || messageType === 'voice') && (
-          <View style={styles.voiceMessage}>
-            <TouchableOpacity style={styles.voicePlayBtn}>
-              <Ionicons name="play" size={16} color={isOwn ? Colors.white : Colors.accent} />
-            </TouchableOpacity>
-            <View style={styles.voiceWaveform}>
-              {[6, 14, 18, 10, 16, 22, 12, 18, 14, 8, 16, 10, 14, 6].map((h, i) => (
-                <View
-                  key={i}
-                  style={[
-                    styles.waveBar,
-                    { height: h },
-                    isOwn ? styles.waveBarOwn : styles.waveBarOther,
-                  ]}
-                />
-              ))}
-            </View>
-            <Text style={[styles.voiceDuration, isOwn ? styles.textOwn : styles.textOther]}>
-              0:14
-            </Text>
-          </View>
-        )}
-
-        {/* Document message */}
         {messageType === 'document' && (
-          <TouchableOpacity
-            style={styles.documentContainer}
-            onPress={() => onMediaPress(message)}
-          >
+          <TouchableOpacity style={styles.documentContainer} onPress={openMedia}>
             <View style={styles.docIconWrapper}>
-              <Ionicons name="document-text" size={24} color={Colors.accent} />
+              {loading ? (
+                <ActivityIndicator color={Colors.accent} />
+              ) : (
+                <Ionicons name="document-text" size={24} color={Colors.accent} />
+              )}
             </View>
             <View style={styles.docInfo}>
-              <Text style={[styles.docName, isOwn ? styles.messageTextOwn : styles.messageTextOther]}>
-                {content || 'Encrypted_Document.pdf'}
+              <Text
+                style={[styles.docName, isOwn ? styles.messageTextOwn : styles.messageTextOther]}
+                numberOfLines={2}
+              >
+                {media?.fileName || content || 'Document'}
               </Text>
-              <Text style={styles.docMeta}>Encrypted Blob · tap to view</Text>
+              <Text style={styles.docMeta}>
+                {error ? error : `${formatBytes(media?.size || 0)} · tap to open`}
+              </Text>
             </View>
           </TouchableOpacity>
         )}
 
-        {/* Footer: timestamp + status + disappearing indicator */}
+        {messageType === 'voice' && (
+          <Text style={[styles.messageText, isOwn ? styles.messageTextOwn : styles.messageTextOther]}>
+            🎤 Voice message (playback not supported in this version)
+          </Text>
+        )}
+
         <View style={styles.bubbleFooter}>
           {message.expiresAt && (
             <Ionicons name="timer-outline" size={11} color={Colors.textTertiary} style={styles.timerIcon} />
           )}
-          <Text style={[styles.messageTime, isOwn ? styles.timeOwn : styles.timeOther]}>{time}</Text>
+          {status === 'failed' && <Text style={extra.failedText}>Not sent · tap to retry</Text>}
+          <Text style={[styles.messageTime, isOwn ? styles.timeOwn : styles.timeOther]}>
+            {dayjs(createdAt).format('HH:mm')}
+          </Text>
           {renderStatusIcon()}
         </View>
 
-        {/* Reactions row */}
-        {reactions && reactions.length > 0 && (
+        {Object.keys(reactionCounts).length > 0 && (
           <View style={styles.reactionsRow}>
-            {reactions.map((r, i) => (
-              <View key={i} style={styles.reactionChip}>
-                <Text style={styles.reactionEmoji}>{r.emoji}</Text>
+            {Object.entries(reactionCounts).map(([emoji, count]) => (
+              <View key={emoji} style={styles.reactionChip}>
+                <Text style={styles.reactionEmoji}>
+                  {emoji}
+                  {count > 1 ? ` ${count}` : ''}
+                </Text>
               </View>
             ))}
           </View>
@@ -193,38 +276,35 @@ function MessageBubble({ message, showAvatar, onLongPress, onMediaPress }: Messa
       </Pressable>
     </View>
   );
-}
+});
 
 // ──────────────────────────────────────────────────────────────────────────
 // Typing Indicator
 // ──────────────────────────────────────────────────────────────────────────
 
 function TypingIndicator() {
-  const dot1 = useRef(new Animated.Value(0.3)).current;
-  const dot2 = useRef(new Animated.Value(0.3)).current;
-  const dot3 = useRef(new Animated.Value(0.3)).current;
+  const dots = useRef([0.3, 0.3, 0.3].map((v) => new Animated.Value(v))).current;
 
   useEffect(() => {
-    const createAnim = (val: Animated.Value, delay: number) =>
-      Animated.sequence([
-        Animated.delay(delay),
-        Animated.timing(val, { toValue: 1, duration: 300, useNativeDriver: true }),
-        Animated.timing(val, { toValue: 0.3, duration: 300, useNativeDriver: true }),
-      ]);
-
-    Animated.loop(
-      Animated.parallel([
-        createAnim(dot1, 0),
-        createAnim(dot2, 150),
-        createAnim(dot3, 300),
-      ])
-    ).start();
-  }, []);
+    const anim = Animated.loop(
+      Animated.parallel(
+        dots.map((val, i) =>
+          Animated.sequence([
+            Animated.delay(i * 150),
+            Animated.timing(val, { toValue: 1, duration: 300, useNativeDriver: true }),
+            Animated.timing(val, { toValue: 0.3, duration: 300, useNativeDriver: true }),
+          ])
+        )
+      )
+    );
+    anim.start();
+    return () => anim.stop();
+  }, [dots]);
 
   return (
     <View style={styles.typingContainer}>
       <View style={styles.typingBubble}>
-        {[dot1, dot2, dot3].map((dot, i) => (
+        {dots.map((dot, i) => (
           <Animated.View key={i} style={[styles.typingDot, { opacity: dot }]} />
         ))}
       </View>
@@ -233,215 +313,245 @@ function TypingIndicator() {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Chat Screen Main
+// Chat Screen
 // ──────────────────────────────────────────────────────────────────────────
 
 export default function ChatScreen() {
-  const { id: conversationId } = useLocalSearchParams<{ id: string }>();
-  const { user, deviceId } = useAuthStore();
-  const {
-    conversations,
-    loadMessages,
-    sendMessage,
-    subscribeToConversation,
-    unsubscribeFromConversation,
-  } = useMessagesStore();
+  const { id } = useLocalSearchParams<{ id: string }>();
+  const conversationId = id ?? '';
+  const user = useAuthStore((s) => s.user);
+  const isDemo = useAuthStore((s) => s.isDemo);
+
+  const chat = useMessagesStore((s) => s.chats[conversationId]);
+  const { open, close, loadOlder, send, retry, react, deleteMessage, setTimer, clearLocalHistory, sendTyping } =
+    useMessagesStore.getState();
 
   const [inputText, setInputText] = useState('');
-  const [recipientUser, setRecipientUser] = useState<User | null>(null);
-  const [isTyping, setIsTyping] = useState(false);
   const [replyTo, setReplyTo] = useState<Message | null>(null);
-  const [isSending, setIsSending] = useState(false);
-  const [isUploadingMedia, setIsUploadingMedia] = useState(false);
-
-  // Modals
+  const [uploading, setUploading] = useState(false);
   const [actionMessage, setActionMessage] = useState<Message | null>(null);
   const [showAttachModal, setShowAttachModal] = useState(false);
   const [showMenuModal, setShowMenuModal] = useState(false);
-  const [disappearingTimer, setDisappearingTimer] = useState<string>('Off');
+  const [, forceTick] = useState(0);
 
-  const flatListRef = useRef<FlatList>(null);
-  const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const convState = conversations[conversationId || ''];
-  const messages = convState?.messages || [];
-  const isLoading = convState?.isLoading !== false;
-  const isOtherTyping = convState?.isTyping || false;
+  const lastTypingSent = useRef(0);
+  const typingIdle = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    if (!conversationId || !user?.id || !deviceId) return;
-
-    loadMessages(conversationId, user.id, deviceId);
-    subscribeToConversation(conversationId, user.id, deviceId);
-
-    conversationRepository.getConversationMembers(conversationId).then((members) => {
-      const other = members.find((m) => m.id !== user.id);
-      if (other) setRecipientUser(other);
-    });
-
+    if (!conversationId || !user) return;
+    open(conversationId).catch((e) => Alert.alert('Could not open chat', friendlyError(e)));
     return () => {
-      unsubscribeFromConversation(conversationId);
+      if (typingIdle.current) clearTimeout(typingIdle.current);
+      close(conversationId);
     };
-  }, [conversationId, user?.id, deviceId]);
+  }, [conversationId, user?.id]);
+
+  const conversation = chat?.conversation ?? null;
+  const messages = chat?.messages ?? [];
+  const members: ConversationMember[] = conversation?.members ?? [];
+  const isGroup = conversation?.conversationType === 'group';
+  const otherUser = conversation?.otherUser;
+  const title = conversation ? conversationTitle(conversation) : 'Loading…';
+
+  // Typing users (expire automatically)
+  const now = Date.now();
+  const typingNames = Object.entries(chat?.typing ?? {})
+    .filter(([, exp]) => exp > now)
+    .map(([uid]) => members.find((m) => m.id === uid)?.displayName || 'Someone');
+  useEffect(() => {
+    const expiries = Object.values(chat?.typing ?? {}).filter((e) => e > Date.now());
+    if (!expiries.length) return;
+    const t = setTimeout(() => forceTick((n) => n + 1), Math.min(...expiries) - Date.now() + 50);
+    return () => clearTimeout(t);
+  }, [chat?.typing]);
+
+  // Newest first for the inverted list.
+  const listData = useMemo(() => [...messages].reverse(), [messages]);
+
+  const statusOf = useCallback(
+    (m: Message) => (user ? messageRepository.statusFor(m, members, user.id) : m.status),
+    [members, user]
+  );
+
+  // ── Actions ───────────────────────────────────────────────────────────────
+
+  const stopTyping = () => {
+    if (typingIdle.current) clearTimeout(typingIdle.current);
+    typingIdle.current = null;
+    if (lastTypingSent.current) {
+      lastTypingSent.current = 0;
+      sendTyping(conversationId, false);
+    }
+  };
+
+  const handleChangeText = (text: string) => {
+    setInputText(text);
+    if (!text) return stopTyping();
+    if (Date.now() - lastTypingSent.current > TYPING_SEND_INTERVAL_MS) {
+      lastTypingSent.current = Date.now();
+      sendTyping(conversationId, true);
+    }
+    if (typingIdle.current) clearTimeout(typingIdle.current);
+    typingIdle.current = setTimeout(stopTyping, TYPING_IDLE_MS);
+  };
 
   const handleSend = async () => {
-    if (!inputText.trim() || !conversationId || !recipientUser || isSending) return;
-
     const text = inputText.trim();
+    if (!text || !conversationId) return;
     setInputText('');
+    const reply = replyTo;
     setReplyTo(null);
-    setIsSending(true);
-
-    try {
-      await sendMessage({
-        conversationId,
-        plaintext: text,
-        recipientUserId: recipientUser.id,
-        replyToMessageId: replyTo?.id,
-      });
-    } finally {
-      setIsSending(false);
+    stopTyping();
+    const result = await send(conversationId, { t: 'text', body: text }, { replyTo: reply });
+    if (result?.status === 'failed') {
+      Alert.alert('Message not sent', 'Check your connection, then tap the message to retry.');
     }
-
-    setTimeout(() => {
-      flatListRef.current?.scrollToEnd({ animated: true });
-    }, 100);
   };
 
-  const handleTyping = (text: string) => {
-    setInputText(text);
-
-    if (!isTyping) {
-      setIsTyping(true);
-      messageRepository.broadcastTyping(conversationId!, user!.id, true);
-    }
-
-    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-    typingTimeoutRef.current = setTimeout(() => {
-      setIsTyping(false);
-      messageRepository.broadcastTyping(conversationId!, user!.id, false);
-    }, 2000);
+  const handleRetry = (message: Message) => {
+    Alert.alert('Message not sent', 'Try sending it again?', [
+      { text: 'Delete', style: 'destructive', onPress: () => void deleteMessage(message, false) },
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Retry', onPress: () => void retry(message) },
+    ]);
   };
 
-  // Calls
   const handleStartCall = async (callType: 'voice' | 'video') => {
-    if (!recipientUser || !user) return;
-    const callId = await callService.startCall({
-      peerId: recipientUser.id,
-      peerName: recipientUser.displayName,
-      callType,
-      currentUserId: user.id,
-      currentUserName: user.displayName || 'You',
-    });
-    router.push(`/call/${callId}` as any);
+    if (!otherUser) return;
+    try {
+      const callId = await callService.startCall({
+        conversationId,
+        peerId: otherUser.id,
+        peerName: otherUser.displayName,
+        callType,
+      });
+      router.push(`/call/${callId}`);
+    } catch (e) {
+      Alert.alert('Call failed', friendlyError(e));
+    }
   };
 
-  // Media Attachment Handling
-  const handlePickMedia = async (type: 'camera' | 'gallery' | 'video' | 'doc') => {
+  const handlePickMedia = async (source: 'camera' | 'library' | 'document') => {
     setShowAttachModal(false);
-    if (!conversationId || !recipientUser) return;
-
-    let picked = null;
-    if (type === 'camera') picked = await mediaRepository.pickFromCamera();
-    else if (type === 'gallery') picked = await mediaRepository.pickImage();
-    else if (type === 'video') picked = await mediaRepository.pickVideo();
-    else if (type === 'doc') picked = await mediaRepository.pickDocument();
-
+    if (isDemo) {
+      Alert.alert('Demo mode', 'Attachments need a real account so they can be encrypted and uploaded.');
+      return;
+    }
+    let picked: PickedMedia | null = null;
+    try {
+      picked =
+        source === 'camera'
+          ? await mediaRepository.pickFromCamera()
+          : source === 'library'
+            ? await mediaRepository.pickFromLibrary()
+            : await mediaRepository.pickDocument();
+    } catch (e) {
+      Alert.alert('Permission needed', friendlyError(e));
+      return;
+    }
     if (!picked) return;
 
-    setIsUploadingMedia(true);
+    setUploading(true);
     try {
-      const uploadRes = await mediaRepository.uploadMedia(
-        picked.uri,
-        picked.mimeType,
-        conversationId
+      const media = await mediaRepository.uploadEncrypted(picked, conversationId);
+      await send(
+        conversationId,
+        { t: 'media', kind: picked.kind, media, caption: undefined },
+        { mediaId: media.mediaId, localUri: picked.uri, replyTo }
       );
-
-      const msgType = type === 'video' ? 'video' : type === 'doc' ? 'document' : 'image';
-
-      await sendMessage({
-        conversationId,
-        plaintext: msgType === 'document' ? 'Encrypted Document' : 'Encrypted Media',
-        messageType: msgType,
-        recipientUserId: recipientUser.id,
-        mediaAttachment: {
-          mediaId: uploadRes.mediaId || 'media-id',
-          mimeTypeHint: picked.mimeType,
-          encryptedObjectId: uploadRes.mediaId || '',
-          encryptedSize: picked.size,
-          localUri: picked.uri,
-          mediaKey: uploadRes.mediaKey,
-          mediaIv: uploadRes.mediaIv,
-          sha256: uploadRes.sha256,
-        },
-      });
+      setReplyTo(null);
+    } catch (e) {
+      Alert.alert(
+        e instanceof MediaTooLargeError ? 'File too large' : 'Upload failed',
+        friendlyError(e, 'Could not send the attachment.')
+      );
     } finally {
-      setIsUploadingMedia(false);
+      setUploading(false);
     }
-  };
-
-  // Voice message simulation
-  const handleSendVoiceMessage = async () => {
-    if (!conversationId || !recipientUser) return;
-    setIsSending(true);
-    try {
-      await sendMessage({
-        conversationId,
-        plaintext: 'Encrypted Voice Note',
-        messageType: 'voice',
-        recipientUserId: recipientUser.id,
-      });
-    } finally {
-      setIsSending(false);
-    }
-  };
-
-  // Message Actions
-  const handleMessageLongPress = (message: Message) => {
-    setActionMessage(message);
   };
 
   const handleReact = async (emoji: string) => {
-    if (!actionMessage || !conversationId || !user) return;
-    await messageRepository.addReaction(conversationId, actionMessage.id, emoji, user.id);
+    const target = actionMessage;
     setActionMessage(null);
+    if (!target || !user) return;
+    const mine = target.reactions?.find((r) => r.userId === user.id);
+    try {
+      await react(target, mine?.emoji === emoji ? null : emoji);
+    } catch (e) {
+      Alert.alert('Reaction not sent', friendlyError(e));
+    }
   };
 
-  const handleCopyText = () => {
-    if (actionMessage?.content) {
-      Clipboard.setString(actionMessage.content);
-      Alert.alert('Copied', 'Message copied to clipboard.');
-    }
+  const handleCopyText = async () => {
+    if (actionMessage?.content) await Clipboard.setStringAsync(actionMessage.content);
     setActionMessage(null);
   };
 
   const handleDelete = async (forEveryone: boolean) => {
-    if (!actionMessage) return;
-    await messageRepository.deleteMessage(actionMessage.id, forEveryone);
+    const target = actionMessage;
     setActionMessage(null);
-    if (user && deviceId) {
-      loadMessages(conversationId!, user.id, deviceId);
+    if (!target) return;
+    try {
+      await deleteMessage(target, forEveryone);
+    } catch (e) {
+      Alert.alert('Delete failed', friendlyError(e));
     }
   };
 
-  const handleOpenMedia = (message: Message) => {
-    const uri = message.media?.localUri || '';
-    router.push({
-      pathname: '/media-viewer',
-      params: {
-        uri,
-        type: message.messageType,
-        name: message.messageType === 'video' ? 'Video' : 'Photo',
-        caption: message.content,
-      },
-    } as any);
+  const openVerify = () => {
+    if (!otherUser) return;
+    router.push({ pathname: '/verify-safety-number', params: { userId: otherUser.id, displayName: otherUser.displayName } });
   };
 
-  const displayName = recipientUser?.displayName || 'Loading...';
+  const chooseTimer = () => {
+    setShowMenuModal(false);
+    Alert.alert(
+      'Disappearing messages',
+      'New messages in this chat will be deleted for everyone after the selected time.',
+      [
+        ...DISAPPEARING_OPTIONS.map((o) => ({
+          text: o.label,
+          onPress: () => {
+            setTimer(conversationId, o.seconds).catch((e) => Alert.alert('Could not update timer', friendlyError(e)));
+          },
+        })),
+        { text: 'Cancel', style: 'cancel' as const },
+      ]
+    );
+  };
+
+  const leaveGroup = () => {
+    setShowMenuModal(false);
+    if (!user) return;
+    Alert.alert('Leave group', 'You will stop receiving new messages from this group.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Leave',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            await conversationRepository.leaveConversation(conversationId, user.id);
+            router.back();
+          } catch (e) {
+            Alert.alert('Could not leave group', friendlyError(e));
+          }
+        },
+      },
+    ]);
+  };
+
+  const subtitle = typingNames.length
+    ? `${typingNames.join(', ')} typing…`
+    : isGroup
+      ? `${members.length} members · end-to-end encrypted`
+      : 'End-to-end encrypted · tap to verify';
+
+  const canDeleteForEveryone =
+    !!actionMessage?.isOwn && actionMessage.status !== 'failed' && actionMessage.status !== 'sending';
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
-      {/* Top Header */}
+    <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
+      {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
           <Ionicons name="arrow-back" size={22} color={Colors.textPrimary} />
@@ -449,128 +559,121 @@ export default function ChatScreen() {
 
         <TouchableOpacity
           style={styles.headerInfo}
-          onPress={() => {
-            if (recipientUser) router.push(`/profile/${recipientUser.id}` as any);
-          }}
+          onPress={() => (otherUser ? router.push(`/profile/${otherUser.id}`) : isGroup ? setShowMenuModal(true) : null)}
           activeOpacity={0.7}
         >
           <View style={styles.headerAvatar}>
-            <Text style={styles.headerAvatarText}>
-              {displayName.slice(0, 1).toUpperCase()}
-            </Text>
-            <View style={styles.onlineDot} />
+            {isGroup ? (
+              <Ionicons name="people" size={18} color="#FFF" />
+            ) : (
+              <Text style={styles.headerAvatarText}>{title.slice(0, 1).toUpperCase()}</Text>
+            )}
           </View>
-          <View>
-            <Text style={styles.headerName} numberOfLines={1}>{displayName}</Text>
-            <TouchableOpacity
-              style={styles.headerStatus}
-              onPress={() => {
-                if (recipientUser) {
-                  router.push(`/verify-safety-number?userId=${recipientUser.id}&displayName=${displayName}` as any);
-                }
-              }}
-            >
+          <View style={{ flex: 1 }}>
+            <Text style={styles.headerName} numberOfLines={1}>
+              {title}
+            </Text>
+            <TouchableOpacity style={styles.headerStatus} onPress={otherUser ? openVerify : undefined}>
               <Ionicons name="lock-closed" size={10} color={Colors.accent} />
-              <Text style={styles.headerStatusText}>
-                {isOtherTyping ? 'typing...' : 'E2EE · Tap to verify'}
+              <Text style={styles.headerStatusText} numberOfLines={1}>
+                {subtitle}
               </Text>
             </TouchableOpacity>
           </View>
         </TouchableOpacity>
 
         <View style={styles.headerActions}>
-          <TouchableOpacity style={styles.headerBtn} onPress={() => handleStartCall('voice')}>
-            <Ionicons name="call-outline" size={22} color={Colors.textPrimary} />
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.headerBtn} onPress={() => handleStartCall('video')}>
-            <Ionicons name="videocam-outline" size={22} color={Colors.textPrimary} />
-          </TouchableOpacity>
+          {!isGroup && otherUser && (
+            <>
+              <TouchableOpacity style={styles.headerBtn} onPress={() => handleStartCall('voice')}>
+                <Ionicons name="call-outline" size={22} color={Colors.textPrimary} />
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.headerBtn} onPress={() => handleStartCall('video')}>
+                <Ionicons name="videocam-outline" size={22} color={Colors.textPrimary} />
+              </TouchableOpacity>
+            </>
+          )}
           <TouchableOpacity style={styles.headerBtn} onPress={() => setShowMenuModal(true)}>
             <Ionicons name="ellipsis-vertical" size={22} color={Colors.textPrimary} />
           </TouchableOpacity>
         </View>
       </View>
 
-      {/* Disappearing Timer Banner if active */}
-      {disappearingTimer !== 'Off' && (
+      {(chat?.timerSeconds ?? 0) > 0 && (
         <View style={styles.disappearingBanner}>
           <Ionicons name="timer-outline" size={13} color={Colors.warning} />
-          <Text style={styles.disappearingBannerText}>
-            Disappearing messages: {disappearingTimer}
-          </Text>
+          <Text style={styles.disappearingBannerText}>Disappearing messages: {timerLabel(chat!.timerSeconds)}</Text>
         </View>
       )}
 
-      {/* Uploading Media Indicator */}
-      {isUploadingMedia && (
+      {uploading && (
         <View style={styles.uploadProgressBanner}>
           <ActivityIndicator size="small" color={Colors.accent} />
-          <Text style={styles.uploadProgressText}>
-            Encrypting with AES-GCM & uploading to Google Drive...
-          </Text>
+          <Text style={styles.uploadProgressText}>Encrypting and uploading…</Text>
         </View>
       )}
 
-      {/* Messages List */}
-      <KeyboardAvoidingView
-        style={styles.flex}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        keyboardVerticalOffset={0}
-      >
-        {isLoading ? (
+      <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        {chat?.isLoading && messages.length === 0 ? (
           <View style={styles.loadingContainer}>
             <ActivityIndicator color={Colors.accent} size="large" />
-            <Text style={styles.loadingText}>Decrypting messages...</Text>
+            <Text style={styles.loadingText}>Decrypting messages…</Text>
           </View>
         ) : (
           <FlatList
-            ref={flatListRef}
-            data={messages}
+            inverted
+            data={listData}
             keyExtractor={(item) => item.id}
             renderItem={({ item, index }) => {
-              const prevMsg = index > 0 ? messages[index - 1] : null;
-              const showAvatar = !item.isOwn && (!prevMsg || prevMsg.senderUserId !== item.senderUserId);
+              const older = listData[index + 1];
+              const showAvatar = !item.isOwn && (!older || older.senderUserId !== item.senderUserId);
               return (
                 <MessageBubble
                   message={item}
+                  status={statusOf(item)}
                   showAvatar={showAvatar}
-                  onLongPress={handleMessageLongPress}
-                  onMediaPress={handleOpenMedia}
+                  showSenderName={isGroup && showAvatar}
+                  onLongPress={setActionMessage}
+                  onRetry={handleRetry}
                 />
               );
             }}
-            ListHeaderComponent={
-              <TouchableOpacity
-                style={styles.securityAnnouncementBadge}
-                activeOpacity={0.8}
-                onPress={() => {
-                  if (recipientUser) {
-                    router.push(`/verify-safety-number?userId=${recipientUser.id}&displayName=${displayName}` as any);
-                  }
-                }}
-              >
-                <View style={styles.securityShieldCircle}>
-                  <Ionicons name="shield-checkmark" size={15} color={Colors.emerald} />
-                </View>
-                <Text style={styles.securityAnnouncementText}>
-                  Messages and calls are end-to-end encrypted with X25519 & XSalsa20. No one outside of this chat, not even Vero, can read them. Tap to verify safety number.
-                </Text>
-              </TouchableOpacity>
+            onEndReached={() => void loadOlder(conversationId)}
+            onEndReachedThreshold={0.3}
+            ListHeaderComponent={typingNames.length ? <TypingIndicator /> : null}
+            ListFooterComponent={
+              chat?.isLoadingOlder ? (
+                <ActivityIndicator color={Colors.accent} style={{ marginVertical: 12 }} />
+              ) : !chat?.hasMore ? (
+                <TouchableOpacity
+                  style={styles.securityAnnouncementBadge}
+                  activeOpacity={0.8}
+                  onPress={otherUser ? openVerify : undefined}
+                >
+                  <View style={styles.securityShieldCircle}>
+                    <Ionicons name="shield-checkmark" size={15} color={Colors.emerald} />
+                  </View>
+                  <Text style={styles.securityAnnouncementText}>
+                    {isDemo
+                      ? 'Demo mode: these messages are sample data stored only on this device.'
+                      : 'Messages are end-to-end encrypted. Only the devices of people in this chat can read them.' +
+                        (otherUser ? ' Tap to verify the safety number.' : '')}
+                  </Text>
+                </TouchableOpacity>
+              ) : null
             }
             contentContainerStyle={styles.messageList}
             showsVerticalScrollIndicator={false}
-            onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: false })}
-            ListFooterComponent={isOtherTyping ? <TypingIndicator /> : null}
+            keyboardShouldPersistTaps="handled"
           />
         )}
 
-        {/* Quoted Reply Preview */}
         {replyTo && (
           <View style={styles.replyPreviewBar}>
             <View style={styles.replyPreviewContent}>
               <Ionicons name="return-up-forward" size={16} color={Colors.accent} />
               <Text style={styles.replyPreviewText} numberOfLines={1}>
-                {replyTo.content || '[message]'}
+                {messagePreview(replyTo.messageType, replyTo.content)}
               </Text>
             </View>
             <TouchableOpacity onPress={() => setReplyTo(null)}>
@@ -579,131 +682,78 @@ export default function ChatScreen() {
           </View>
         )}
 
-        {/* Input Bar */}
         <View style={styles.inputBar}>
-          <TouchableOpacity
-            style={styles.attachBtn}
-            onPress={() => setShowAttachModal(true)}
-          >
+          <TouchableOpacity style={styles.attachBtn} onPress={() => setShowAttachModal(true)} disabled={uploading}>
             <Ionicons name="add-circle-outline" size={26} color={Colors.accent} />
           </TouchableOpacity>
 
           <View style={styles.inputWrapper}>
             <TextInput
               style={styles.textInput}
-              placeholder="Message..."
+              placeholder="Message"
               placeholderTextColor={Colors.textTertiary}
               value={inputText}
-              onChangeText={handleTyping}
+              onChangeText={handleChangeText}
               multiline
-              maxLength={5000}
+              maxLength={MAX_TEXT_LENGTH}
             />
           </View>
 
-          {inputText.trim() ? (
-            <TouchableOpacity
-              style={[styles.sendBtn, isSending && styles.sendBtnDisabled]}
-              onPress={handleSend}
-              disabled={isSending}
-            >
-              {isSending ? (
-                <ActivityIndicator size="small" color={Colors.white} />
-              ) : (
-                <Ionicons name="send" size={18} color={Colors.white} />
-              )}
-            </TouchableOpacity>
-          ) : (
-            <TouchableOpacity style={styles.voiceBtn} onPress={handleSendVoiceMessage}>
-              <Ionicons name="mic-outline" size={24} color={Colors.accent} />
-            </TouchableOpacity>
-          )}
+          <TouchableOpacity
+            style={[styles.sendBtn, !inputText.trim() && styles.sendBtnDisabled]}
+            onPress={handleSend}
+            disabled={!inputText.trim()}
+            accessibilityLabel="Send message"
+          >
+            <Ionicons name="send" size={18} color={Colors.white} />
+          </TouchableOpacity>
         </View>
       </KeyboardAvoidingView>
 
-      {/* Attachment Options Modal */}
-      <Modal
-        visible={showAttachModal}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setShowAttachModal(false)}
-      >
+      {/* Attachment sheet */}
+      <Modal visible={showAttachModal} transparent animationType="slide" onRequestClose={() => setShowAttachModal(false)}>
         <Pressable style={styles.modalBackdrop} onPress={() => setShowAttachModal(false)}>
           <View style={styles.attachSheet}>
             <View style={styles.sheetHandle} />
-            <Text style={styles.sheetTitle}>Encrypted Attachment</Text>
-
+            <Text style={styles.sheetTitle}>Encrypted attachment</Text>
             <View style={styles.attachGrid}>
-              <TouchableOpacity
-                style={styles.attachItem}
-                onPress={() => handlePickMedia('camera')}
-              >
-                <View style={[styles.attachIconCircle, { backgroundColor: '#EF4444' }]}>
-                  <Ionicons name="camera" size={24} color={Colors.white} />
-                </View>
-                <Text style={styles.attachLabel}>Camera</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.attachItem}
-                onPress={() => handlePickMedia('gallery')}
-              >
-                <View style={[styles.attachIconCircle, { backgroundColor: '#8B5CF6' }]}>
-                  <Ionicons name="image" size={24} color={Colors.white} />
-                </View>
-                <Text style={styles.attachLabel}>Gallery</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.attachItem}
-                onPress={() => handlePickMedia('video')}
-              >
-                <View style={[styles.attachIconCircle, { backgroundColor: '#10B981' }]}>
-                  <Ionicons name="videocam" size={24} color={Colors.white} />
-                </View>
-                <Text style={styles.attachLabel}>Video</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.attachItem}
-                onPress={() => handlePickMedia('doc')}
-              >
-                <View style={[styles.attachIconCircle, { backgroundColor: '#3B82F6' }]}>
-                  <Ionicons name="document-text" size={24} color={Colors.white} />
-                </View>
-                <Text style={styles.attachLabel}>Document</Text>
-              </TouchableOpacity>
+              {(
+                [
+                  ['camera', 'camera', 'Camera', '#EF4444'],
+                  ['library', 'images', 'Photos & videos', '#8B5CF6'],
+                  ['document', 'document-text', 'Document', '#3B82F6'],
+                ] as const
+              ).map(([source, icon, label, color]) => (
+                <TouchableOpacity key={source} style={styles.attachItem} onPress={() => handlePickMedia(source)}>
+                  <View style={[styles.attachIconCircle, { backgroundColor: color }]}>
+                    <Ionicons name={icon} size={24} color={Colors.white} />
+                  </View>
+                  <Text style={styles.attachLabel}>{label}</Text>
+                </TouchableOpacity>
+              ))}
             </View>
           </View>
         </Pressable>
       </Modal>
 
-      {/* Message Long Press Action Sheet Modal */}
-      <Modal
-        visible={actionMessage !== null}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setActionMessage(null)}
-      >
+      {/* Message actions */}
+      <Modal visible={actionMessage !== null} transparent animationType="fade" onRequestClose={() => setActionMessage(null)}>
         <Pressable style={styles.modalBackdrop} onPress={() => setActionMessage(null)}>
           <View style={styles.actionSheet}>
-            {/* Quick Reactions */}
-            <View style={styles.reactionsBar}>
-              {REACTION_EMOJIS.map((emoji) => (
-                <TouchableOpacity
-                  key={emoji}
-                  style={styles.reactionBtn}
-                  onPress={() => handleReact(emoji)}
-                >
-                  <Text style={styles.reactionText}>{emoji}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
+            {actionMessage?.messageType !== 'unavailable' && actionMessage?.status !== 'failed' && (
+              <View style={styles.reactionsBar}>
+                {REACTION_EMOJIS.map((emoji) => (
+                  <TouchableOpacity key={emoji} style={styles.reactionBtn} onPress={() => handleReact(emoji)}>
+                    <Text style={styles.reactionText}>{emoji}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
 
-            {/* Actions list */}
             <TouchableOpacity
               style={styles.actionRow}
               onPress={() => {
-                if (actionMessage) setReplyTo(actionMessage);
+                setReplyTo(actionMessage);
                 setActionMessage(null);
               }}
             >
@@ -711,91 +761,106 @@ export default function ChatScreen() {
               <Text style={styles.actionText}>Reply</Text>
             </TouchableOpacity>
 
-            <TouchableOpacity style={styles.actionRow} onPress={handleCopyText}>
-              <Ionicons name="copy-outline" size={20} color={Colors.textPrimary} />
-              <Text style={styles.actionText}>Copy Text</Text>
-            </TouchableOpacity>
+            {!!actionMessage?.content && actionMessage.messageType === 'text' && (
+              <TouchableOpacity style={styles.actionRow} onPress={handleCopyText}>
+                <Ionicons name="copy-outline" size={20} color={Colors.textPrimary} />
+                <Text style={styles.actionText}>Copy text</Text>
+              </TouchableOpacity>
+            )}
 
             <TouchableOpacity style={styles.actionRow} onPress={() => handleDelete(false)}>
               <Ionicons name="trash-outline" size={20} color={Colors.warning} />
-              <Text style={[styles.actionText, { color: Colors.warning }]}>Delete for Me</Text>
+              <Text style={[styles.actionText, { color: Colors.warning }]}>Delete for me</Text>
             </TouchableOpacity>
 
-            {actionMessage?.isOwn && (
+            {canDeleteForEveryone && (
               <TouchableOpacity style={styles.actionRow} onPress={() => handleDelete(true)}>
                 <Ionicons name="trash" size={20} color={Colors.error} />
-                <Text style={[styles.actionText, { color: Colors.error }]}>Delete for Everyone</Text>
+                <Text style={[styles.actionText, { color: Colors.error }]}>Delete for everyone</Text>
               </TouchableOpacity>
             )}
           </View>
         </Pressable>
       </Modal>
 
-      {/* Chat Options Menu Modal */}
-      <Modal
-        visible={showMenuModal}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setShowMenuModal(false)}
-      >
+      {/* Chat menu */}
+      <Modal visible={showMenuModal} transparent animationType="fade" onRequestClose={() => setShowMenuModal(false)}>
         <Pressable style={styles.modalBackdrop} onPress={() => setShowMenuModal(false)}>
           <View style={styles.menuSheet}>
-            <Text style={styles.menuSheetTitle}>Chat Options</Text>
+            <Text style={styles.menuSheetTitle}>{isGroup ? `${title} · ${members.length} members` : 'Chat options'}</Text>
 
-            <TouchableOpacity
-              style={styles.menuItem}
-              onPress={() => {
-                setShowMenuModal(false);
-                if (recipientUser) {
-                  router.push(`/verify-safety-number?userId=${recipientUser.id}&displayName=${displayName}` as any);
-                }
-              }}
-            >
-              <Ionicons name="shield-checkmark-outline" size={20} color={Colors.accent} />
-              <Text style={styles.menuItemText}>Verify Safety Number</Text>
-            </TouchableOpacity>
+            {isGroup &&
+              members.map((m) => (
+                <View key={m.id} style={styles.menuItem}>
+                  <Ionicons name="person-circle-outline" size={20} color={Colors.textSecondary} />
+                  <Text style={styles.menuItemText}>
+                    {m.id === user?.id ? 'You' : m.displayName}
+                    {m.role !== 'member' ? ` · ${m.role}` : ''}
+                  </Text>
+                </View>
+              ))}
 
-            <TouchableOpacity
-              style={styles.menuItem}
-              onPress={() => {
-                Alert.alert(
-                  'Disappearing Messages',
-                  'Select a timer for new messages in this chat to disappear after being read:',
-                  [
-                    { text: 'Off', onPress: () => setDisappearingTimer('Off') },
-                    { text: '24 Hours', onPress: () => setDisappearingTimer('24 Hours') },
-                    { text: '7 Days', onPress: () => setDisappearingTimer('7 Days') },
-                    { text: '90 Days', onPress: () => setDisappearingTimer('90 Days') },
-                  ]
-                );
-                setShowMenuModal(false);
-              }}
-            >
+            {otherUser && (
+              <TouchableOpacity
+                style={styles.menuItem}
+                onPress={() => {
+                  setShowMenuModal(false);
+                  openVerify();
+                }}
+              >
+                <Ionicons name="shield-checkmark-outline" size={20} color={Colors.accent} />
+                <Text style={styles.menuItemText}>Verify safety number</Text>
+              </TouchableOpacity>
+            )}
+
+            <TouchableOpacity style={styles.menuItem} onPress={chooseTimer}>
               <Ionicons name="timer-outline" size={20} color={Colors.warning} />
-              <Text style={styles.menuItemText}>
-                Disappearing Messages ({disappearingTimer})
-              </Text>
+              <Text style={styles.menuItemText}>Disappearing messages ({timerLabel(chat?.timerSeconds ?? 0)})</Text>
             </TouchableOpacity>
 
             <TouchableOpacity
               style={styles.menuItem}
               onPress={() => {
                 setShowMenuModal(false);
-                Alert.alert('Clear Chat', 'Are you sure you want to clear all decrypted messages from this device?', [
+                Alert.alert('Clear chat', 'Remove all messages in this chat from this device? Other devices are not affected.', [
                   { text: 'Cancel', style: 'cancel' },
-                  { text: 'Clear', style: 'destructive', onPress: () => {} },
+                  { text: 'Clear', style: 'destructive', onPress: () => void clearLocalHistory(conversationId) },
                 ]);
               }}
             >
               <Ionicons name="trash-outline" size={20} color={Colors.error} />
-              <Text style={[styles.menuItemText, { color: Colors.error }]}>Clear Chat</Text>
+              <Text style={[styles.menuItemText, { color: Colors.error }]}>Clear chat on this device</Text>
             </TouchableOpacity>
+
+            {isGroup && !isDemo && (
+              <TouchableOpacity style={styles.menuItem} onPress={leaveGroup}>
+                <Ionicons name="exit-outline" size={20} color={Colors.error} />
+                <Text style={[styles.menuItemText, { color: Colors.error }]}>Leave group</Text>
+              </TouchableOpacity>
+            )}
           </View>
         </Pressable>
       </Modal>
     </SafeAreaView>
   );
 }
+
+const extra = StyleSheet.create({
+  systemRow: { alignItems: 'center', marginVertical: 8 },
+  systemText: {
+    fontSize: 12,
+    color: Colors.textSecondary,
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderRadius: 10,
+    overflow: 'hidden',
+  },
+  senderName: { fontSize: 12, fontWeight: '700', color: Colors.accentLight, marginBottom: 2 },
+  unavailableRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  unavailableText: { fontSize: 13, fontStyle: 'italic', color: Colors.textTertiary, flexShrink: 1 },
+  failedText: { fontSize: 11, color: Colors.error, marginRight: 6 },
+});
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
@@ -979,7 +1044,7 @@ const styles = StyleSheet.create({
     width: 34,
   },
   bubble: {
-    maxWidth: SCREEN_WIDTH * 0.76,
+    maxWidth: '78%',
     borderRadius: BorderRadius.lg,
     paddingHorizontal: Spacing.md,
     paddingVertical: Spacing.sm,

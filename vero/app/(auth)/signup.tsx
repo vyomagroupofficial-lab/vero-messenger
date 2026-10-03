@@ -14,6 +14,7 @@ import {
 } from 'react-native';
 import { router } from 'expo-router';
 import { useAuthStore } from '../../src/features/auth/useAuthStore';
+import { isSupabaseConfigured } from '../../src/core/network/supabase';
 import { Colors, Typography, Spacing, BorderRadius } from '../../src/shared/theme/theme';
 import { Ionicons } from '@expo/vector-icons';
 
@@ -44,26 +45,30 @@ export default function SignupScreen() {
     const newErrors: Record<string, string> = {};
 
     if (!displayName.trim()) newErrors.displayName = 'Display name is required';
-    else if (displayName.length < 2) newErrors.displayName = 'Must be at least 2 characters';
+    else if (displayName.trim().length > 64) newErrors.displayName = 'Must be 64 characters or fewer';
 
     if (!username.trim()) newErrors.username = 'Username is required';
-    else if (username.length < 3) newErrors.username = 'Must be at least 3 characters';
-    else if (!/^[a-zA-Z0-9_]+$/.test(username)) newErrors.username = 'Only alphanumeric characters & underscores';
+    else if (username.trim().length < 3 || username.trim().length > 30) newErrors.username = 'Must be 3-30 characters';
+    else if (!/^[a-zA-Z0-9_]+$/.test(username.trim())) newErrors.username = 'Only letters, numbers & underscores';
 
     if (!email.trim()) newErrors.email = 'Email address is required';
     else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) newErrors.email = 'Enter a valid email address';
 
-    if (!password) newErrors.password = 'Master passphrase is required';
+    if (!password) newErrors.password = 'Password is required';
     else if (password.length < 8) newErrors.password = 'Minimum 8 characters required';
 
     if (!confirmPassword) newErrors.confirmPassword = 'Confirmation required';
-    else if (password !== confirmPassword) newErrors.confirmPassword = 'Passphrases do not match';
+    else if (password !== confirmPassword) newErrors.confirmPassword = 'Passwords do not match';
 
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };
 
   const handleSignUp = async () => {
+    if (!isSupabaseConfigured) {
+      Alert.alert('Backend not configured', 'Set EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY in .env first.');
+      return;
+    }
     if (!validate()) {
       shake();
       return;
@@ -78,7 +83,13 @@ export default function SignupScreen() {
 
     if (!result.success) {
       shake();
-      Alert.alert('Registration Failed', result.error || 'Failed to create cryptographic identity');
+      Alert.alert('Registration failed', result.error || 'Could not create your account.');
+    } else if (result.needsEmailConfirmation) {
+      Alert.alert(
+        'Confirm your email',
+        `We sent a confirmation link to ${email.trim()}. Open it, then sign in. Your encryption keys are created on first sign-in.`
+      );
+      router.replace('/(auth)/login');
     } else {
       router.replace('/(tabs)/chats');
     }
@@ -163,8 +174,8 @@ export default function SignupScreen() {
               <Ionicons name="key-outline" size={32} color={Colors.accent} />
             </View>
           </View>
-          <Text style={styles.title}>Create Identity</Text>
-          <Text style={styles.subtitle}>Client-side derived keys • Zero plaintext</Text>
+          <Text style={styles.title}>Create account</Text>
+          <Text style={styles.subtitle}>Your keys are generated on this device</Text>
         </View>
 
         {/* Form Container */}
@@ -189,7 +200,7 @@ export default function SignupScreen() {
             fieldKey: 'email',
           })}
 
-          {renderField('MASTER PASSPHRASE', password, setPassword, {
+          {renderField('PASSWORD', password, setPassword, {
             placeholder: 'Minimum 8 characters',
             icon: 'lock-closed-outline',
             secure: true,
@@ -205,7 +216,7 @@ export default function SignupScreen() {
             ),
           })}
 
-          {renderField('CONFIRM PASSPHRASE', confirmPassword, setConfirmPassword, {
+          {renderField('CONFIRM PASSWORD', confirmPassword, setConfirmPassword, {
             placeholder: 'Re-enter passphrase',
             icon: 'shield-checkmark-outline',
             secure: true,
@@ -216,7 +227,7 @@ export default function SignupScreen() {
           <View style={styles.privacyNotice}>
             <Ionicons name="shield-checkmark" size={18} color={Colors.online} />
             <Text style={styles.privacyText}>
-              Your Curve25519 identity keypair is generated directly on this device. Vero never holds your private keys.
+              Your X25519 identity key pair is generated on this device. Vero's servers never see your private keys or your messages.
             </Text>
           </View>
 

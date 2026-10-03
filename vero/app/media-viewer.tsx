@@ -13,8 +13,17 @@ import { useLocalSearchParams, router } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors, Typography, Spacing, BorderRadius } from '../src/shared/theme/theme';
+import * as Sharing from 'expo-sharing';
+import { useVideoPlayer, VideoView } from 'expo-video';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
+
+function VideoContent({ uri }: { uri: string }) {
+  const player = useVideoPlayer(uri, (p) => {
+    p.play();
+  });
+  return <VideoView player={player} style={styles.image} nativeControls contentFit="contain" />;
+}
 
 export default function MediaViewerScreen() {
   const { uri, type, name, caption } = useLocalSearchParams<{
@@ -25,13 +34,16 @@ export default function MediaViewerScreen() {
   }>();
 
   const [showControls, setShowControls] = useState(true);
+  const isVideo = type === 'video';
 
-  const handleSave = () => {
-    Alert.alert('Decrypted Export', 'Locally decrypted asset exported securely.');
-  };
-
-  const handleShare = () => {
-    Alert.alert('Secure Transit', 'Forwarding asset via pairwise Double Ratchet session.');
+  const handleShare = async () => {
+    if (!uri) return;
+    if (!(await Sharing.isAvailableAsync())) {
+      Alert.alert('Sharing unavailable', 'Sharing is not supported on this device.');
+      return;
+    }
+    // Shares the decrypted local copy; whatever app you pick will see the plaintext.
+    await Sharing.shareAsync(uri);
   };
 
   return (
@@ -44,7 +56,9 @@ export default function MediaViewerScreen() {
         activeOpacity={1}
         onPress={() => setShowControls(!showControls)}
       >
-        {uri ? (
+        {uri && isVideo ? (
+          <VideoContent uri={uri} />
+        ) : uri ? (
           <Image
             source={{ uri }}
             style={styles.image}
@@ -59,8 +73,8 @@ export default function MediaViewerScreen() {
                 color={Colors.accent}
               />
             </View>
-            <Text style={styles.placeholderText}>Encrypted Ciphertext Stream</Text>
-            <Text style={styles.placeholderSub}>Decrypting on local device...</Text>
+            <Text style={styles.placeholderText}>Nothing to show</Text>
+            <Text style={styles.placeholderSub}>The file could not be opened.</Text>
           </View>
         )}
       </TouchableOpacity>
@@ -76,20 +90,17 @@ export default function MediaViewerScreen() {
 
             <View style={styles.mediaInfo}>
               <Text style={styles.mediaTitle} numberOfLines={1}>
-                {name || (type === 'video' ? 'Decrypted Video' : 'Decrypted Photo')}
+                {name || (isVideo ? 'Video' : 'Photo')}
               </Text>
               <View style={styles.securityRow}>
                 <Ionicons name="lock-closed" size={10} color={Colors.online} />
-                <Text style={styles.securityLabel}>AES-GCM • Zero Cloud Plaintext</Text>
+                <Text style={styles.securityLabel}>Decrypted on this device</Text>
               </View>
             </View>
 
             <View style={styles.actions}>
-              <TouchableOpacity style={styles.iconBtn} onPress={handleSave} activeOpacity={0.7}>
-                <Ionicons name="download-outline" size={20} color={Colors.white} />
-              </TouchableOpacity>
               <TouchableOpacity style={styles.iconBtn} onPress={handleShare} activeOpacity={0.7}>
-                <Ionicons name="arrow-redo-outline" size={20} color={Colors.white} />
+                <Ionicons name="share-outline" size={20} color={Colors.white} />
               </TouchableOpacity>
             </View>
           </View>
@@ -104,7 +115,7 @@ export default function MediaViewerScreen() {
             <View style={styles.metaBadge}>
               <Ionicons name="shield-checkmark" size={13} color={Colors.online} />
               <Text style={styles.metaBadgeText}>
-                Envelope encrypted client-side with AES-256-GCM before Drive sync
+                Stored in the cloud only as ciphertext (XChaCha20-Poly1305)
               </Text>
             </View>
           </View>
