@@ -49,6 +49,7 @@ import { ChatSearchBar } from '../../src/features/search/components/ChatSearchBa
 import { HighlightedText } from '../../src/features/search/components/HighlightedText';
 import { useChatsStore } from '../../src/features/chats/useChatsStore';
 import { chatActionOptions } from '../../src/features/chats/components/ChatRowParts';
+import { confirmAction } from '../../src/features/groups/components/ui';
 
 const REACTION_EMOJIS = ['❤️', '😂', '👍', '🔥', '😮', '😢'];
 const TYPING_SEND_INTERVAL_MS = 3000;
@@ -483,6 +484,13 @@ export default function ChatScreen() {
   };
 
   const handleRetry = (message: Message) => {
+    if (Platform.OS === 'web') {
+      // react-native-web's Alert ignores buttons.
+      void confirmAction('Message not sent', 'Try sending it again?', 'Retry').then((ok) => {
+        if (ok) void retry(message);
+      });
+      return;
+    }
     Alert.alert('Message not sent', 'Try sending it again?', [
       { text: 'Delete', style: 'destructive', onPress: () => void deleteMessage(message, false) },
       { text: 'Cancel', style: 'cancel' },
