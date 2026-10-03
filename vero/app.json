@@ -14,7 +14,8 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.vero.messenger",
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSFaceIDUsageDescription": "Vero uses Face ID to unlock the app when app lock is on."
       }
     },
     "android": {
@@ -53,6 +54,20 @@
       "expo-sqlite",
       "expo-video",
       [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Vero uses Face ID to unlock the app when app lock is on."
+        }
+      ],
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Vero uses the microphone for calls and to record voice messages and videos you send end-to-end encrypted.",
+          "recordAudioAndroid": true,
+          "enableBackgroundPlayback": false
+        }
+      ],
+      [
         "expo-notifications",
         {
           "color": "#06B6D4"
@@ -63,7 +78,7 @@
         {
           "photosPermission": "Vero needs access to your photos so you can send them end-to-end encrypted.",
           "cameraPermission": "Vero uses the camera for video calls and for photos you send end-to-end encrypted.",
-          "microphonePermission": "Vero uses the microphone for calls and voice messages."
+          "microphonePermission": "Vero uses the microphone for calls and to record voice messages and videos you send end-to-end encrypted."
         }
       ],
       [
@@ -83,7 +98,7 @@
         "./plugins/withVeroCalls",
         {
           "cameraPermission": "Vero uses the camera for video calls and for photos you send end-to-end encrypted.",
-          "microphonePermission": "Vero uses the microphone for calls and voice messages."
+          "microphonePermission": "Vero uses the microphone for calls and to record voice messages and videos you send end-to-end encrypted."
         }
       ]
     ],

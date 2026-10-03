@@ -4,14 +4,21 @@
  */
 
 import type { MediaAttachment, ServerMessageType } from './Message';
+import { isValidChunkSize } from '../../core/crypto/attachments';
+import { sanitizeWaveform } from '../../features/media/waveform';
+import { ExtensionPayload, extensionServerType, parseExtensionPayload } from './payloadExtensions';
 
 export type MediaKind = 'image' | 'video' | 'voice' | 'document';
 
+/** What goes on the wire for an attachment: everything except device-local fields. */
+export type MessageMedia = Omit<MediaAttachment, 'localUri' | 'playedAt'>;
+
 export type MessagePayload =
   | { t: 'text'; body: string }
-  | { t: 'media'; kind: MediaKind; caption?: string; media: Omit<MediaAttachment, 'localUri'> }
+  | { t: 'media'; kind: MediaKind; caption?: string; media: MessageMedia }
   | { t: 'reaction'; target: string; emoji: string | null }
-  | { t: 'timer'; seconds: number };
+  | { t: 'timer'; seconds: number }
+  | ExtensionPayload;
 
 export const MAX_TEXT_LENGTH = 5000;
 
@@ -25,10 +32,42 @@ export function serverTypeFor(payload: MessagePayload): ServerMessageType {
       return 'reaction';
     case 'timer':
       return 'system';
+    default:
+      return extensionServerType(payload);
   }
 }
 
 const str = (v: unknown, max = 10_000): v is string => typeof v === 'string' && v.length <= max;
+
+/** Thumbnails are tiny (~48 px JPEG); this bounds the payload. */
+export const MAX_THUMB_LENGTH = 24_000;
+const MAX_DURATION_MS = 24 * 3600 * 1000;
+const MAX_DIMENSION = 30_000;
+const BASE64_RE = /^[A-Za-z0-9+/_-]+={0,2}$/;
+
+const dimension = (v: unknown): number | undefined =>
+  typeof v === 'number' && Number.isFinite(v) && v > 0 && v <= MAX_DIMENSION ? Math.round(v) : undefined;
+
+/**
+ * File names come from the sender: strip paths, control and bidi-override
+ * characters (which can disguise "evil‮fdp.exe" as "evilexe.pdf").
+ */
+export function sanitizeFileName(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') return undefined;
+  const base = raw.split(/[\\/]/).pop() ?? '';
+  const clean = base
+    .replace(/[\u0000-\u001f\u007f​-‏‪-‮⁦-⁩]/g, '')
+    .trim()
+    .replace(/^\.+/, '')
+    .slice(0, 255);
+  return clean || undefined;
+}
+
+/** Strips device-local fields before an attachment is (re-)sent. */
+export function toMessageMedia(media: MediaAttachment): MessageMedia {
+  const { localUri: _localUri, playedAt: _playedAt, ...wire } = media;
+  return wire;
+}
 
 /** Defensive parse: a malicious sender controls every byte of the payload. */
 export function parsePayload(raw: string): MessagePayload | null {
@@ -54,28 +93,51 @@ export function parsePayload(raw: string): MessagePayload | null {
       const m = p.media;
       if (!['image', 'video', 'voice', 'document'].includes(p.kind) || !m || typeof m !== 'object') return null;
       if (![m.mediaId, m.objectId, m.key, m.nonce, m.hash, m.mimeType].every((v) => str(v, 512))) return null;
-      if (typeof m.size !== 'number' || m.size < 0) return null;
+      if (typeof m.size !== 'number' || !Number.isInteger(m.size) || m.size < 0) return null;
+      // Unknown attachment formats can't be decrypted: reject rather than fail later.
+      const v = m.v === undefined || m.v === 1 ? undefined : m.v === 2 ? 2 : null;
+      if (v === null) return null;
+      if (v === 2 && !isValidChunkSize(m.chunkSize)) return null;
+      const fileName = sanitizeFileName(m.fileName);
+      const media: MessageMedia = {
+        mediaId: m.mediaId,
+        objectId: m.objectId,
+        key: m.key,
+        nonce: m.nonce,
+        hash: m.hash,
+        mimeType: m.mimeType,
+        size: m.size,
+      };
+      if (v === 2) {
+        media.v = 2;
+        media.chunkSize = m.chunkSize;
+      }
+      if (fileName) media.fileName = fileName;
+      const width = dimension(m.width);
+      const height = dimension(m.height);
+      if (width && height) {
+        media.width = width;
+        media.height = height;
+      }
+      if (typeof m.durationMs === 'number' && Number.isFinite(m.durationMs) && m.durationMs >= 0 && m.durationMs <= MAX_DURATION_MS) {
+        media.durationMs = Math.round(m.durationMs);
+      }
+      if (p.kind === 'voice') {
+        const waveform = sanitizeWaveform(m.waveform);
+        if (waveform) media.waveform = waveform;
+      }
+      if ((p.kind === 'image' || p.kind === 'video') && str(m.thumb, MAX_THUMB_LENGTH) && BASE64_RE.test(m.thumb)) {
+        media.thumb = m.thumb;
+      }
       return {
         t: 'media',
         kind: p.kind,
         caption: str(p.caption, MAX_TEXT_LENGTH) ? p.caption : undefined,
-        media: {
-          mediaId: m.mediaId,
-          objectId: m.objectId,
-          key: m.key,
-          nonce: m.nonce,
-          hash: m.hash,
-          mimeType: m.mimeType,
-          size: m.size,
-          fileName: str(m.fileName, 255) ? m.fileName : undefined,
-          width: typeof m.width === 'number' ? m.width : undefined,
-          height: typeof m.height === 'number' ? m.height : undefined,
-          durationMs: typeof m.durationMs === 'number' ? m.durationMs : undefined,
-        },
+        media,
       };
     }
     default:
-      return null;
+      return parseExtensionPayload(p);
   }
 }
 
