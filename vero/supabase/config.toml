@@ -8,3 +8,8 @@ verify_jwt = false
 
 [functions.cleanup-expired]
 verify_jwt = false
+
+# Search requests verify the user JWT inside the function; preview/GIF
+# downloads use short-lived HMAC-signed URLs (so <img> tags can load them).
+[functions.gif-search]
+verify_jwt = false
