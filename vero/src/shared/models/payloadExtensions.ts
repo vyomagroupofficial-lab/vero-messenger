@@ -274,7 +274,7 @@ export function extensionPayloadFromMessage(m: { ext?: MessageExt; media?: Media
   }
 }
 
-function utf8Length(s: string): number {
+export function utf8Length(s: string): number {
   let n = 0;
   for (let i = 0; i < s.length; i++) {
     const c = s.charCodeAt(i);

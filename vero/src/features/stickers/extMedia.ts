@@ -83,11 +83,16 @@ async function decryptForWeb(media: MediaAttachment): Promise<string> {
   return url;
 }
 
+/** Web: lets the sender reuse the plaintext it just uploaded (object URLs die on reload). */
+export function rememberWebUri(mediaId: string, url: string): void {
+  webCache.set(mediaId, url);
+}
+
 export function getDecryptedUri(media: MediaAttachment): Promise<string> {
-  if (media.localUri && (Platform.OS === 'web' || !media.localUri.startsWith('file:'))) {
-    return Promise.resolve(media.localUri);
+  if (Platform.OS === 'web') {
+    return media.localUri?.startsWith('data:') ? Promise.resolve(media.localUri) : decryptForWeb(media);
   }
-  return Platform.OS === 'web' ? decryptForWeb(media) : mediaRepository.getDecryptedFile(media);
+  return mediaRepository.getDecryptedFile(media);
 }
 
 /** Downloads + decrypts automatically (stickers and GIFs are small). */
