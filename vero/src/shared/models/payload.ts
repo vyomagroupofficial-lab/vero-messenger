@@ -6,6 +6,7 @@
 import type { MediaAttachment, ServerMessageType } from './Message';
 import { isValidChunkSize } from '../../core/crypto/attachments';
 import { sanitizeWaveform } from '../../features/media/waveform';
+import { ExtensionPayload, extensionServerType, parseExtensionPayload } from './payloadExtensions';
 
 export type MediaKind = 'image' | 'video' | 'voice' | 'document';
 
@@ -16,7 +17,8 @@ export type MessagePayload =
   | { t: 'text'; body: string }
   | { t: 'media'; kind: MediaKind; caption?: string; media: MessageMedia }
   | { t: 'reaction'; target: string; emoji: string | null }
-  | { t: 'timer'; seconds: number };
+  | { t: 'timer'; seconds: number }
+  | ExtensionPayload;
 
 export const MAX_TEXT_LENGTH = 5000;
 
@@ -30,6 +32,8 @@ export function serverTypeFor(payload: MessagePayload): ServerMessageType {
       return 'reaction';
     case 'timer':
       return 'system';
+    default:
+      return extensionServerType(payload);
   }
 }
 
@@ -133,7 +137,7 @@ export function parsePayload(raw: string): MessagePayload | null {
       };
     }
     default:
-      return null;
+      return parseExtensionPayload(p);
   }
 }
 

@@ -12,6 +12,7 @@ import {
   WAVEFORM_MAX,
 } from '../src/features/media/waveform';
 import { parseStoryPayload } from '../src/features/stories/payload';
+import { parseExtensionPayload } from '../src/shared/models/payloadExtensions';
 import type { MediaAttachment } from '../src/shared/models/Message';
 
 const base = {
@@ -119,6 +120,19 @@ describe('voice / media payloads', () => {
     assert.ok(p && p.t === 'media');
     assert.equal((p.media as MediaAttachment).localUri, undefined);
     assert.equal((p.media as MediaAttachment).playedAt, undefined);
+  });
+
+  test('sticker / GIF media keep the attachment format', () => {
+    const wire = { ...base, mimeType: 'image/webp', v: 2, chunkSize: 65536 };
+    const sticker = parseExtensionPayload({ t: 'sticker', media: wire });
+    assert.ok(sticker && sticker.t === 'sticker' && sticker.media);
+    assert.equal(sticker.media.v, 2);
+    assert.equal(sticker.media.chunkSize, 65536);
+    const old = parseExtensionPayload({ t: 'gif', media: { ...base, mimeType: 'video/mp4' } });
+    assert.ok(old && old.t === 'gif');
+    assert.equal(old.media.v, undefined);
+    assert.equal(parseExtensionPayload({ t: 'gif', media: { ...base, mimeType: 'video/mp4', v: 2 } }), null);
+    assert.equal(parseExtensionPayload({ t: 'gif', media: { ...base, mimeType: 'video/mp4', v: 7, chunkSize: 65536 } }), null);
   });
 
   test('story media refs carry the attachment format', () => {

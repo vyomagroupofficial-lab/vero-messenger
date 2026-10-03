@@ -24,6 +24,8 @@ import {
   messagePreview,
 } from '../../shared/models/Message';
 import { MessagePayload, parsePayload, serverTypeFor, timerLabel, toMessageMedia } from '../../shared/models/payload';
+import { extensionContent, extensionPayloadFromMessage, isControlPayload } from '../../shared/models/payloadExtensions';
+import { applyExtensionControl, finalizeExtensionMessage } from '../payments/paymentControl';
 import { keyDirectory } from '../keys/KeyDirectory';
 import { useSettingsStore } from '../settings/useSettingsStore';
 import { computeStatus } from './status';
@@ -61,7 +63,7 @@ export interface SendOptions {
   localUri?: string;
 }
 
-function contentFor(payload: MessagePayload): { type: MessageType; content?: string } {
+function contentFor(payload: MessagePayload): Pick<Message, 'content' | 'ext'> & { type: MessageType; media?: Message['media'] } {
   switch (payload.t) {
     case 'text':
       return { type: 'text', content: payload.body };
@@ -73,7 +75,7 @@ function contentFor(payload: MessagePayload): { type: MessageType; content?: str
     case 'timer':
       return { type: 'system', content: `Disappearing messages: ${timerLabel(payload.seconds)}` };
     default:
-      return { type: 'system' };
+      return extensionContent(payload);
   }
 }
 
@@ -100,7 +102,8 @@ class MessageRepository {
     const timer = await databaseService.getDisappearingTimer(conversationId);
     const expiresAt =
       timer > 0 && payload.t !== 'timer' ? new Date(Date.now() + timer * 1000).toISOString() : null;
-    const { type, content } = contentFor(payload);
+    const { type, content, ext, media: extMedia } = contentFor(payload);
+    const control = payload.t === 'reaction' || isControlPayload(payload);
 
     const local: Message = {
       id,
@@ -110,7 +113,8 @@ class MessageRepository {
       senderName: 'You',
       content,
       messageType: type,
-      media: payload.t === 'media' ? { ...payload.media, localUri: opts.localUri } : undefined,
+      media: payload.t === 'media' ? { ...payload.media, localUri: opts.localUri } : extMedia ? { ...extMedia, localUri: opts.localUri } : undefined,
+      ext,
       replyToMessageId: opts.replyTo?.id ?? null,
       replyPreview: opts.replyTo ? messagePreview(opts.replyTo.messageType, opts.replyTo.content) : null,
       createdAt: new Date().toISOString(),
@@ -120,26 +124,26 @@ class MessageRepository {
       reactions: [],
     };
 
-    if (payload.t !== 'reaction') {
+    if (!control) {
       await databaseService.saveMessage(local);
       onLocal?.(local);
     }
 
     if (session.isDemo) {
       const done = { ...local, status: 'read' as MessageStatus };
-      if (payload.t !== 'reaction') await databaseService.saveMessage(done);
+      if (!control) await databaseService.saveMessage(done);
       return done;
     }
 
     try {
       await this.deliver(session, local, payload, opts.mediaId ?? null);
       const sent = { ...local, status: 'sent' as MessageStatus };
-      if (payload.t !== 'reaction') await databaseService.updateMessageStatus(id, 'sent');
+      if (!control) await databaseService.updateMessageStatus(id, 'sent');
       return sent;
     } catch (e) {
       console.warn('[MessageRepository] send failed:', (e as Error)?.message);
-      if (payload.t !== 'reaction') await databaseService.updateMessageStatus(id, 'failed');
-      if (payload.t === 'reaction') throw e;
+      if (!control) await databaseService.updateMessageStatus(id, 'failed');
+      if (control) throw e;
       return { ...local, status: 'failed' };
     }
   }
@@ -177,7 +181,7 @@ class MessageRepository {
     if (failed.messageType === 'text' && failed.content) payload = { t: 'text', body: failed.content };
     else if (failed.media && ['image', 'video', 'voice', 'document'].includes(failed.messageType)) {
       payload = { t: 'media', kind: failed.messageType as any, caption: failed.content, media: toMessageMedia(failed.media) };
-    }
+    } else payload = extensionPayloadFromMessage(failed);
     if (!payload) return null;
     await databaseService.markMessageDeleted(failed.id);
     return this.send(
@@ -344,6 +348,12 @@ class MessageRepository {
         continue;
       }
 
+      if (isControlPayload(payload)) {
+        const target = await applyExtensionControl(row, payload);
+        out.push(target ? { kind: 'reaction', target } : { kind: 'ignored' });
+        continue;
+      }
+
       if (payload.t === 'reaction') {
         const target = await databaseService.getMessage(payload.target);
         if (target && target.conversationId === row.conversation_id) {
@@ -360,13 +370,14 @@ class MessageRepository {
         await databaseService.setDisappearingTimer(row.conversation_id, payload.seconds);
       }
 
-      const { type, content } = contentFor(payload);
+      const { type, content, ext, media: extMedia } = contentFor(payload);
       const replyTarget = row.reply_to_message_id ? await databaseService.getMessage(row.reply_to_message_id) : null;
       const message: Message = {
         ...base,
         messageType: type,
         content: payload.t === 'timer' ? `${isOwn ? 'You' : base.senderName} set ${content?.toLowerCase()}` : content,
-        media: payload.t === 'media' ? { ...payload.media } : undefined,
+        media: payload.t === 'media' ? { ...payload.media } : extMedia ? { ...extMedia } : undefined,
+        ext: ext && (await finalizeExtensionMessage(row, ext)),
         replyPreview: replyTarget ? messagePreview(replyTarget.messageType, replyTarget.content) : null,
       };
       await databaseService.saveMessage(message);

@@ -17,6 +17,7 @@
     "expo-device": "~57.0.2",
     "expo-document-picker": "~57.0.3",
     "expo-file-system": "~57.0.7",
+    "expo-image": "~57.0.5",
     "expo-image-manipulator": "~57.0.20",
     "expo-image-picker": "~57.0.20",
     "expo-linking": "~57.0.11",
@@ -30,6 +31,7 @@
     "expo-video-thumbnails": "~57.0.2",
     "libsodium-wrappers": "^0.8.4",
     "qrcode": "^1.5.4",
+    "qrcode-generator": "^2.0.4",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "react-native": "0.86.3",
@@ -40,6 +42,7 @@
     "react-native-svg": "15.15.4",
     "react-native-url-polyfill": "^4.0.0",
     "react-native-web": "~0.21.0",
+    "react-native-webview": "13.16.1",
     "react-native-worklets": "0.10.1",
     "zustand": "^5.0.15"
   },
@@ -53,7 +56,7 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p bots/tsconfig.json",
     "test": "tsx --test tests/*.test.ts",
     "desktop:dev": "npm --prefix desktop run dev",
     "desktop:build": "npm --prefix desktop run build"
