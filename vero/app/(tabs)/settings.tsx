@@ -301,6 +301,20 @@ export default function SettingsScreen() {
                     iconColor: Colors.accent,
                   },
                   {
+                    icon: 'qr-code-outline' as const,
+                    label: 'Devices & transfer',
+                    value: 'Link a computer by QR, move chats to a new phone',
+                    onPress: () => router.push('/devices'),
+                    iconColor: Colors.purple,
+                  },
+                  {
+                    icon: 'eye-outline' as const,
+                    label: 'Who can find me',
+                    value: 'Contact discovery by email or phone (off by default)',
+                    onPress: () => router.push('/discovery/settings'),
+                    iconColor: Colors.teal,
+                  },
+                  {
                     icon: 'key-outline' as const,
                     label: 'This device\'s identity key',
                     value: 'Public key only',
