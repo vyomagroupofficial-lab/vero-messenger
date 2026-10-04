@@ -119,6 +119,10 @@ export class User {
   get d1(): Device {
     return this.devices[0];
   }
+
+  get d2(): Device {
+    return this.devices[1];
+  }
 }
 
 export class Device {

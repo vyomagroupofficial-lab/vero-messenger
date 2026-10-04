@@ -16,6 +16,18 @@
  *   eval "$(tests/e2e/local-env.sh)"
  */
 
+import { existsSync, readFileSync } from 'node:fs';
+
+// Optional: E2E_ENV_FILE=<file> with `export NAME='value'` lines (the output of
+// tests/e2e/local-env.sh). Values already in the environment win.
+const envFile = process.env.E2E_ENV_FILE;
+if (envFile && existsSync(envFile)) {
+  for (const line of readFileSync(envFile, 'utf8').split('\n')) {
+    const m = /^\s*(?:export\s+)?([A-Z_][A-Z0-9_]*)=(['"]?)(.*)\2\s*$/.exec(line);
+    if (m && process.env[m[1]] === undefined) process.env[m[1]] = m[3];
+  }
+}
+
 function opt(name: string): string | null {
   const v = process.env[name];
   return v && v.trim() ? v.trim() : null;
