@@ -278,8 +278,6 @@
     "today": "Today",
     "yesterday": "Yesterday",
     "earlier": "Earlier",
-    "betaTitle": "Calling is in beta",
-    "betaBody": "Ringing, answering and call history work today. Encrypted audio and video streaming is coming next.",
     "empty": "No calls yet",
     "emptyBody": "Calls you make and get are listed here, stored only on this device.",
     "pick": "Your calls",
@@ -303,7 +301,9 @@
     "minutes_one": "{{count}} min",
     "minutes_other": "{{count}} min",
     "seconds": "{{count}} s",
-    "failed": "Call failed"
+    "failed": "Call failed",
+    "devBuildTitle": "Calls on phones",
+    "devBuildBody": "Encrypted voice, video and screen share need Vero's development build; Expo Go can't run WebRTC."
   },
   "call": {
     "contact": "Contact",

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { RefreshControl, ScrollView, SectionList, Text, View } from 'react-native';
+import { Platform, RefreshControl, ScrollView, SectionList, Text, View } from 'react-native';
 import Animated, { FadeIn, ZoomIn } from 'react-native-reanimated';
 import { router, useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -136,15 +136,17 @@ export default function CallsScreen() {
         <IconButton icon="phonePlus" label={t('calls.newCall')} variant="brass" onPress={() => router.push('/(tabs)/contacts')} />
       </View>
       <View style={{ paddingHorizontal: 20, gap: 16 }}>
+        {Platform.OS !== 'web' && (
         <View style={s.beta}>
           <View style={s.betaIcon}>
             <Icon name="info" size={19} color={c.accentText} />
           </View>
           <View style={{ flex: 1, gap: 2 }}>
-            <Text style={[type.name, { fontSize: 14.5 }]}>{t('calls.betaTitle')}</Text>
-            <Text style={type.caption}>{t('calls.betaBody')}</Text>
+            <Text style={[type.name, { fontSize: 14.5 }]}>{t('calls.devBuildTitle')}</Text>
+            <Text style={type.caption}>{t('calls.devBuildBody')}</Text>
           </View>
         </View>
+        )}
         {!isWide && people.length > 0 && (
           <View style={{ gap: 10 }}>
             <Text style={type.eyebrow}>{f.script === 'latin' ? t('calls.favourites').toUpperCase() : t('calls.favourites')}</Text>
