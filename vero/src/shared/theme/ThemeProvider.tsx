@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { StyleSheet, useColorScheme } from 'react-native';
-import { FONT_SETS, FontSet, Palette, TypeSet, buildType, dark, light } from './theme';
+import { FONT_SETS, FontSet, Palette, TypeSet, buildType, dark, legacyColors, light } from './theme';
 import { useAppearance } from './appearance';
 import { LanguageCode, applyLanguage, loadScriptFonts, resolveLanguage, scriptFor, scriptFontsLoaded } from '../i18n';
 
@@ -69,4 +69,10 @@ export function makeStyles<T extends StyleSheet.NamedStyles<T>>(build: (c: Palet
     }
     return styles;
   };
+}
+
+/** Legacy color names (Colors.textPrimary, …) for the current palette. */
+export function useLegacyColors() {
+  const { c } = useTheme();
+  return useMemo(() => legacyColors(c), [c]);
 }

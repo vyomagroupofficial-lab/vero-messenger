@@ -4,12 +4,11 @@
  */
 
 import React, { useEffect } from 'react';
-import { StyleProp, StyleSheet, Text, View, ViewStyle } from 'react-native';
+import { StyleProp, Text, View, ViewStyle } from 'react-native';
 import Animated, { ZoomIn, useAnimatedStyle, useSharedValue, withRepeat, withSequence, withTiming } from 'react-native-reanimated';
 import { router } from 'expo-router';
 import { makeStyles, useTheme } from '../../shared/theme/ThemeProvider';
 import { useT } from '../../shared/i18n';
-import { BorderRadius, Colors, Spacing, Typography } from '../../shared/theme/theme';
 import { Button as VeroButton, Glyph, GlyphName, glyphToIcon, IconButton, isIconName } from '../../shared/ui';
 
 export function ScreenHeader({ title, onBack, right }: { title: string; onBack?: () => void; right?: React.ReactNode }) {
@@ -138,26 +137,14 @@ const useStyles = makeStyles((c, t, f) => ({
   fill: { height: 8, borderRadius: 4, backgroundColor: c.accent },
 }));
 
-/**
- * Legacy static styles for screens not yet moved to the themed kit (dark palette via the Colors
- * bridge). Prefer useLinkStyles().
- */
-export const ui = StyleSheet.create({
-  title: { fontSize: Typography.xl, fontWeight: Typography.bold, color: Colors.textPrimary, textAlign: 'center' },
-  body: { fontSize: Typography.sm, color: Colors.textSecondary, lineHeight: 20, textAlign: 'center' },
-  label: { fontSize: Typography.sm, fontWeight: Typography.semibold, color: Colors.textPrimary },
-  muted: { fontSize: Typography.xs, color: Colors.textTertiary, lineHeight: 17 },
-  content: { padding: Spacing.xl, gap: Spacing.lg, paddingBottom: 60 },
-  center: { alignItems: 'center', gap: Spacing.md },
-  input: {
-    backgroundColor: Colors.inputBackground,
-    borderRadius: BorderRadius.lg,
-    borderWidth: 1,
-    borderColor: Colors.inputBorder,
-    color: Colors.textPrimary,
-    paddingHorizontal: Spacing.md,
-    height: 48,
-    fontSize: Typography.base,
-  },
-  screen: { flex: 1, backgroundColor: Colors.background },
-});
+/** Text, field and layout styles shared by the settings / backup screens, following the theme. */
+export const useUi = makeStyles((c, t, f) => ({
+  title: { fontFamily: f.display, fontSize: 22, color: c.text, textAlign: 'center' },
+  body: { fontFamily: f.body, fontSize: 14, color: c.muted, lineHeight: f.script === 'latin' ? 20 : 23, textAlign: 'center' },
+  label: { fontFamily: f.semibold, fontSize: 14, color: c.text },
+  muted: { fontFamily: f.body, fontSize: 12.5, color: c.faint, lineHeight: 18 },
+  content: { padding: 20, gap: 18, paddingBottom: 60, width: '100%', maxWidth: 720, alignSelf: 'center' },
+  center: { alignItems: 'center', gap: 12 },
+  input: { backgroundColor: c.field, borderRadius: 16, borderWidth: 1, borderColor: c.line2, color: c.text, paddingHorizontal: 14, height: 50, fontFamily: f.body, fontSize: 15 },
+  screen: { flex: 1, backgroundColor: c.bg },
+}));
