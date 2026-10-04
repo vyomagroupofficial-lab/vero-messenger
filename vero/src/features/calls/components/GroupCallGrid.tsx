@@ -7,8 +7,10 @@
  */
 
 import React from 'react';
-import { View, Text, ScrollView, StyleSheet } from 'react-native';
-import { Colors, Typography, Spacing } from '../../../shared/theme/theme';
+import { View, Text, ScrollView } from 'react-native';
+import { makeStyles } from '../../../shared/theme/ThemeProvider';
+import { useT } from '../../../shared/i18n';
+import { useLayout } from '../../../shared/ui';
 import type { ActiveCall, CallParticipantView } from '../CallService';
 import { ParticipantTile } from './ParticipantTile';
 
@@ -25,7 +27,17 @@ interface Tile {
   participant: CallParticipantView | null; // null = you
 }
 
+/** Desktop has room for three columns once the call grows past four people. */
+function wideShape(count: number): { cols: number; rows: number } {
+  if (count <= 2) return { cols: count, rows: 1 };
+  if (count <= 4) return { cols: 2, rows: 2 };
+  return { cols: 3, rows: Math.ceil(count / 3) };
+}
+
 export function GroupCallGrid({ call }: { call: ActiveCall }) {
+  const styles = useStyles();
+  const tr = useT();
+  const { isWide } = useLayout();
   const local = call.local;
   const tiles: Tile[] = [{ key: 'local', participant: null }, ...call.participants.map((p) => ({ key: p.deviceId, participant: p }))];
 
@@ -35,7 +47,7 @@ export function GroupCallGrid({ call }: { call: ActiveCall }) {
       return (
         <ParticipantTile
           key={t.key}
-          name="You"
+          name={tr('common.you')}
           isLocal
           stream={local.stream}
           videoEnabled={local.cameraOn && !local.screenSharing}
@@ -83,11 +95,11 @@ export function GroupCallGrid({ call }: { call: ActiveCall }) {
     );
   }
 
-  const { cols, rows } = gridShape(tiles.length);
+  const { cols, rows } = isWide ? wideShape(tiles.length) : gridShape(tiles.length);
   return (
     <View style={styles.container}>
       {call.presenterId === 'local' && (
-        <Text style={styles.presentingNote}>You are sharing your screen with everyone in the call</Text>
+        <Text style={styles.presentingNote}>{tr('call.youPresenting')}</Text>
       )}
       <View style={styles.grid}>
         {tiles.map((t) => (
@@ -97,29 +109,19 @@ export function GroupCallGrid({ call }: { call: ActiveCall }) {
         ))}
       </View>
       {call.participants.length === 0 && call.status === 'connected' && (
-        <Text style={styles.waiting}>Waiting for others to join…</Text>
+        <Text style={styles.waiting}>{tr('call.waitingOthers')}</Text>
       )}
     </View>
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((c, t, f) => ({
   container: { flex: 1 },
   grid: { flex: 1, flexDirection: 'row', flexWrap: 'wrap' },
   stage: { flex: 1 },
-  strip: { flexGrow: 0, height: 110, marginTop: Spacing.xs },
+  strip: { flexGrow: 0, height: 116, marginTop: 4 },
   stripContent: { paddingHorizontal: 2 },
-  stripTile: { width: 96, height: 104 },
-  presentingNote: {
-    color: Colors.accentLight,
-    fontSize: Typography.xs,
-    textAlign: 'center',
-    marginBottom: Spacing.xs,
-  },
-  waiting: {
-    color: Colors.textSecondary,
-    fontSize: Typography.sm,
-    textAlign: 'center',
-    marginTop: Spacing.sm,
-  },
-});
+  stripTile: { width: 100, height: 110 },
+  presentingNote: { fontFamily: f.medium, color: '#E7BD72', fontSize: 12.5, textAlign: 'center', marginBottom: 6 },
+  waiting: { fontFamily: f.medium, color: c.onStageMuted, fontSize: 13.5, textAlign: 'center', marginTop: 10 },
+}));

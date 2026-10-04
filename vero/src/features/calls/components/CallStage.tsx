@@ -63,17 +63,17 @@ export function CallStage({ call }: { call: ActiveCall }) {
 }
 
 const styles = StyleSheet.create({
-  fill: { flex: 1, alignSelf: 'stretch' },
+  fill: { flex: 1, alignSelf: 'stretch', borderRadius: 26, overflow: 'hidden' },
   pip: {
     position: 'absolute',
-    top: 8,
-    right: 8,
-    width: 108,
-    height: 152,
-    borderRadius: 12,
+    top: 12,
+    right: 12,
+    width: 112,
+    height: 158,
+    borderRadius: 20,
     overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.25)',
-    backgroundColor: '#000',
+    borderWidth: 2,
+    borderColor: 'rgba(237,231,217,0.3)',
+    backgroundColor: '#0C0E0D',
   },
 });
