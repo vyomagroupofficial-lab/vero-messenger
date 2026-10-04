@@ -10,7 +10,7 @@
 import { Linking, Platform } from 'react-native';
 import * as ExpoCrypto from 'expo-crypto';
 import { supabase } from '../../core/network/supabase';
-import { requireSession } from '../../core/session';
+import { currentSession, requireSession } from '../../core/session';
 import { databaseService } from '../../core/storage/DatabaseService';
 import { secureStorage } from '../../core/storage/secureStorage';
 import type { Message } from '../../shared/models/Message';
@@ -39,7 +39,9 @@ class PaymentService {
   // ── My UPI id (never leaves the device except inside E2EE payment cards) ──
 
   async getMyUpi(): Promise<MyUpiProfile | null> {
-    const raw = await secureStorage.get(key(requireSession().userId));
+    const session = currentSession();
+    if (!session) return null; // signed out: nothing to show
+    const raw = await secureStorage.get(key(session.userId));
     if (!raw) return null;
     try {
       const p = JSON.parse(raw);
