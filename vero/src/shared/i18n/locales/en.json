@@ -266,7 +266,8 @@
     "messagesOnDevice": "Messages · searched on this device",
     "pin": "Pin chat",
     "unpin": "Unpin chat",
-    "pinFailed": "Couldn't pin the chat"
+    "pinFailed": "Couldn't pin the chat",
+    "pinned": "Pinned"
   },
   "calls": {
     "title": "Calls",
@@ -1369,5 +1370,16 @@
     "discard": "Delete recording",
     "send": "Send voice message",
     "slideCancel": "Slide to cancel"
+  },
+  "archived": {
+    "keep": "Keep chats archived",
+    "keepHint": "Archived chats stay here when new messages arrive. Saved on this device.",
+    "emptyTitle": "No archived chats",
+    "empty": "Long-press a chat in your list to archive it."
+  },
+  "starred": {
+    "emptyTitle": "No starred messages",
+    "empty": "Long-press a message and tap Star to find it here later.",
+    "openHint": "Opens the chat at this message"
   }
 }
