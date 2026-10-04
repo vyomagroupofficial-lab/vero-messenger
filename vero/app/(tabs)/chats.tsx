@@ -7,17 +7,32 @@ import dayjs from 'dayjs';
 import { useAuthStore } from '../../src/features/auth/useAuthStore';
 import { useChatsStore } from '../../src/features/chats/useChatsStore';
 import { ChatThread, NoChatSelected } from '../../src/features/chats/ChatThread';
-import { databaseService } from '../../src/core/storage/DatabaseService';
-import { Conversation, Message, conversationTitle } from '../../src/shared/models/Message';
+import { Conversation, MessageStatus, conversationTitle } from '../../src/shared/models/Message';
+import { isMuted, splitArchived } from '../../src/features/chats/chatList';
+import { useMuteStore } from '../../src/features/notifications/useMuteStore';
+import { useMessagesStore } from '../../src/features/messages/useMessagesStore';
+import { useMessageSearch } from '../../src/features/search/useMessageSearch';
+import { makeSnippet } from '../../src/features/search/searchQuery';
+import { HighlightedText } from '../../src/features/search/components/HighlightedText';
+import { friendlyError } from '../../src/core/network/supabase';
 import { makeStyles, useTheme } from '../../src/shared/theme/ThemeProvider';
 import { useT } from '../../src/shared/i18n';
-import { conversationPreview, listTime, typeLabel } from '../../src/shared/i18n/format';
+import { conversationPreview, listTime } from '../../src/shared/i18n/format';
 import { StoriesTray } from '../../src/features/stories/components/StoriesTray';
-import { Avatar, Badge, Button, Chip, EmptyState, Grain, Icon, IconButton, Pill, Pressy, Rise, SearchField, VeroMark, useLayout } from '../../src/shared/ui';
+import { Avatar, Badge, Button, Chip, EmptyState, Grain, Icon, IconButton, Pill, Pressy, Rise, SearchField, Sheet, SheetRow, VeroMark, notify, useLayout } from '../../src/shared/ui';
 
 type Category = 'all' | 'unread' | 'groups' | 'direct';
 
-function ChatRow({ c: conv, index, selected, onPress }: { c: Conversation; index: number; selected: boolean; onPress: () => void }) {
+function Ticks({ status }: { status?: MessageStatus }) {
+  const { c } = useTheme();
+  if (status === 'sending') return <Icon name="clock" size={14} color={c.faint} />;
+  if (status === 'failed') return <Icon name="info" size={14} color={c.danger} />;
+  if (status === 'delivered') return <Icon name="checks" size={15} color={c.faint} />;
+  if (status === 'read') return <Icon name="checks" size={15} color={c.success} />;
+  return <Icon name="check" size={15} color={c.faint} />;
+}
+
+function ChatRow({ c: conv, index, selected, onPress, onLongPress }: { c: Conversation; index: number; selected: boolean; onPress: () => void; onLongPress: () => void }) {
   const { c } = useTheme();
   const s = useStyles();
   const t = useT();
@@ -26,13 +41,17 @@ function ChatRow({ c: conv, index, selected, onPress }: { c: Conversation; index
   const pv = conversationPreview(t, conv);
   const own = conv.lastMessage?.isOwn;
   const group = conv.conversationType === 'group';
+  const mutedUntil = useMuteStore((st) => st.mutes[conv.id] ?? null);
+  const muted = isMuted({ mutedUntil: mutedUntil ?? conv.mutedUntil });
 
   return (
     <Rise index={index}>
       <Pressy
         onPress={onPress}
+        onLongPress={onLongPress}
         scaleTo={0.98}
         accessibilityLabel={unread ? t('chats.unreadA11y', { name, count: unread }) : name}
+        accessibilityHint={t('chats.longPressHint')}
         accessibilityState={{ selected }}
         hoverStyle={!selected ? { backgroundColor: c.tint } : undefined}
         style={[s.row, selected && s.rowSelected]}
@@ -40,13 +59,15 @@ function ChatRow({ c: conv, index, selected, onPress }: { c: Conversation; index
         <Avatar name={name} size={52} square={group} icon={group ? 'users' : undefined} />
         <View style={s.rowMain}>
           <View style={s.rowTop}>
-            <Text style={s.rowName} numberOfLines={1}>
+            <Text style={[s.rowName, unread > 0 && s.rowNameUnread]} numberOfLines={1}>
               {name}
             </Text>
+            {muted && <Icon name="bellOff" size={14} color={c.faint} />}
+            {!!conv.pinnedAt && <Icon name="pin" size={14} color={c.accentText} />}
             <Text style={[s.rowTime, unread > 0 && { color: c.accentText }]}>{listTime(t, conv.lastMessage?.createdAt)}</Text>
           </View>
           <View style={s.rowBottom}>
-            {own && <Icon name="check" size={15} color={c.faint} />}
+            {own && <Ticks status={conv.lastMessage?.status} />}
             {pv.icon && <Icon name={pv.icon} size={15} color={unread ? c.text : c.faint} />}
             <Text style={[s.preview, unread > 0 && { color: c.text }]} numberOfLines={1}>
               {pv.text}
@@ -75,8 +96,12 @@ export default function ChatsScreen() {
   const [category, setCategory] = useState<Category>('all');
   const [refreshing, setRefreshing] = useState(false);
   const [query, setQuery] = useState('');
-  const [matched, setMatched] = useState<Message[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [jump, setJump] = useState<{ messageId: string; q: string } | null>(null);
+  const [actionChat, setActionChat] = useState<Conversation | null>(null);
+  // Local (on-device) full-text search over decrypted messages.
+  const { results: matched } = useMessageSearch(query, undefined, 50);
+  const { active, archived } = useMemo(() => splitArchived(conversations), [conversations]);
 
   useFocusEffect(
     useCallback(() => {
@@ -84,36 +109,43 @@ export default function ChatsScreen() {
     }, [userId, load])
   );
 
-  // Local (on-device) full-text search over decrypted messages, debounced.
-  useEffect(() => {
-    const q = query.trim();
-    if (q.length < 2) {
-      setMatched([]);
-      return;
-    }
-    const tm = setTimeout(() => void databaseService.searchMessages(q).then(setMatched).catch(() => setMatched([])), 250);
-    return () => clearTimeout(tm);
-  }, [query]);
-
   // Desktop opens the first conversation so the right pane is never empty on arrival.
   useEffect(() => {
-    if (isWide && !selectedId && conversations.length > 0) setSelectedId(conversations[0].id);
-  }, [isWide, conversations.length]);
+    if (isWide && !selectedId && active.length > 0) setSelectedId(active[0].id);
+  }, [isWide, active.length]);
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
-    let list = q ? conversations.filter((cv) => conversationTitle(cv).toLowerCase().includes(q)) : conversations;
+    // Search covers archived chats too; the normal list hides them behind the "Archived" row.
+    let list = q ? conversations.filter((cv) => conversationTitle(cv).toLowerCase().includes(q)) : active;
     if (category === 'direct') list = list.filter((cv) => cv.conversationType === 'direct');
     else if (category === 'groups') list = list.filter((cv) => cv.conversationType === 'group');
     else if (category === 'unread') list = list.filter((cv) => cv.unreadCount > 0);
     return list;
-  }, [conversations, query, category]);
+  }, [conversations, active, query, category]);
 
-  const unreadTotal = conversations.filter((cv) => cv.unreadCount > 0).length;
+  const unreadTotal = active.filter((cv) => cv.unreadCount > 0).length;
+  const archivedUnread = archived.reduce((n, cv) => n + cv.unreadCount, 0);
 
   const open = (id: string) => {
+    setJump(null);
     if (isWide) setSelectedId(id);
     else router.push(`/chat/${id}`);
+  };
+
+  const openMatch = (conversationId: string, messageId: string) => {
+    const q = query.trim();
+    if (isWide) {
+      setJump({ messageId, q });
+      setSelectedId(conversationId);
+    } else {
+      router.push({ pathname: '/chat/[id]', params: { id: conversationId, messageId, q } });
+    }
+  };
+
+  const chatAction = (fn: () => Promise<void>, failTitle: string) => () => {
+    setActionChat(null);
+    void fn().catch((e) => notify(failTitle, friendlyError(e)));
   };
 
   const refresh = async () => {
@@ -142,6 +174,7 @@ export default function ChatsScreen() {
           </Text>
         </View>
         <View style={{ flexDirection: 'row', gap: 8 }}>
+          <IconButton icon="star" label={t('thread.starred')} variant="filled" onPress={() => router.push('/starred')} />
           <IconButton icon="megaphone" label={t('chats.channels')} variant="filled" onPress={() => router.push('/channels')} />
           <IconButton icon="users" label={t('chats.newGroup')} variant="filled" onPress={() => router.push('/new-group')} />
           {isWide && <IconButton icon="plus" label={t('chats.newChat')} variant="brass" onPress={() => router.push('/(tabs)/contacts')} />}
@@ -162,6 +195,15 @@ export default function ChatsScreen() {
           ))}
         </View>
       </View>
+      {!query && category === 'all' && archived.length > 0 && (
+        <Pressy onPress={() => router.push('/archived')} scaleTo={0.98} hoverStyle={{ backgroundColor: c.tint }} style={s.archivedRow} accessibilityLabel={t('chats.archived')}>
+          <View style={s.archivedIcon}>
+            <Icon name="archive" size={20} color={c.accentText} />
+          </View>
+          <Text style={[s.rowName, { flex: 1 }]}>{t('chats.archived')}</Text>
+          {archivedUnread > 0 ? <Badge count={archivedUnread} /> : <Text style={s.rowTime}>{archived.length}</Text>}
+        </Pressy>
+      )}
     </View>
   );
 
@@ -177,7 +219,9 @@ export default function ChatsScreen() {
     <FlatList
       data={visible}
       keyExtractor={(cv) => cv.id}
-      renderItem={({ item, index }) => <ChatRow c={item} index={index} selected={isWide && item.id === selectedId} onPress={() => open(item.id)} />}
+      renderItem={({ item, index }) => (
+        <ChatRow c={item} index={index} selected={isWide && item.id === selectedId} onPress={() => open(item.id)} onLongPress={() => setActionChat(item)} />
+      )}
       ListHeaderComponent={header}
       ListHeaderComponentStyle={{ marginBottom: 8 }}
       contentContainerStyle={{ paddingBottom: isWide ? 24 : 110 }}
@@ -197,19 +241,32 @@ export default function ChatsScreen() {
       ListFooterComponent={
         matched.length > 0 ? (
           <View style={s.matches}>
-            <Text style={[type.eyebrow, { paddingHorizontal: 12, marginBottom: 6 }]}>{t('chats.messages').toUpperCase()}</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, marginBottom: 6 }}>
+              <Icon name="lock" size={12} color={c.accentText} />
+              <Text style={type.eyebrow}>{t('chats.messagesOnDevice').toUpperCase()}</Text>
+            </View>
             {matched.map((m) => {
-              const label = typeLabel(t, m.messageType, m.content);
+              const chat = conversations.find((cv) => cv.id === m.conversationId);
+              const who = m.isOwn ? t('common.you') : m.senderName;
               return (
-                <Pressy key={m.id} onPress={() => open(m.conversationId)} scaleTo={0.98} hoverStyle={{ backgroundColor: c.tint }} style={s.match}>
+                <Pressy key={m.id} onPress={() => openMatch(m.conversationId, m.id)} scaleTo={0.98} hoverStyle={{ backgroundColor: c.tint }} style={s.match}>
                   <View style={s.matchIcon}>
-                    <Icon name={label.icon ?? 'chat'} size={18} color={c.accentText} />
+                    <Icon name="search" size={18} color={c.accentText} />
                   </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={type.body} numberOfLines={1}>
-                      {label.text}
-                    </Text>
-                    <Text style={type.caption}>{dayjs(m.createdAt).format('D MMM, h:mm A')}</Text>
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <View style={{ flexDirection: 'row', gap: 8 }}>
+                      <Text style={[s.rowName, { flex: 1, fontSize: 14.5 }]} numberOfLines={1}>
+                        {chat ? conversationTitle(chat) : t('chats.title')}
+                      </Text>
+                      <Text style={s.rowTime}>{listTime(t, m.createdAt)}</Text>
+                    </View>
+                    <HighlightedText
+                      style={type.caption}
+                      highlightStyle={s.hit}
+                      numberOfLines={2}
+                      text={`${chat?.conversationType === 'group' && who ? `${who}: ` : ''}${makeSnippet(m.content ?? '', query)}`}
+                      query={query}
+                    />
                   </View>
                 </Pressy>
               );
@@ -220,6 +277,32 @@ export default function ChatsScreen() {
     />
   );
 
+  const sheet = (
+    <Sheet visible={!!actionChat} onClose={() => setActionChat(null)} title={actionChat ? conversationTitle(actionChat) : undefined}>
+      {actionChat && !actionChat.archivedAt && (
+        <SheetRow
+          icon="pin"
+          label={actionChat.pinnedAt ? t('chats.unpin') : t('chats.pin')}
+          onPress={chatAction(() => useChatsStore.getState().setPinned(actionChat.id, !actionChat.pinnedAt), t('chats.pinFailed'))}
+        />
+      )}
+      {actionChat && (
+        <SheetRow
+          icon="archive"
+          label={actionChat.archivedAt ? t('chats.unarchive') : t('chats.archive')}
+          onPress={chatAction(() => useChatsStore.getState().setArchived(actionChat.id, !actionChat.archivedAt), t('chats.archiveFailed'))}
+        />
+      )}
+      {actionChat && actionChat.unreadCount > 0 && (
+        <SheetRow
+          icon="checks"
+          label={t('chats.markRead')}
+          onPress={chatAction(() => useMessagesStore.getState().markConversationRead(actionChat.id), t('chats.markReadFailed'))}
+        />
+      )}
+    </Sheet>
+  );
+
   if (isWide) {
     return (
       <View style={s.split}>
@@ -227,7 +310,8 @@ export default function ChatsScreen() {
           <Grain />
           {list}
         </View>
-        <View style={{ flex: 1, minWidth: 0 }}>{selectedId ? <ChatThread key={selectedId} conversationId={selectedId} embedded /> : <NoChatSelected />}</View>
+        <View style={{ flex: 1, minWidth: 0 }}>{selectedId ? <ChatThread key={`${selectedId}:${jump?.messageId ?? ''}`} conversationId={selectedId} embedded jumpMessageId={jump?.messageId} jumpQuery={jump?.q} /> : <NoChatSelected />}</View>
+        {sheet}
       </View>
     );
   }
@@ -241,6 +325,7 @@ export default function ChatsScreen() {
           <Icon name="chatPlus" size={25} color={c.onAccent} />
         </Pressy>
       </Animated.View>
+      {sheet}
     </View>
   );
 }
@@ -258,6 +343,10 @@ const useStyles = makeStyles((c, t, f) => ({
   rowMain: { flex: 1, minWidth: 0, gap: 4 },
   rowTop: { flexDirection: 'row', alignItems: 'baseline', gap: 8 },
   rowName: { flex: 1, fontFamily: f.semibold, fontSize: 16, color: c.text },
+  rowNameUnread: { fontFamily: f.bold },
+  archivedRow: { flexDirection: 'row', alignItems: 'center', gap: 13, marginHorizontal: 8, marginTop: 10, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 18 },
+  archivedIcon: { width: 52, height: 52, borderRadius: 18, backgroundColor: c.accentTint, borderWidth: 1, borderColor: c.accentTint2, alignItems: 'center', justifyContent: 'center' },
+  hit: { backgroundColor: c.accentTint2, color: c.text, fontFamily: f.semibold },
   rowTime: { fontFamily: f.body, fontSize: 12, color: c.faint },
   rowBottom: { flexDirection: 'row', alignItems: 'center', gap: 6, minHeight: 22 },
   preview: { flex: 1, fontFamily: f.body, fontSize: 14, color: c.muted },

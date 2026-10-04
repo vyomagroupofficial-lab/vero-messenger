@@ -16,11 +16,11 @@ import { callService } from '../src/features/calls/CallService';
 import { startInbox, useChatsStore } from '../src/features/chats/useChatsStore';
 import { closeAllConversationChannels } from '../src/features/messages/useMessagesStore';
 import { userChannel } from '../src/core/network/realtime';
-import { registerForPush } from '../src/features/notifications/pushRegistration';
-import { useSettingsStore } from '../src/features/settings/useSettingsStore';
 import { ThemeProvider, useTheme } from '../src/shared/theme/ThemeProvider';
 import { dark } from '../src/shared/theme/theme';
 import '../src/shared/i18n';
+import { AppLockGate } from '../src/features/settings/AppLockGate';
+import { useAccountServices } from '../src/features/settings/useAccountServices';
 
 function ThemedStack() {
   const { c, isDark } = useTheme();
@@ -82,7 +82,10 @@ export default function RootLayout() {
     void initialize();
   }, [initialize]);
 
-  // Per-session lifecycle: realtime inbox, incoming calls, push registration.
+  // Push, privacy settings, presence, mutes, backups (src/features/settings/useAccountServices.ts).
+  useAccountServices(userId, deviceId, isDemo);
+
+  // Per-session lifecycle: realtime inbox, incoming calls.
   useEffect(() => {
     if (!userId || !deviceId) return;
     let stopInbox: (() => void) | null = null;
@@ -90,7 +93,6 @@ export default function RootLayout() {
       void userChannel.start(userId);
       stopInbox = startInbox();
       callService.start();
-      if (useSettingsStore.getState().notifications) void registerForPush(deviceId);
     }
     const unsubscribeCalls = callService.subscribe((call) => {
       if (call && call.status === 'ringing' && !call.isInitiator) {
@@ -115,7 +117,9 @@ export default function RootLayout() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <ThemeProvider>
-        <ThemedStack />
+        <AppLockGate>
+          <ThemedStack />
+        </AppLockGate>
       </ThemeProvider>
     </GestureHandlerRootView>
   );

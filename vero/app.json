@@ -16,7 +16,8 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.vero.messenger",
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSFaceIDUsageDescription": "Vero uses Face ID to unlock the app when app lock is on."
       }
     },
     "android": {
@@ -30,7 +31,9 @@
       "package": "com.vero.messenger",
       "permissions": [
         "android.permission.CAMERA",
-        "android.permission.POST_NOTIFICATIONS"
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS"
       ],
       "blockedPermissions": [
         "android.permission.WRITE_CONTACTS"
@@ -53,6 +56,20 @@
       "expo-sqlite",
       "expo-video",
       [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Vero uses Face ID to unlock the app when app lock is on."
+        }
+      ],
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Vero uses the microphone for calls and to record voice messages and videos you send end-to-end encrypted.",
+          "recordAudioAndroid": true,
+          "enableBackgroundPlayback": false
+        }
+      ],
+      [
         "expo-notifications",
         {
           "color": "#D6A657"
@@ -62,8 +79,8 @@
         "expo-image-picker",
         {
           "photosPermission": "Vero needs access to your photos so you can send them end-to-end encrypted.",
-          "cameraPermission": "Vero needs camera access so you can take photos to send end-to-end encrypted.",
-          "microphonePermission": false
+          "cameraPermission": "Vero uses the camera for video calls and for photos you send end-to-end encrypted.",
+          "microphonePermission": "Vero uses the microphone for calls and to record voice messages and videos you send end-to-end encrypted."
         }
       ],
       "expo-font",
@@ -78,6 +95,13 @@
         "expo-contacts",
         {
           "contactsPermission": "Vero checks which of your contacts use Vero. Only short hash prefixes leave your device, never names or numbers."
+        }
+      ],
+      [
+        "./plugins/withVeroCalls",
+        {
+          "cameraPermission": "Vero uses the camera for video calls and for photos you send end-to-end encrypted.",
+          "microphonePermission": "Vero uses the microphone for calls and to record voice messages and videos you send end-to-end encrypted."
         }
       ]
     ],

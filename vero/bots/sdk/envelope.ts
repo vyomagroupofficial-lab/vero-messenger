@@ -1,7 +1,12 @@
 /**
- * Bot-side message encryption: the SAME envelope format and payload schema
- * as the app (src/core/crypto/primitives.ts, src/shared/models/payload.ts),
- * so a bot is just another device in the conversation.
+ * Bot-side message encryption: the SAME envelope formats and payload schema
+ * as the app, so a bot is just another device in the conversation.
+ *
+ *   v3 (what VeroBot sends and reads): the app's session layer
+ *      (src/core/crypto/ratchet - X3DH + Double Ratchet, forward secret);
+ *      sealSessionPayload / openSessionPayload below.
+ *   v2 (legacy static-key envelopes, src/core/crypto/primitives.ts):
+ *      sealPayload / openPayload, kept for old messages and tests.
  */
 
 import {
@@ -14,6 +19,7 @@ import {
   serializeEnvelope,
 } from '../../src/core/crypto/primitives';
 import { MessagePayload, parsePayload, serverTypeFor } from '../../src/shared/models/payload';
+import { parseControlPlaintext, SessionManager } from '../../src/core/crypto/ratchet/SessionManager';
 
 export type { DeviceKeyRef, EnvelopeContext, MessagePayload, Sodium };
 
@@ -44,6 +50,32 @@ export function openPayload(
   senderPublicKey: string
 ): MessagePayload | null {
   const plaintext = decryptEnvelope(sodium, parseEnvelope(ciphertext), ctx, myDeviceId, mySecretKey, senderPublicKey);
+  return parsePayload(plaintext);
+}
+
+/** v3: encrypts a payload through the session layer for every recipient device. */
+export async function sealSessionPayload(
+  sessions: SessionManager,
+  payload: MessagePayload,
+  ctx: EnvelopeContext,
+  recipients: DeviceKeyRef[]
+): Promise<SealedMessage> {
+  return { ciphertext: await sessions.encrypt(ctx, JSON.stringify(payload), recipients), messageType: serverTypeFor(payload) };
+}
+
+/**
+ * v3 or v2: decrypts and validates an incoming envelope. Returns 'control'
+ * for session-layer control messages (already handled, nothing to show) and
+ * null for unknown payload kinds. Throws on tampering or a broken session.
+ */
+export async function openSessionPayload(
+  sessions: SessionManager,
+  ciphertext: string,
+  ctx: EnvelopeContext,
+  senderPublicKey: string
+): Promise<MessagePayload | null | 'control'> {
+  const plaintext = await sessions.decrypt(ctx, ciphertext, senderPublicKey);
+  if (parseControlPlaintext(plaintext)) return 'control';
   return parsePayload(plaintext);
 }
 

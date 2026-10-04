@@ -11,7 +11,8 @@
 
 import { supabase } from '../../core/network/supabase';
 import { cryptoManager } from '../../core/crypto/CryptoManager';
-import { DecryptionError, NotAddressedToDeviceError, parseEnvelope, serializeEnvelope } from '../../core/crypto/primitives';
+import { DecryptionError, NotAddressedToDeviceError } from '../../core/crypto/primitives';
+import { parseAnyEnvelope } from '../../core/crypto/ratchet/envelope';
 import { databaseService, PinnedDeviceKey } from '../../core/storage/DatabaseService';
 import type { SessionContext } from '../../core/session';
 import { generateUUID } from '../../shared/utils/uuid';
@@ -138,7 +139,7 @@ class StoryRepository {
       const plaintext = await cryptoManager.decryptMessage(
         session.userId,
         session.deviceId,
-        serializeEnvelope(envelope),
+        JSON.stringify(envelope),
         storyContext(row.author_id, row.id, row.author_device_id),
         key.publicKey
       );
@@ -210,7 +211,7 @@ class StoryRepository {
       storyContext(session.userId, storyId, session.deviceId),
       devices
     );
-    const split = splitStoryEnvelope(parseEnvelope(serialized), devices, session.userId);
+    const split = splitStoryEnvelope(parseAnyEnvelope(serialized), devices, session.userId);
 
     onStage?.('sending');
     const { data, error } = await supabase.rpc('post_story', {

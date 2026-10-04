@@ -12,7 +12,9 @@ import { databaseService } from '../../src/core/storage/DatabaseService';
 import { friendlyError } from '../../src/core/network/supabase';
 import { mediaRepository } from '../../src/features/media/MediaRepository';
 import { useSettingsStore } from '../../src/features/settings/useSettingsStore';
-import { registerForPush, unregisterPush } from '../../src/features/notifications/pushRegistration';
+import { updatePrivacySettings } from '../../src/features/settings/settingsSync';
+import { useAppLockStore } from '../../src/features/settings/appLock';
+import { useBackupStatus } from '../../src/features/backup/useBackupStore';
 import { Palette, dark, light } from '../../src/shared/theme/theme';
 import { makeStyles, useTheme } from '../../src/shared/theme/ThemeProvider';
 import { ThemePreference, useAppearance } from '../../src/shared/theme/appearance';
@@ -45,7 +47,6 @@ const SECTIONS: { key: Section; icon: IconName }[] = [
   { key: 'storage', icon: 'database' },
 ];
 
-type LinkedDevice = Awaited<ReturnType<typeof authRepository.listDevices>>[number];
 
 // ── Building blocks ─────────────────────────────────────────────────────────
 
@@ -163,6 +164,8 @@ export default function SettingsScreen() {
   const logout = useAuthStore((st) => st.logout);
   const updateProfile = useAuthStore((st) => st.updateProfile);
   const settings = useSettingsStore();
+  const appLockOn = useAppLockStore((st) => st.enabled);
+  const backup = useBackupStatus(user?.id);
   const themePref = useAppearance((st) => st.theme);
   const langPref = useAppearance((st) => st.language);
   const setTheme = useAppearance((st) => st.setTheme);
@@ -170,12 +173,10 @@ export default function SettingsScreen() {
 
   const [section, setSection] = useState<Section>('appearance');
   const [showKeys, setShowKeys] = useState(false);
-  const [showDevices, setShowDevices] = useState(false);
   const [showAudit, setShowAudit] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
   const [showLanguage, setShowLanguage] = useState(false);
   const [publicKey, setPublicKey] = useState<string | null>(null);
-  const [devices, setDevices] = useState<LinkedDevice[] | null>(null);
   const [draftName, setDraftName] = useState('');
   const [draftAbout, setDraftAbout] = useState('');
   const [saving, setSaving] = useState(false);
@@ -183,34 +184,6 @@ export default function SettingsScreen() {
   useEffect(() => {
     if (user && !isDemo) void cryptoManager.getIdentityPublicKey(user.id).then(setPublicKey);
   }, [user?.id, isDemo]);
-
-  const loadDevices = useCallback(async () => {
-    setDevices(null);
-    try {
-      setDevices(await authRepository.listDevices());
-    } catch (e) {
-      setDevices([]);
-      notify(t('settings.linked.loadFailed'), friendlyError(e));
-    }
-  }, [t]);
-
-  const activeDevices = devices?.filter((d) => !d.revokedAt) ?? [];
-
-  const handleRevoke = (device: LinkedDevice) =>
-    confirmAction({
-      title: t('settings.linked.unlinkTitle'),
-      message: t('settings.linked.unlinkBody', { name: device.deviceLabel }),
-      confirmLabel: t('settings.linked.unlink'),
-      destructive: true,
-      onConfirm: async () => {
-        try {
-          await authRepository.revokeDevice(device.id);
-          await loadDevices();
-        } catch (e) {
-          notify(t('settings.linked.unlinkFailed'), friendlyError(e));
-        }
-      },
-    });
 
   const handleLogout = () =>
     confirmAction({
@@ -261,11 +234,8 @@ export default function SettingsScreen() {
       },
     });
 
-  const toggleNotifications = async (enabled: boolean) => {
-    settings.set({ notifications: enabled });
-    if (!deviceId || isDemo) return;
-    if (enabled) await registerForPush(deviceId);
-    else await unregisterPush(deviceId).catch(() => undefined);
+  const savePrivacy = (patch: Parameters<typeof updatePrivacySettings>[0]) => {
+    updatePrivacySettings(patch).catch((e) => notify(t('settings.saveFailed'), friendlyError(e)));
   };
 
   const openProfileEditor = () => {
@@ -316,9 +286,32 @@ export default function SettingsScreen() {
 
   const privacy = (
     <Card title={t('settings.sections.privacy')} index={0}>
-      <Row first icon="checks" label={t('settings.readReceipts')} hint={t('settings.readReceiptsHint')} right={<Toggle label={t('settings.readReceipts')} value={settings.readReceipts} onValueChange={(v) => settings.set({ readReceipts: v })} />} />
-      <Row icon="edit" label={t('settings.typing')} hint={t('settings.typingHint')} right={<Toggle label={t('settings.typing')} value={settings.typingIndicators} onValueChange={(v) => settings.set({ typingIndicators: v })} />} />
-      <Row icon="bell" label={t('settings.notifications')} hint={t('settings.notificationsHint')} right={<Toggle label={t('settings.notifications')} value={settings.notifications} onValueChange={(v) => void toggleNotifications(v)} />} />
+      <Row first icon="checks" label={t('settings.readReceipts')} hint={t('settings.readReceiptsHint')} right={<Toggle label={t('settings.readReceipts')} value={settings.readReceipts} onValueChange={(v) => savePrivacy({ readReceipts: v })} />} />
+      <Row icon="edit" label={t('settings.typing')} hint={t('settings.typingHint')} right={<Toggle label={t('settings.typing')} value={settings.typingIndicators} onValueChange={(v) => savePrivacy({ typingIndicators: v })} />} />
+      <Row icon="eyeOff" label={t('settings.privacyMore')} hint={t('settings.privacyMoreHint')} onPress={() => router.push('/settings/privacy')} />
+      <Row
+        icon="fingerprint"
+        label={t('settings.appLock')}
+        onPress={() => router.push('/settings/privacy')}
+        right={
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            <Text style={s.value}>{appLockOn ? t('common.on') : t('common.off')}</Text>
+            <Icon name="forwardChevron" size={18} color={c.faint} />
+          </View>
+        }
+      />
+      {!isDemo && (
+        <Row
+          icon="cloudUp"
+          label={t('settings.backup')}
+          hint={
+            backup.methods.length
+              ? t('settings.backupOn', { date: backup.lastBackupAt ? dayjs(backup.lastBackupAt).format('D MMM, h:mm A') : t('settings.backupNever') })
+              : t('common.off')
+          }
+          onPress={() => router.push('/backup')}
+        />
+      )}
     </Card>
   );
 
@@ -331,10 +324,7 @@ export default function SettingsScreen() {
             icon="devices"
             label={t('settings.devices')}
             hint={t('settings.devicesHint')}
-            onPress={() => {
-              setShowDevices(true);
-              void loadDevices();
-            }}
+            onPress={() => router.push('/settings/devices')}
           />
           <Row icon="qr" label={t('settings.transfer')} hint={t('settings.transferHint')} onPress={() => router.push('/devices')} />
           <Row icon="eye" label={t('settings.findMe')} hint={t('settings.findMeHint')} onPress={() => router.push('/discovery/settings')} />
@@ -469,41 +459,6 @@ export default function SettingsScreen() {
           <Text style={[type.caption, { flex: 1 }]}>{t('settings.keys.note')}</Text>
         </View>
         <Button label={t('common.done')} variant="ghost" onPress={() => setShowKeys(false)} />
-      </Sheet>
-
-      <Sheet visible={showDevices} onClose={() => setShowDevices(false)} title={t('settings.linked.title')}>
-        {devices === null ? (
-          <ActivityIndicator color={c.accent} style={{ marginVertical: 20 }} />
-        ) : (
-          <ScrollView style={{ maxHeight: 320 }} contentContainerStyle={{ gap: 8 }}>
-            {activeDevices.map((d, i) => {
-              const mine = d.id === deviceId;
-              return (
-                <Animated.View key={d.id} entering={FadeInDown.delay(i * 50)} style={s.deviceRow}>
-                  <View style={[s.rowIcon, { width: 44, height: 44 }, mine && { backgroundColor: c.accentTint }]}>
-                    <Icon name={/web|desktop|mac|windows|linux|chrome|firefox|safari/i.test(d.deviceLabel) ? 'laptop' : 'smartphone'} size={21} color={mine ? c.accentText : c.text} />
-                  </View>
-                  <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
-                    <Text style={s.rowLabel} numberOfLines={1}>
-                      {d.deviceLabel}
-                      {mine ? <Text style={{ color: c.accentText }}>{`  ·  ${t('settings.linked.thisDevice')}`}</Text> : null}
-                    </Text>
-                    <Text style={type.caption} numberOfLines={2}>
-                      {t('settings.linked.added', { date: dayjs(d.createdAt).format('D MMM YYYY') })} · {t('settings.linked.lastActive', { date: dayjs(d.lastSeenAt).format('D MMM') })}
-                    </Text>
-                  </View>
-                  {!mine && <IconButton icon="close" label={t('settings.linked.unlink')} color={c.danger} onPress={() => handleRevoke(d)} />}
-                </Animated.View>
-              );
-            })}
-            {activeDevices.length <= 1 && <Text style={[type.caption, { textAlign: 'center', paddingVertical: 6 }]}>{t('settings.linked.none')}</Text>}
-          </ScrollView>
-        )}
-        <View style={s.sheetNote}>
-          <Icon name="info" size={14} color={c.accentText} />
-          <Text style={[type.caption, { flex: 1 }]}>{t('settings.linked.note')}</Text>
-        </View>
-        <Button label={t('common.done')} variant="ghost" onPress={() => setShowDevices(false)} />
       </Sheet>
 
       <Sheet visible={showAudit} onClose={() => setShowAudit(false)} title={t('settings.audit.title')}>

@@ -4,11 +4,12 @@
  */
 
 import React, { useEffect } from 'react';
-import { StyleProp, Text, View, ViewStyle } from 'react-native';
+import { StyleProp, StyleSheet, Text, View, ViewStyle } from 'react-native';
 import Animated, { ZoomIn, useAnimatedStyle, useSharedValue, withRepeat, withSequence, withTiming } from 'react-native-reanimated';
 import { router } from 'expo-router';
 import { makeStyles, useTheme } from '../../shared/theme/ThemeProvider';
 import { useT } from '../../shared/i18n';
+import { BorderRadius, Colors, Spacing, Typography } from '../../shared/theme/theme';
 import { Button as VeroButton, Glyph, GlyphName, glyphToIcon, IconButton, isIconName } from '../../shared/ui';
 
 export function ScreenHeader({ title, onBack, right }: { title: string; onBack?: () => void; right?: React.ReactNode }) {
@@ -136,3 +137,27 @@ const useStyles = makeStyles((c, t, f) => ({
   track: { height: 8, borderRadius: 4, backgroundColor: c.field, overflow: 'hidden', width: '100%' },
   fill: { height: 8, borderRadius: 4, backgroundColor: c.accent },
 }));
+
+/**
+ * Legacy static styles for screens not yet moved to the themed kit (dark palette via the Colors
+ * bridge). Prefer useLinkStyles().
+ */
+export const ui = StyleSheet.create({
+  title: { fontSize: Typography.xl, fontWeight: Typography.bold, color: Colors.textPrimary, textAlign: 'center' },
+  body: { fontSize: Typography.sm, color: Colors.textSecondary, lineHeight: 20, textAlign: 'center' },
+  label: { fontSize: Typography.sm, fontWeight: Typography.semibold, color: Colors.textPrimary },
+  muted: { fontSize: Typography.xs, color: Colors.textTertiary, lineHeight: 17 },
+  content: { padding: Spacing.xl, gap: Spacing.lg, paddingBottom: 60 },
+  center: { alignItems: 'center', gap: Spacing.md },
+  input: {
+    backgroundColor: Colors.inputBackground,
+    borderRadius: BorderRadius.lg,
+    borderWidth: 1,
+    borderColor: Colors.inputBorder,
+    color: Colors.textPrimary,
+    paddingHorizontal: Spacing.md,
+    height: 48,
+    fontSize: Typography.base,
+  },
+  screen: { flex: 1, backgroundColor: Colors.background },
+});

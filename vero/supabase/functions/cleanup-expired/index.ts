@@ -22,6 +22,9 @@ Deno.serve(async (req) => {
 
     const { data: expired, error } = await admin.rpc("cleanup_expired_messages");
     if (error) throw error;
+    // Uploads that were started but never confirmed (004_media.sql).
+    const { error: staleError } = await admin.rpc("cleanup_stale_media_uploads");
+    if (staleError) console.error("[cleanup-expired] stale upload sweep failed:", staleError.code ?? "unknown");
 
     const { data: media } = await admin
       .from("media")
@@ -32,7 +35,15 @@ Deno.serve(async (req) => {
     let blobsDeleted = 0;
     for (const m of media ?? []) {
       try {
-        await deleteBlob(admin, m.storage_object_id);
+        // Forwarded attachments share one blob (forward_media in 006): only
+        // remove it once no live media row references it any more.
+        const { count: stillUsed, error: refError } = await admin
+          .from("media")
+          .select("id", { count: "exact", head: true })
+          .eq("storage_object_id", m.storage_object_id)
+          .is("deleted_at", null);
+        if (refError) throw refError;
+        if ((stillUsed ?? 0) === 0) await deleteBlob(admin, m.storage_object_id);
         await admin.from("media").delete().eq("id", m.id);
         blobsDeleted++;
       } catch (e) {

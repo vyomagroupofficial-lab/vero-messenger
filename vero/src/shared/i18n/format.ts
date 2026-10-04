@@ -68,10 +68,36 @@ export function typeLabel(t: TFunction, type: MessageType, content?: string): { 
 export function conversationPreview(t: TFunction, c: Conversation): { icon?: IconName; text: string } {
   const m = c.lastMessage;
   if (!m) return { icon: 'lock', text: t('preview.empty') };
+  // Deleted for everyone: the repository's preview body starts with 🚫 (features/chats/chatList.ts).
+  if (m.content?.startsWith('🚫')) return { icon: 'ban', text: m.isOwn ? t('preview.youDeleted') : t('preview.deleted') };
   const base = typeLabel(t, m.messageType, m.content);
   if (m.isOwn) return { ...base, text: t('preview.you', { text: base.text }) };
   if (c.conversationType === 'group' && m.senderName) {
     return { ...base, text: t('preview.from', { name: m.senderName.split(' ')[0], text: base.text }) };
   }
   return base;
+}
+
+/** "last seen …" for chat headers; same rules as features/presence/format.ts, localized. */
+export function lastSeenText(t: TFunction, lastSeenAt: string | null | undefined): string | null {
+  if (!lastSeenAt) return null;
+  const d = dayjs(lastSeenAt);
+  if (!d.isValid()) return null;
+  const mins = dayjs().diff(d, 'minute');
+  if (mins < 1) return t('presence.justNow');
+  if (mins < 60) return t('presence.minutesAgo', { count: mins });
+  const time = d.format('h:mm A');
+  if (d.isSame(dayjs(), 'day')) return t('presence.today', { time });
+  if (d.isSame(dayjs().subtract(1, 'day'), 'day')) return t('presence.yesterday', { time });
+  return t('presence.onDate', { date: d.format(d.isSame(dayjs(), 'year') ? 'D MMM' : 'D MMM YYYY'), time });
+}
+
+/** "Muted until …" / "Muted" / null; same rules as features/notifications/mute.ts, localized. */
+export function muteText(t: TFunction, mutedUntil: string | null | undefined): string | null {
+  if (!mutedUntil) return null;
+  if (mutedUntil === 'infinity') return t('mute.muted');
+  const d = dayjs(mutedUntil);
+  if (!d.isValid() || !d.isAfter(dayjs())) return null;
+  if (d.year() - dayjs().year() > 50) return t('mute.muted');
+  return t('mute.until', { time: d.isSame(dayjs(), 'day') ? d.format('h:mm A') : d.format('ddd D MMM, h:mm A') });
 }

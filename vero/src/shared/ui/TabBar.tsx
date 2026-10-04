@@ -9,7 +9,7 @@ import { Icon, IconName } from './Icon';
 import { VeroMark } from './Brand';
 import { Avatar, Badge, Pressy } from './primitives';
 import { useAuthStore } from '../../features/auth/useAuthStore';
-import { useChatsStore } from '../../features/chats/useChatsStore';
+import { useTotalUnread } from '../../features/chats/useChatsStore';
 
 export const TAB_META: Record<string, { labelKey: string; icon: IconName }> = {
   chats: { labelKey: 'tabs.chats', icon: 'chat' },
@@ -32,8 +32,9 @@ function useFocus(focused: boolean) {
   return p;
 }
 
+/** Unread messages across non-archived chats, the same rule the chat list uses. */
 function useUnreadChats() {
-  return useChatsStore((s) => s.conversations.filter((c) => c.unreadCount > 0).length);
+  return useTotalUnread();
 }
 
 function BottomItem({ name, focused, onPress, badge }: { name: string; focused: boolean; onPress: () => void; badge?: number }) {

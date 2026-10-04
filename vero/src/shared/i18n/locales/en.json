@@ -20,7 +20,9 @@
     "loading": "Loading…",
     "privacy": "Privacy",
     "terms": "Terms",
-    "copyright": "© Vero"
+    "copyright": "© Vero",
+    "on": "On",
+    "off": "Off"
   },
   "tabs": {
     "chats": "Chats",
@@ -132,7 +134,9 @@
     "unavailable": "Encrypted message",
     "you": "You: {{text}}",
     "from": "{{name}}: {{text}}",
-    "empty": "End-to-end encrypted"
+    "empty": "End-to-end encrypted",
+    "deleted": "This message was deleted",
+    "youDeleted": "You deleted this message"
   },
   "thread": {
     "loading": "Loading…",
@@ -216,7 +220,19 @@
     "pickChat": "Pick up where you left off",
     "pickChatBody": "Choose a conversation on the left. Everything here is end-to-end encrypted.",
     "adminsOnly": "Only admins can send messages",
-    "groupSettings": "Group info, admins and invite links"
+    "groupSettings": "Group info, admins and invite links",
+    "edit": "Edit",
+    "saveEdit": "Save edit",
+    "editHistory": "Edit history",
+    "forward": "Forward",
+    "star": "Star",
+    "unstar": "Unstar",
+    "starred": "Starred messages",
+    "select": "Select",
+    "searchChat": "Search in chat",
+    "muteTitle": "Mute notifications",
+    "muteHint": "Muted chats never send push notifications. Messages still arrive.",
+    "muteFailed": "Couldn't change notifications"
   },
   "chats": {
     "title": "Chats",
@@ -239,7 +255,18 @@
     "messages": "Messages",
     "unreadA11y_one": "{{name}}, {{count}} unread",
     "unreadA11y_other": "{{name}}, {{count}} unread",
-    "channels": "Channels and communities"
+    "channels": "Channels and communities",
+    "archive": "Archive chat",
+    "unarchive": "Unarchive chat",
+    "archiveFailed": "Couldn't archive the chat",
+    "archived": "Archived",
+    "longPressHint": "Long-press for pin, archive and more",
+    "markRead": "Mark as read",
+    "markReadFailed": "Couldn't mark as read",
+    "messagesOnDevice": "Messages · searched on this device",
+    "pin": "Pin chat",
+    "unpin": "Unpin chat",
+    "pinFailed": "Couldn't pin the chat"
   },
   "calls": {
     "title": "Calls",
@@ -445,7 +472,14 @@
     "payments": "Payments",
     "paymentsHint": "Your UPI ID and payment history",
     "bots": "Bots",
-    "botsHint": "Bot directory and your bots"
+    "botsHint": "Bot directory and your bots",
+    "appLock": "App lock",
+    "backup": "Chat backup",
+    "backupOn": "End-to-end encrypted · last {{date}}",
+    "backupNever": "never",
+    "privacyMore": "Last seen, online, notifications",
+    "privacyMoreHint": "Default message timer, notification previews, app lock",
+    "saveFailed": "Couldn't save"
   },
   "profile": {
     "contact": "Contact",
@@ -1242,5 +1276,22 @@
     "listPublic": "List in the bot directory",
     "listPublicHint": "Anyone can find and chat with public bots.",
     "createBtn": "Create bot"
+  },
+  "mute": {
+    "muted": "Muted",
+    "off": "Off",
+    "until": "Muted until {{time}}",
+    "8h": "8 hours",
+    "1w": "1 week",
+    "always": "Always"
+  },
+  "presence": {
+    "online": "online",
+    "justNow": "last seen just now",
+    "minutesAgo_one": "last seen {{count}} min ago",
+    "minutesAgo_other": "last seen {{count}} min ago",
+    "today": "last seen today at {{time}}",
+    "yesterday": "last seen yesterday at {{time}}",
+    "onDate": "last seen {{date}} at {{time}}"
   }
 }

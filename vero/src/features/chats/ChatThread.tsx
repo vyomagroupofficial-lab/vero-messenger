@@ -1,19 +1,24 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, FlatList, Image, KeyboardAvoidingView, Platform, Pressable, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, FlatList, KeyboardAvoidingView, Platform, Pressable, Text, TextInput, View } from 'react-native';
 import Animated, { FadeIn, FadeInDown, FadeOut, ZoomIn } from 'react-native-reanimated';
 import { router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
-import * as Sharing from 'expo-sharing';
 import dayjs from 'dayjs';
 import { useAuthStore } from '../auth/useAuthStore';
 import { useMessagesStore } from '../messages/useMessagesStore';
 import { messageRepository } from '../messages/MessageRepository';
 import { conversationRepository } from './ConversationRepository';
-import { mediaRepository, MediaTooLargeError, PickedMedia } from '../media/MediaRepository';
+import { mediaRepository, PickedMedia } from '../media/MediaRepository';
+import { MediaAttachmentView } from '../media/components/MediaAttachmentView';
+import { VoiceNotePlayer } from '../media/components/VoiceNotePlayer';
+import { VoiceRecordButton, VoiceRecordingBar } from '../media/components/VoiceRecorderControls';
+import { markVoicePlayed, useMediaSender, voiceRecordingToMedia } from '../media/sendMedia';
+import { useVoiceRecorder } from '../media/useVoiceRecorder';
 import { callService } from '../calls/CallService';
+import { GroupCallButton } from '../calls/components/GroupCallButton';
 import { friendlyError } from '../../core/network/supabase';
-import { ConversationMember, MediaAttachment, Message, MessageStatus, conversationTitle } from '../../shared/models/Message';
+import { ConversationMember, Message, MessageStatus, conversationTitle } from '../../shared/models/Message';
 import { DISAPPEARING_OPTIONS, MAX_TEXT_LENGTH } from '../../shared/models/payload';
 import { makeStyles, useTheme } from '../../shared/theme/ThemeProvider';
 import { useT } from '../../shared/i18n';
@@ -21,8 +26,19 @@ import { useGroupChatSync } from '../groups/useGroupChatSync';
 import { groupRepository } from '../groups/GroupRepository';
 import { AdminsOnlyNotice } from '../groups/components/GroupComponents';
 import * as Extras from '../stickers/components/chatIntegration';
-import { clockTime, dayLabel, formatBytes, timerText, typeLabel } from '../../shared/i18n/format';
-import { Avatar, Chip, DotWall, Icon, IconButton, IconName, Pressy, Sheet, SheetRow, TypingDots, Waveform, confirmAction, notify, useLayout } from '../../shared/ui';
+import { useChatMessaging } from '../messages/useChatMessaging';
+import { ForwardSheet } from '../messages/components/ForwardSheet';
+import { EditBanner, EditHistorySheet, SelectionBar } from '../messages/components/ChatExtras';
+import { FooterMarkers, ForwardedLabel, RevokedBody } from '../messages/components/MessageLabels';
+import { ChatSearchBar } from '../search/components/ChatSearchBar';
+import { HighlightedText } from '../search/components/HighlightedText';
+import { useChatsStore } from './useChatsStore';
+import { chatActionOptions } from './components/ChatRowParts';
+import { usePresence } from '../presence/usePresence';
+import { useConversationMute } from '../notifications/useMuteStore';
+import { MUTE_OPTIONS } from '../notifications/mute';
+import { clockTime, dayLabel, lastSeenText, muteText, timerText, typeLabel } from '../../shared/i18n/format';
+import { Avatar, Chip, DotWall, Glyph, Icon, IconButton, IconName, Pressy, Sheet, SheetRow, TypingDots, confirmAction, notify, useLayout } from '../../shared/ui';
 
 const REACTIONS = ['❤️', '😂', '👍', '🔥', '😮', '🙏'];
 const TYPING_SEND_INTERVAL_MS = 3000;
@@ -33,36 +49,6 @@ const NAME_TONES_LIGHT = ['#8A5F1E', '#2F7350', '#7A4F8C', '#3F5A73', '#A0482E']
 type Row =
   | { kind: 'day'; id: string; label: string }
   | { kind: 'msg'; id: string; message: Message; firstOfRun: boolean; lastOfRun: boolean };
-
-// ── Encrypted media: download + decrypt on demand, cached on device ─────────
-
-function useDecryptedMedia(media: MediaAttachment | undefined, autoLoad: boolean) {
-  const [uri, setUri] = useState<string | null>(media?.localUri ?? null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const load = useCallback(async () => {
-    if (!media) return null;
-    setLoading(true);
-    setError(null);
-    try {
-      const file = await mediaRepository.getDecryptedFile(media);
-      setUri(file);
-      return file;
-    } catch (e) {
-      setError(friendlyError(e, 'Could not load media'));
-      return null;
-    } finally {
-      setLoading(false);
-    }
-  }, [media]);
-
-  useEffect(() => {
-    if (autoLoad && media && !uri) void load();
-  }, [autoLoad, media, uri, load]);
-
-  return { uri, loading, error, load };
-}
 
 // ── Bubble ──────────────────────────────────────────────────────────────────
 
@@ -94,18 +80,25 @@ interface BubbleProps {
   wide: boolean;
   onLongPress: (m: Message) => void;
   onRetry: (m: Message) => void;
+  /** Multi-select mode: taps toggle selection. */
+  selecting?: boolean;
+  selected?: boolean;
+  onToggleSelect?: (m: Message) => void;
+  /** Search terms to highlight, and whether this is the focused search result. */
+  highlight?: string | null;
+  focused?: boolean;
 }
 
-const Bubble = React.memo(function Bubble({ message, status, isGroup, firstOfRun, lastOfRun, animate, wide, onLongPress, onRetry }: BubbleProps) {
+const Bubble = React.memo(function Bubble({ message, status, isGroup, firstOfRun, lastOfRun, animate, wide, onLongPress, onRetry, selecting, selected, onToggleSelect, highlight, focused }: BubbleProps) {
   const { c, isDark, type } = useTheme();
   const s = useStyles();
   const t = useT();
-  const { isOwn, content, messageType, createdAt, senderName, media, reactions } = message;
-  const isImage = messageType === 'image';
-  const isMedia = isImage || messageType === 'video';
-  const { uri, loading, error, load } = useDecryptedMedia(media, isImage);
+  const { isOwn, content, createdAt, senderName, media, reactions } = message;
+  const revoked = !!message.revokedAt;
+  const messageType = revoked ? 'revoked' : message.messageType;
+  const isMedia = messageType === 'image' || messageType === 'video';
 
-  if (Extras.isExtensionMessageType(messageType)) {
+  if (!revoked && Extras.isExtensionMessageType(message.messageType)) {
     return <Extras.ExtensionMessage message={message} status={status} showSenderName={isGroup && firstOfRun} onLongPress={onLongPress} onRetry={onRetry} />;
   }
 
@@ -116,23 +109,6 @@ const Bubble = React.memo(function Bubble({ message, status, isGroup, firstOfRun
       </View>
     );
   }
-
-  const openMedia = async () => {
-    const file = uri ?? (await load());
-    if (!file) return;
-    if (messageType === 'document') {
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(file, { mimeType: media?.mimeType, dialogTitle: media?.fileName });
-      } else {
-        notify(t('thread.savedTitle'), t('thread.savedBody'));
-      }
-      return;
-    }
-    router.push({
-      pathname: '/media-viewer',
-      params: { uri: file, type: messageType, caption: content ?? '', name: isOwn ? t('common.you') : senderName ?? '', date: dayjs(createdAt).format('ddd D MMM, h:mm A') },
-    });
-  };
 
   const tones = isDark ? NAME_TONES_DARK : NAME_TONES_LIGHT;
   const name = senderName || t('common.someone');
@@ -145,17 +121,15 @@ const Bubble = React.memo(function Bubble({ message, status, isGroup, firstOfRun
     return acc;
   }, {});
   const reactionEntries = Object.entries(reactionCounts);
-  const mediaW = wide ? 340 : 260;
-  const mediaH = wide ? 230 : 172;
 
   return (
     <Animated.View
       entering={animate ? FadeInDown.springify().damping(17).stiffness(190) : undefined}
-      style={[s.row, isOwn ? s.rowOwn : s.rowOther, { marginTop: firstOfRun ? 8 : 2 }]}
+      style={[s.row, isOwn ? s.rowOwn : s.rowOther, { marginTop: firstOfRun ? 8 : 2 }, selected && s.rowSelected]}
     >
       <Pressable
-        onLongPress={() => onLongPress(message)}
-        onPress={status === 'failed' ? () => onRetry(message) : undefined}
+        onLongPress={() => (selecting ? onToggleSelect?.(message) : onLongPress(message))}
+        onPress={selecting ? () => onToggleSelect?.(message) : status === 'failed' ? () => onRetry(message) : undefined}
         delayLongPress={280}
         accessibilityHint={t('thread.longPressHint')}
         style={[
@@ -164,12 +138,16 @@ const Bubble = React.memo(function Bubble({ message, status, isGroup, firstOfRun
           isOwn && lastOfRun && { borderBottomRightRadius: 6 },
           !isOwn && lastOfRun && { borderBottomLeftRadius: 6 },
           isMedia && s.bubbleMedia,
+          focused && s.bubbleFocused,
           { maxWidth: wide ? 560 : '82%' },
         ]}
       >
         {!isOwn && isGroup && firstOfRun && (
           <Text style={[s.sender, { color: nameTone }, isMedia && { paddingHorizontal: 8, paddingTop: 4 }]}>{name}</Text>
         )}
+
+        {!revoked && <ForwardedLabel hops={message.forwardCount} />}
+        {revoked && <RevokedBody isOwn={isOwn} />}
 
         {message.replyPreview ? (
           <View style={[s.quote, isOwn && { backgroundColor: 'rgba(0,0,0,0.22)' }]}>
@@ -186,57 +164,17 @@ const Bubble = React.memo(function Bubble({ message, status, isGroup, firstOfRun
           </View>
         )}
 
-        {isMedia && (
-          <Pressable onPress={openMedia} accessibilityLabel={isImage ? t('thread.openPhoto') : t('thread.playVideo')}>
-            {isImage && uri ? (
-              <Image source={{ uri }} style={[s.photo, { width: mediaW, height: mediaH }]} resizeMode="cover" />
-            ) : (
-              <View style={[s.photo, s.mediaHolder, { width: mediaW, height: mediaH }]}>
-                {loading ? (
-                  <ActivityIndicator color={c.accent} />
-                ) : isImage ? (
-                  <Icon name={error ? 'info' : 'image'} size={28} color={error ? c.danger : c.faint} />
-                ) : (
-                  <View style={s.videoPlay}>
-                    <Icon name="play" size={22} color="#0C0E0D" style={{ marginLeft: 3 }} />
-                  </View>
-                )}
-                <Text style={[type.caption, { color: error ? c.danger : c.muted }]}>
-                  {error ? t('thread.tapRetry') : isImage ? t('thread.photoLoading') : t('thread.videoSize', { size: formatBytes(media?.size || 0) })}
-                </Text>
-              </View>
-            )}
-          </Pressable>
+        {media && (isMedia || messageType === 'document') && (
+          <MediaAttachmentView type={messageType as 'image' | 'video' | 'document'} media={media} caption={undefined} isOwn={isOwn} />
         )}
 
-        {messageType === 'voice' && (
-          <View style={s.voice} accessibilityLabel={t('thread.voiceNote')}>
-            <View style={[s.voiceIcon, { backgroundColor: isOwn ? c.onMine : c.accent }]}>
-              <Icon name="mic" size={16} color={isOwn ? c.mine : c.onAccent} />
-            </View>
-            <Waveform progress={0} rest={isOwn ? 'rgba(244,238,225,0.5)' : c.line3} />
-            <Text style={[s.voiceLen, { color: meta }]}>
-              {media?.durationMs ? `${Math.floor(media.durationMs / 60000)}:${String(Math.round((media.durationMs % 60000) / 1000)).padStart(2, '0')}` : ''}
-            </Text>
-          </View>
-        )}
-
-        {messageType === 'document' && (
-          <Pressable onPress={openMedia} style={s.doc} accessibilityLabel={t('thread.openDocument')}>
-            <View style={s.docIcon}>{loading ? <ActivityIndicator color={c.accent} /> : <Icon name="file" size={21} color={c.accentText} />}</View>
-            <View style={{ flexShrink: 1 }}>
-              <Text style={[s.docName, { color: fg }]} numberOfLines={2}>
-                {media?.fileName || content || t('preview.document')}
-              </Text>
-              <Text style={[s.docMeta, { color: meta }]}>{error ? error : t('thread.docMeta', { size: formatBytes(media?.size || 0) })}</Text>
-            </View>
-          </Pressable>
-        )}
+        {media && messageType === 'voice' && <VoiceNotePlayer media={media} isOwn={isOwn} onPlayed={() => void markVoicePlayed(message)} />}
 
         <View style={[s.textRow, isMedia && { paddingHorizontal: 8 }]}>
-          {(messageType === 'text' || (isMedia && !!content)) && <Text style={[s.text, { color: fg }]}>{content}</Text>}
+          {(messageType === 'text' || (isMedia && !!content)) && <HighlightedText style={[s.text, { color: fg }]} text={content ?? ''} query={highlight} />}
           <View style={s.meta}>
             {message.expiresAt ? <Icon name="timer" size={11} color={meta} /> : null}
+            <FooterMarkers message={message} />
             {status === 'failed' && <Text style={[s.metaText, { color: c.danger }]}>{t('thread.notSent')}</Text>}
             <Text style={[s.metaText, { color: meta }]}>{clockTime(createdAt)}</Text>
             {isOwn && <StatusTicks status={status} />}
@@ -260,7 +198,18 @@ const Bubble = React.memo(function Bubble({ message, status, isGroup, firstOfRun
 
 // ── Thread ──────────────────────────────────────────────────────────────────
 
-export function ChatThread({ conversationId, embedded = false }: { conversationId: string; embedded?: boolean }) {
+export function ChatThread({
+  conversationId,
+  embedded = false,
+  jumpMessageId,
+  jumpQuery,
+}: {
+  conversationId: string;
+  embedded?: boolean;
+  /** Opened from search / starred: the message to scroll to, and the terms to highlight. */
+  jumpMessageId?: string;
+  jumpQuery?: string;
+}) {
   const insets = useSafeAreaInsets();
   const { isWide } = useLayout();
   const { c, type, f } = useTheme();
@@ -274,7 +223,6 @@ export function ChatThread({ conversationId, embedded = false }: { conversationI
 
   const [inputText, setInputText] = useState('');
   const [replyTo, setReplyTo] = useState<Message | null>(null);
-  const [uploading, setUploading] = useState(false);
   const [actionMessage, setActionMessage] = useState<Message | null>(null);
   const [retryMessage, setRetryMessage] = useState<Message | null>(null);
   const [showAttach, setShowAttach] = useState(false);
@@ -284,6 +232,22 @@ export function ChatThread({ conversationId, embedded = false }: { conversationI
   const lastTypingSent = useRef(0);
   const typingIdle = useRef<ReturnType<typeof setTimeout> | null>(null);
   const inputRef = useRef<TextInput>(null);
+  const listRef = useRef<FlatList<Row>>(null);
+  const messaging = useChatMessaging(conversationId, user?.id);
+  const chatListEntry = useChatsStore((st) => st.conversations.find((cv) => cv.id === conversationId) ?? null);
+
+  // Encrypted attachments and voice notes (logic lives in src/features/media).
+  const mediaSender = useMediaSender(conversationId);
+  const uploading = mediaSender.uploading;
+  const replyRef = useRef<Message | null>(null);
+  replyRef.current = replyTo;
+  const sendPicked = async (picked: PickedMedia) => {
+    if (await mediaSender.send(picked, { replyTo: replyRef.current })) setReplyTo(null);
+  };
+  const voice = useVoiceRecorder({
+    onRecorded: (rec) => void sendPicked(voiceRecordingToMedia(rec)),
+    onError: (msg) => notify(t('thread.voiceNote'), msg),
+  });
 
   useEffect(() => {
     if (!conversationId || !user) return;
@@ -294,13 +258,16 @@ export function ChatThread({ conversationId, embedded = false }: { conversationI
     };
   }, [conversationId, user?.id]);
 
-  const conversation = chat?.conversation ?? null;
+  // The chat list entry covers the moment before open() has loaded the conversation.
+  const conversation = chat?.conversation ?? chatListEntry ?? null;
   const messages = chat?.messages ?? [];
   const members: ConversationMember[] = conversation?.members ?? [];
   const isGroup = conversation?.conversationType === 'group';
   const otherUser = conversation?.otherUser;
   const title = conversation ? conversationTitle(conversation) : t('thread.loading');
   const groupChat = useGroupChatSync(conversationId, isGroup && !isDemo);
+  const presence = usePresence(!isGroup && !isDemo ? otherUser?.id : null);
+  const mute = useConversationMute(conversationId);
 
   // Typing users (expire automatically)
   const now = Date.now();
@@ -331,6 +298,23 @@ export function ChatThread({ conversationId, embedded = false }: { conversationI
     return out.reverse();
   }, [messages, t]);
 
+  // Opened from search / starred: jump to that message once the chat has loaded.
+  const jumped = useRef(false);
+  useEffect(() => {
+    if (!jumpMessageId || jumped.current || !chat || chat.isLoading) return;
+    jumped.current = true;
+    void useMessagesStore.getState().jumpTo(conversationId, jumpMessageId);
+  }, [jumpMessageId, chat?.isLoading, conversationId]);
+
+  // Scroll to the focused message (search result / jump target).
+  const focusId = messaging.focusMessageId;
+  useEffect(() => {
+    if (!focusId) return;
+    const index = rows.findIndex((r) => r.id === focusId);
+    if (index >= 0) listRef.current?.scrollToIndex({ index, animated: true, viewPosition: 0.5 });
+  }, [focusId, rows.length]);
+  const highlight = messaging.searchOpen ? messaging.search.query : jumpQuery ?? null;
+
   // ── Actions ──
 
   const stopTyping = () => {
@@ -354,6 +338,13 @@ export function ChatThread({ conversationId, embedded = false }: { conversationI
   };
 
   const handleSend = async () => {
+    if (messaging.editing) {
+      const text = inputText;
+      setInputText('');
+      stopTyping();
+      if (!(await messaging.submitEdit(text))) setInputText(text);
+      return;
+    }
     const text = inputText.trim();
     if (!text || !conversationId) return;
     setInputText('');
@@ -389,17 +380,7 @@ export function ChatThread({ conversationId, embedded = false }: { conversationI
       return;
     }
     if (!picked) return;
-
-    setUploading(true);
-    try {
-      const media = await mediaRepository.uploadEncrypted(picked, conversationId);
-      await send(conversationId, { t: 'media', kind: picked.kind, media, caption: undefined }, { mediaId: media.mediaId, localUri: picked.uri, replyTo });
-      setReplyTo(null);
-    } catch (e) {
-      notify(e instanceof MediaTooLargeError ? t('thread.tooLarge') : t('thread.uploadFailed'), friendlyError(e, t('thread.uploadFailedBody')));
-    } finally {
-      setUploading(false);
-    }
+    await sendPicked(picked);
   };
 
   const handleReact = async (emoji: string) => {
@@ -412,6 +393,25 @@ export function ChatThread({ conversationId, embedded = false }: { conversationI
     } catch (e) {
       notify(t('thread.reactionFailed'), friendlyError(e));
     }
+  };
+
+  const handleEdit = () => {
+    const target = actionMessage;
+    setActionMessage(null);
+    if (!target) return;
+    const prefill = messaging.startEdit(target);
+    if (prefill !== null) {
+      setReplyTo(null);
+      setInputText(prefill);
+      setTimeout(() => inputRef.current?.focus(), 150);
+    }
+  };
+
+  /** Runs an action on the long-pressed message after closing the sheet. */
+  const withAction = (fn: (m: Message) => void) => () => {
+    const m = actionMessage;
+    setActionMessage(null);
+    if (m) fn(m);
   };
 
   const handleCopy = async () => {
@@ -470,16 +470,43 @@ export function ChatThread({ conversationId, embedded = false }: { conversationI
       : t('thread.typingMany', { names: typingNames.map((n) => n.split(' ')[0]).join(', ') })
     : isGroup
     ? t('thread.members', { count: members.length })
-    : t('thread.encryptedTapVerify');
+    : (!isDemo && presence.online ? t('presence.online') : lastSeenText(t, presence.lastSeenAt)) ?? t('thread.encryptedTapVerify');
+  const online = !isGroup && !isDemo && presence.online;
   const typing = typingNames.length > 0;
-  const canDeleteForEveryone = !!actionMessage?.isOwn && actionMessage.status !== 'failed' && actionMessage.status !== 'sending';
+  const canDeleteForEveryone = messaging.canDeleteEveryone(actionMessage);
+  const actionRevoked = !!actionMessage?.revokedAt;
   const hasText = inputText.trim().length > 0;
+  const editing = messaging.editing;
+  const canSaveEdit = !!editing && (hasText || editing.messageType !== 'text');
   const timerSeconds = chat?.timerSeconds ?? 0;
 
   return (
     <View style={s.container}>
       {/* Header */}
       <View style={[s.header, { paddingTop: embedded ? 0 : insets.top }]}>
+        {messaging.selecting ? (
+          <SelectionBar
+            count={messaging.selectedMessages.length}
+            allStarred={messaging.selectedMessages.length > 0 && messaging.selectedMessages.every((m) => m.starred)}
+            canForward={messaging.selectedMessages.length > 0}
+            onCancel={messaging.clearSelection}
+            onStar={() => void messaging.toggleStar(messaging.selectedMessages)}
+            onForward={() => messaging.openForward(messaging.selectedMessages)}
+            onCopy={() => void messaging.copySelection()}
+            onDelete={() => void messaging.deleteSelectionForMe()}
+          />
+        ) : messaging.searchOpen ? (
+          <ChatSearchBar
+            query={messaging.search.query}
+            onChangeQuery={messaging.search.setQuery}
+            index={messaging.search.index}
+            total={messaging.search.results.length}
+            searching={messaging.search.searching}
+            onOlder={messaging.search.older}
+            onNewer={messaging.search.newer}
+            onClose={messaging.closeSearch}
+          />
+        ) : (
         <View style={[s.headerInner, embedded && { height: 76, paddingLeft: 24 }]}>
           {!embedded && <IconButton icon="back" label={t('common.back')} onPress={() => (router.canGoBack() ? router.back() : router.replace('/(tabs)/chats'))} />}
           <Pressy onPress={openProfile} scaleTo={0.98} style={s.headerWho} accessibilityLabel={t('thread.openProfile', { name: title })}>
@@ -490,7 +517,8 @@ export function ChatThread({ conversationId, embedded = false }: { conversationI
                 <Extras.BotBadge userId={otherUser?.id} />
               </Text>
               <Animated.View key={subtitle} entering={FadeIn.duration(220)} style={s.headerStatusRow}>
-                {!typing && !isGroup && <Icon name="lock" size={11} color={c.muted} />}
+                {online && !typing ? <View style={s.onlineDot} /> : !typing && !isGroup && <Icon name="lock" size={11} color={c.muted} />}
+                {mute.isMuted && <Icon name="bellOff" size={11} color={c.muted} />}
                 <Text style={[s.headerStatus, { color: typing ? c.accentText : c.muted }]} numberOfLines={1}>
                   {subtitle}
                 </Text>
@@ -509,8 +537,10 @@ export function ChatThread({ conversationId, embedded = false }: { conversationI
               <IconButton icon="phone" label={t('thread.voiceCall')} onPress={() => handleStartCall('voice')} />
             </>
           )}
+          {isGroup && !isDemo && <GroupCallButton conversationId={conversationId} groupName={title} memberCount={members.length} />}
           <IconButton icon="more" label={t('thread.options')} onPress={() => setShowMenu(true)} />
         </View>
+        )}
       </View>
 
       {timerSeconds > 0 && (
@@ -522,7 +552,7 @@ export function ChatThread({ conversationId, embedded = false }: { conversationI
       {uploading && (
         <Animated.View entering={FadeInDown} exiting={FadeOut} style={s.banner}>
           <ActivityIndicator size="small" color={c.accent} />
-          <Text style={s.bannerText}>{t('thread.uploading')}</Text>
+          <Text style={s.bannerText}>{mediaSender.status ?? t('thread.uploading')}</Text>
         </Animated.View>
       )}
 
@@ -536,8 +566,14 @@ export function ChatThread({ conversationId, embedded = false }: { conversationI
             </View>
           ) : (
             <FlatList
+              ref={listRef}
               inverted
               data={rows}
+              extraData={messaging.selectedIds}
+              onScrollToIndexFailed={({ index, averageItemLength }) => {
+                listRef.current?.scrollToOffset({ offset: index * averageItemLength, animated: false });
+                setTimeout(() => listRef.current?.scrollToIndex({ index, animated: true, viewPosition: 0.5 }), 120);
+              }}
               keyExtractor={(r) => r.id}
               keyboardShouldPersistTaps="handled"
               showsVerticalScrollIndicator={false}
@@ -560,6 +596,11 @@ export function ChatThread({ conversationId, embedded = false }: { conversationI
                     wide={isWide}
                     onLongPress={setActionMessage}
                     onRetry={setRetryMessage}
+                    selecting={messaging.selecting}
+                    selected={messaging.selectedIds.includes(item.message.id)}
+                    onToggleSelect={messaging.toggleSelect}
+                    highlight={highlight}
+                    focused={item.message.id === focusId}
                   />
                 )
               }
@@ -583,7 +624,17 @@ export function ChatThread({ conversationId, embedded = false }: { conversationI
           )}
         </View>
 
-        {replyTo && (
+        {editing && (
+          <EditBanner
+            message={editing}
+            onCancel={() => {
+              messaging.cancelEdit();
+              setInputText('');
+            }}
+          />
+        )}
+
+        {replyTo && !editing && (
           <Animated.View entering={FadeInDown.springify().damping(18)} style={s.replyBar}>
             <View style={s.replyAccent} />
             <View style={{ flex: 1 }}>
@@ -606,6 +657,10 @@ export function ChatThread({ conversationId, embedded = false }: { conversationI
         {/* Composer */}
         {groupChat.canSend && (
         <View style={[s.composer, { paddingBottom: embedded ? 18 : Math.max(insets.bottom, 12) }, isWide && s.composerWide]}>
+          {voice.isActive ? (
+            <VoiceRecordingBar voice={voice} />
+          ) : (
+            <>
           <IconButton icon="plus" label={t('thread.attach')} variant="filled" size={46} disabled={uploading} onPress={() => setShowAttach(true)} />
           <Extras.ChatComposerExtras conversation={conversation} replyTo={replyTo} onSent={() => setReplyTo(null)} disabled={uploading} />
           <View style={s.field}>
@@ -628,11 +683,23 @@ export function ChatThread({ conversationId, embedded = false }: { conversationI
                 }
               }}
             />
-            {!hasText && <IconButton icon="camera" label={t('thread.camera')} size={38} color={c.muted} onPress={() => handlePickMedia('camera')} />}
+            {!hasText && !editing && <IconButton icon="camera" label={t('thread.camera')} size={38} color={c.muted} onPress={() => handlePickMedia('camera')} />}
           </View>
-          <Animated.View key={hasText ? 'on' : 'off'} entering={ZoomIn.springify().damping(13)}>
-            <IconButton icon="send" label={t('thread.send')} variant={hasText ? 'brass' : 'filled'} size={46} disabled={!hasText} onPress={handleSend} />
-          </Animated.View>
+            </>
+          )}
+          {editing ? (
+            <Animated.View key="edit" entering={ZoomIn.springify().damping(13)}>
+              <IconButton icon="check" label={t('thread.saveEdit')} variant={canSaveEdit ? 'brass' : 'filled'} size={46} disabled={!canSaveEdit} onPress={handleSend} />
+            </Animated.View>
+          ) : hasText || isDemo ? (
+            <Animated.View key={hasText ? 'on' : 'off'} entering={ZoomIn.springify().damping(13)}>
+              <IconButton icon="send" label={t('thread.send')} variant={hasText ? 'brass' : 'filled'} size={46} disabled={!hasText} onPress={handleSend} />
+            </Animated.View>
+          ) : voice.isLocked ? null : (
+            <Animated.View key="mic" entering={ZoomIn.springify().damping(13)}>
+              <VoiceRecordButton voice={voice} disabled={uploading} />
+            </Animated.View>
+          )}
         </View>
         )}
       </KeyboardAvoidingView>
@@ -665,7 +732,7 @@ export function ChatThread({ conversationId, embedded = false }: { conversationI
 
       {/* Message actions */}
       <Sheet visible={!!actionMessage} onClose={() => setActionMessage(null)}>
-        {actionMessage?.messageType !== 'unavailable' && actionMessage?.status !== 'failed' && (
+        {actionMessage?.messageType !== 'unavailable' && actionMessage?.status !== 'failed' && !actionRevoked && (
           <View style={s.reactRow}>
             {REACTIONS.map((e, i) => (
               <Animated.View key={e} entering={ZoomIn.delay(i * 35).springify().damping(12)}>
@@ -676,16 +743,27 @@ export function ChatThread({ conversationId, embedded = false }: { conversationI
             ))}
           </View>
         )}
-        <SheetRow
-          icon="reply"
-          label={t('thread.reply')}
-          onPress={() => {
-            setReplyTo(actionMessage);
-            setActionMessage(null);
-            setTimeout(() => inputRef.current?.focus(), 150);
-          }}
-        />
-        {!!actionMessage?.content && actionMessage.messageType === 'text' && <SheetRow icon="copy" label={t('thread.copy')} onPress={handleCopy} />}
+        {!actionRevoked && (
+          <SheetRow
+            icon="reply"
+            label={t('thread.reply')}
+            onPress={() => {
+              setReplyTo(actionMessage);
+              setActionMessage(null);
+              setTimeout(() => inputRef.current?.focus(), 150);
+            }}
+          />
+        )}
+        {messaging.canEdit(actionMessage) && <SheetRow icon="edit" label={t('thread.edit')} onPress={handleEdit} />}
+        {!!actionMessage && !actionRevoked && actionMessage.messageType !== 'system' && actionMessage.messageType !== 'unavailable' && (
+          <SheetRow icon="forward" label={t('thread.forward')} onPress={withAction((m) => messaging.openForward([m]))} />
+        )}
+        {!!actionMessage && !actionRevoked && actionMessage.messageType !== 'system' && (
+          <SheetRow icon="star" tone="brass" label={actionMessage.starred ? t('thread.unstar') : t('thread.star')} onPress={withAction((m) => void messaging.toggleStar([m]))} />
+        )}
+        {!!actionMessage?.editedAt && !actionRevoked && <SheetRow icon="clock" label={t('thread.editHistory')} onPress={withAction((m) => void messaging.showHistory(m))} />}
+        {!!actionMessage?.content && actionMessage.messageType === 'text' && !actionRevoked && <SheetRow icon="copy" label={t('thread.copy')} onPress={handleCopy} />}
+        {!!actionMessage && actionMessage.messageType !== 'system' && <SheetRow icon="checkCircle" label={t('thread.select')} onPress={withAction((m) => messaging.startSelect(m))} />}
         <SheetRow icon="trash" label={t('thread.deleteForMe')} tone="ember" onPress={() => handleDelete(actionMessage, false)} />
         {canDeleteForEveryone && <SheetRow icon="trash" label={t('thread.deleteForEveryone')} tone="ember" onPress={() => handleDelete(actionMessage, true)} />}
       </Sheet>
@@ -732,6 +810,56 @@ export function ChatThread({ conversationId, embedded = false }: { conversationI
             ))}
           </View>
         )}
+        <SheetRow
+          icon="search"
+          label={t('thread.searchChat')}
+          onPress={() => {
+            setShowMenu(false);
+            messaging.openSearch();
+          }}
+        />
+        <SheetRow
+          icon="star"
+          label={t('thread.starred')}
+          onPress={() => {
+            setShowMenu(false);
+            router.push({ pathname: '/starred', params: { conversationId } });
+          }}
+        />
+        {chatListEntry && (
+          <>
+            <SheetRow
+              icon="pin"
+              label={chatListEntry.pinnedAt ? t('chats.unpin') : t('chats.pin')}
+              onPress={() => {
+                setShowMenu(false);
+                void useChatsStore.getState().setPinned(conversationId, !chatListEntry.pinnedAt).catch((e) => notify(t('chats.pinFailed'), friendlyError(e)));
+              }}
+            />
+            <SheetRow
+              icon="archive"
+              label={chatListEntry.archivedAt ? t('chats.unarchive') : t('chats.archive')}
+              onPress={() => {
+                setShowMenu(false);
+                void useChatsStore.getState().setArchived(conversationId, !chatListEntry.archivedAt).catch((e) => notify(t('chats.archiveFailed'), friendlyError(e)));
+              }}
+            />
+          </>
+        )}
+        <View style={{ gap: 10, paddingHorizontal: 6, paddingVertical: 6 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <Icon name={mute.isMuted ? 'bellOff' : 'bell'} size={17} color={c.accentText} />
+            <Text style={[type.label, { color: c.text, flex: 1 }]}>{t('thread.muteTitle')}</Text>
+            {mute.isMuted && <Text style={type.caption}>{muteText(t, mute.mutedUntil)}</Text>}
+          </View>
+          <Text style={type.caption}>{t('thread.muteHint')}</Text>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+            <Chip label={t('mute.off')} active={!mute.isMuted} onPress={() => void mute.unmute().catch((e) => notify(t('thread.muteFailed'), friendlyError(e)))} />
+            {MUTE_OPTIONS.map((o) => (
+              <Chip key={o.value} label={t(`mute.${o.value}`)} onPress={() => void mute.mute(o.value).catch((e) => notify(t('thread.muteFailed'), friendlyError(e)))} />
+            ))}
+          </View>
+        </View>
         {otherUser && (
           <>
             <SheetRow
@@ -781,6 +909,9 @@ export function ChatThread({ conversationId, embedded = false }: { conversationI
         />
         {isGroup && !isDemo && <SheetRow icon="logout" label={t('thread.leave')} tone="ember" onPress={leaveGroup} />}
       </Sheet>
+
+      <ForwardSheet visible={messaging.forwarding !== null} messages={messaging.forwarding ?? []} onClose={messaging.closeForward} onForward={messaging.doForward} />
+      <EditHistorySheet entries={messaging.history} onClose={messaging.closeHistory} />
     </View>
   );
 }
@@ -824,7 +955,10 @@ const useStyles = makeStyles((c, t, f) => ({
   systemText: { fontFamily: f.medium, fontSize: 12.5, color: c.muted, textAlign: 'center', backgroundColor: c.raised, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 12, overflow: 'hidden' },
   notice: { alignSelf: 'center', maxWidth: 440, flexDirection: 'row', gap: 9, marginTop: 10, marginBottom: 6, paddingVertical: 11, paddingHorizontal: 14, borderRadius: 16, backgroundColor: c.accentTint, borderWidth: 1, borderColor: c.accentTint2 },
   noticeText: { flex: 1, fontFamily: f.body, fontSize: 12.5, lineHeight: f.script === 'latin' ? 18 : 21, color: c.notice },
-  row: { flexDirection: 'column' },
+  row: { flexDirection: 'column', borderRadius: 14 },
+  rowSelected: { backgroundColor: c.accentTint, marginHorizontal: -8, paddingHorizontal: 8 },
+  bubbleFocused: { borderWidth: 2, borderColor: c.accent },
+  onlineDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: c.success },
   rowOwn: { alignItems: 'flex-end' },
   rowOther: { alignItems: 'flex-start' },
   bubble: { paddingHorizontal: 13, paddingTop: 9, paddingBottom: 7, borderRadius: 20 },

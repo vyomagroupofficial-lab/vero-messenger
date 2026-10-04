@@ -12,6 +12,9 @@
 import * as SQLite from 'expo-sqlite';
 import { Conversation, MediaAttachment, Message, MessageReaction } from '../../shared/models/Message';
 import type { MessageExt } from '../../shared/models/payloadExtensions';
+import { ensureMessagingSchema, MESSAGE_SELECT } from './messagingSchema';
+
+export { MESSAGE_SELECT };
 
 export interface LocalCallRecord {
   id: string;
@@ -111,7 +114,7 @@ function parseExt(json: string | null): MessageExt | undefined {
   }
 }
 
-function rowToMessage(r: any): Message {
+export function rowToMessage(r: any): Message {
   return {
     id: r.id,
     conversationId: r.conversation_id,
@@ -130,10 +133,12 @@ function rowToMessage(r: any): Message {
     expiresAt: r.expires_at,
     deletedAt: r.deleted_at,
     ext: parseExt(r.ext_json ?? null),
+    editedAt: r.edited_at ?? null,
+    revokedAt: r.revoked_at ?? null,
+    forwardCount: r.forward_count || undefined,
+    starred: r.starred === 1 ? true : undefined,
   };
 }
-
-const escapeLike = (s: string) => s.replace(/[\\%_]/g, (c) => `\\${c}`);
 
 class DatabaseService {
   private userId: string | null = null;
@@ -158,6 +163,7 @@ class DatabaseService {
         });
       }
       await ensureExtColumn(db);
+      await ensureMessagingSchema(db);
       return db;
     })();
     this.dbPromise.catch(() => {
@@ -205,18 +211,22 @@ class DatabaseService {
       await db.runAsync(
         `INSERT INTO messages (id, conversation_id, sender_device_id, sender_user_id, sender_name, content,
            message_type, media_json, reply_to_id, reply_preview, reactions_json, status, is_own, is_read,
-           created_at, expires_at, deleted_at, ext_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           created_at, expires_at, deleted_at, ext_json, forward_count, revoked_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            sender_name = excluded.sender_name,
-           content = COALESCE(excluded.content, messages.content),
+           content = CASE WHEN messages.revoked_at IS NOT NULL THEN NULL
+                          ELSE COALESCE(excluded.content, messages.content) END,
            message_type = excluded.message_type,
-           media_json = COALESCE(excluded.media_json, messages.media_json),
+           media_json = CASE WHEN messages.revoked_at IS NOT NULL THEN NULL
+                             ELSE COALESCE(excluded.media_json, messages.media_json) END,
            reply_preview = COALESCE(excluded.reply_preview, messages.reply_preview),
            status = excluded.status,
            expires_at = excluded.expires_at,
            deleted_at = COALESCE(messages.deleted_at, excluded.deleted_at),
-           ext_json = COALESCE(messages.ext_json, excluded.ext_json)`,
+           ext_json = COALESCE(messages.ext_json, excluded.ext_json),
+           forward_count = MAX(messages.forward_count, excluded.forward_count),
+           revoked_at = COALESCE(messages.revoked_at, excluded.revoked_at)`,
         [
           m.id,
           m.conversationId,
@@ -236,6 +246,8 @@ class DatabaseService {
           m.expiresAt ?? null,
           m.deletedAt ?? null,
           m.ext ? JSON.stringify(m.ext) : null,
+          m.forwardCount ?? 0,
+          m.revokedAt ?? null,
         ]
       );
     });
@@ -243,7 +255,7 @@ class DatabaseService {
 
   getMessage(id: string): Promise<Message | null> {
     return this.safe('getMessage', null, async (db) => {
-      const r = await db.getFirstAsync<any>('SELECT * FROM messages WHERE id = ?', [id]);
+      const r = await db.getFirstAsync<any>(`${MESSAGE_SELECT} WHERE m.id = ?`, [id]);
       return r ? rowToMessage(r) : null;
     });
   }
@@ -253,11 +265,11 @@ class DatabaseService {
     return this.safe('getMessages', [], async (db) => {
       const now = new Date().toISOString();
       const rows = await db.getAllAsync<any>(
-        `SELECT * FROM messages
-         WHERE conversation_id = ? AND deleted_at IS NULL
-           AND (expires_at IS NULL OR expires_at > ?)
-           ${before ? 'AND created_at < ?' : ''}
-         ORDER BY created_at DESC LIMIT ?`,
+        `${MESSAGE_SELECT}
+         WHERE m.conversation_id = ? AND m.deleted_at IS NULL
+           AND (m.expires_at IS NULL OR m.expires_at > ?)
+           ${before ? 'AND m.created_at < ?' : ''}
+         ORDER BY m.created_at DESC LIMIT ?`,
         before ? [conversationId, now, before, limit] : [conversationId, now, limit]
       );
       return rows.map(rowToMessage).reverse();
@@ -273,6 +285,28 @@ class DatabaseService {
   updateMessageMedia(id: string, media: MediaAttachment): Promise<void> {
     return this.safe('updateMessageMedia', undefined, async (db) => {
       await db.runAsync('UPDATE messages SET media_json = ? WHERE id = ?', [JSON.stringify(media), id]);
+    });
+  }
+
+  /**
+   * Media ids still referenced by a live local message (for sweeping the
+   * decrypted media cache). Null if the database isn't available.
+   */
+  getLiveMediaIds(): Promise<Set<string> | null> {
+    return this.safe('getLiveMediaIds', null, async (db) => {
+      const rows = await db.getAllAsync<{ media_json: string }>(
+        'SELECT media_json FROM messages WHERE media_json IS NOT NULL AND deleted_at IS NULL'
+      );
+      const ids = new Set<string>();
+      for (const r of rows) {
+        try {
+          const id = JSON.parse(r.media_json)?.mediaId;
+          if (typeof id === 'string') ids.add(id);
+        } catch {
+          // ignore unreadable rows
+        }
+      }
+      return ids;
     });
   }
 
@@ -314,6 +348,8 @@ class DatabaseService {
   clearConversation(conversationId: string): Promise<void> {
     return this.safe('clearConversation', undefined, async (db) => {
       await db.runAsync('DELETE FROM messages WHERE conversation_id = ?', [conversationId]);
+      await db.runAsync('DELETE FROM message_edits WHERE conversation_id = ?', [conversationId]);
+      await db.runAsync('DELETE FROM message_stars WHERE conversation_id = ?', [conversationId]);
     });
   }
 
@@ -366,24 +402,12 @@ class DatabaseService {
   getNewestMessageTime(conversationId: string): Promise<string | null> {
     return this.safe('getNewestMessageTime', null, async (db) => {
       const r = await db.getFirstAsync<{ t: string | null }>(
-        'SELECT MAX(created_at) AS t FROM messages WHERE conversation_id = ?',
+        // Optimistic (not yet confirmed) messages carry a local clock time; never use them as a sync cursor.
+        `SELECT MAX(created_at) AS t FROM messages
+         WHERE conversation_id = ? AND status NOT IN ('sending', 'failed')`,
         [conversationId]
       );
       return r?.t ?? null;
-    });
-  }
-
-  searchMessages(query: string): Promise<Message[]> {
-    const q = query.trim();
-    if (q.length < 2) return Promise.resolve([]);
-    return this.safe('searchMessages', [], async (db) => {
-      const rows = await db.getAllAsync<any>(
-        `SELECT * FROM messages
-         WHERE content LIKE ? ESCAPE '\\' AND deleted_at IS NULL
-         ORDER BY created_at DESC LIMIT 50`,
-        [`%${escapeLike(q)}%`]
-      );
-      return rows.map(rowToMessage);
     });
   }
 
@@ -537,6 +561,9 @@ class DatabaseService {
         DELETE FROM safety_numbers;
         DELETE FROM conversation_settings;
         DELETE FROM call_logs;
+        DELETE FROM message_edits;
+        DELETE FROM message_stars;
+        DELETE FROM sync_state;
       `);
     });
   }

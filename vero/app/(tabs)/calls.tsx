@@ -90,6 +90,12 @@ export default function CallsScreen() {
   const startCall = async (peerId: string, peerName: string, callType: 'voice' | 'video' = 'voice') => {
     if (!user?.id) return;
     try {
+      if (peerId.startsWith('group:')) {
+        // Group call log entry (see CallService.finish): call the group again.
+        const groupCallId = await callService.startGroupCall({ conversationId: peerId.slice(6), groupName: peerName, callType });
+        router.push(`/call/${groupCallId}`);
+        return;
+      }
       const conversationId = conversationFor(peerId) ?? (isDemo ? null : await conversationRepository.createDirectConversation(peerId));
       if (!conversationId) return;
       const callId = await callService.startCall({ conversationId, peerId, peerName, callType });
@@ -205,13 +211,14 @@ export default function CallsScreen() {
     );
   }
 
-  const cid = selected ? conversationFor(selected.peerId) : undefined;
+  const isGroup = !!selected?.peerId.startsWith('group:');
+  const cid = selected ? (isGroup ? selected.peerId.slice(6) : conversationFor(selected.peerId)) : undefined;
   const actions: [IconName, string, () => void][] = selected
     ? [
         ['phone', t('calls.voice'), () => startCall(selected.peerId, selected.peerName, 'voice')],
         ['video', t('calls.video'), () => startCall(selected.peerId, selected.peerName, 'video')],
         ['chat', t('calls.message'), () => (cid ? router.push(`/chat/${cid}`) : router.push('/(tabs)/chats'))],
-        ['user', t('calls.profile'), () => router.push(`/profile/${selected.peerId}`)],
+        ...(isGroup ? [] : [['user', t('calls.profile'), () => router.push(`/profile/${selected.peerId}`)] as [IconName, string, () => void]]),
       ]
     : [];
 

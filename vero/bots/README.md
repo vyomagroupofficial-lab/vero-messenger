@@ -83,10 +83,14 @@ API summary (`bots/sdk/index.ts`):
   Pi). The process keeps a realtime WebSocket open and also polls every 60 s
   in case a ping was missed.
 - **Persist the state file** (`VERO_BOT_STATE`, mode 0600). It holds the bot's
-  private key and pinned device keys. Losing it means the bot registers a new
-  device and can't read messages encrypted to the old one.
+  identity and signing private keys, pinned device keys, and its
+  forward-secrecy state: Double Ratchet sessions, prekey private keys and a
+  short cache of decrypted messages. Losing it means the bot registers a new
+  device and can't read messages encrypted to the old one. Restoring an OLD
+  copy makes sessions fall out of sync; the SDK detects that and sends the
+  affected devices an encrypted session reset (those messages are lost).
 - Run one process per bot token. Two processes sharing a state file will
-  answer twice.
+  answer twice and corrupt each other's ratchet sessions.
 - Optional **webhook**: set a Webhook URL in the app (Edit bot). If the
   database has the `pg_net` extension, every new message in the bot's chats
   POSTs `{type, bot_user_id, conversation_id, message_id}` - ids only, never
@@ -95,8 +99,10 @@ API summary (`bots/sdk/index.ts`):
   trusts what it can decrypt.
 - Security model: the SDK pins every sender device key on first use (like the
   app) and refuses to send if a known device's key changes.
-- Envelopes are the app's current `v: 2` format. If the app moves to a
-  ratcheting session layer, the SDK must be updated alongside it.
+- Envelopes are the app's `v: 3` format (X3DH + Double Ratchet, see the main
+  README's "Security status"); the bot publishes signed and one-time prekeys
+  at start-up and tops them up hourly. Legacy `v: 2` messages are still read.
+  `sealPayload` / `openPayload` remain exported for v2 tooling.
 
 ## 3. Mini-apps
 

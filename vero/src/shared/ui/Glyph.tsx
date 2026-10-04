@@ -11,6 +11,17 @@ import { Icon, IconName, isIconName } from './Icon';
 export type GlyphName = IconName | keyof typeof Ionicons.glyphMap;
 
 const ION_TO_VERO: Record<string, IconName> = {
+  star: 'starFilled',
+  'star-outline': 'star',
+  'checkmark-circle-outline': 'checkCircle',
+  'chevron-up': 'chevronUp',
+  'archive-outline': 'archive',
+  archive: 'archive',
+  'pin-outline': 'pin',
+  'notifications-off-outline': 'bellOff',
+  'notifications-outline': 'bell',
+  'arrow-redo-outline': 'forward',
+  'ban-outline': 'ban',
   people: 'users',
   person: 'user',
   'person-add': 'userPlus',
@@ -53,7 +64,7 @@ const ION_TO_VERO: Record<string, IconName> = {
   close: 'close',
   'close-circle': 'close',
   checkmark: 'check',
-  'checkmark-circle': 'check',
+  'checkmark-circle': 'checkCircle',
   'checkmark-done': 'checks',
   search: 'search',
   wallet: 'wallet',
@@ -106,11 +117,11 @@ const ION_TO_VERO: Record<string, IconName> = {
   'arrow-forward': 'arrowRight',
   'arrow-redo': 'forward',
   'arrow-undo': 'reply',
-  refresh: 'arrowIn',
+  refresh: 'refresh',
   sparkles: 'smile',
   radio: 'megaphone',
   'radio-button-on': 'check',
-  'finger-print': 'key',
+  'finger-print': 'fingerprint',
   contract: 'down',
   expand: 'arrowRight',
   'color-palette': 'image',
@@ -121,7 +132,7 @@ const ION_TO_VERO: Record<string, IconName> = {
 export function glyphToIcon(name: GlyphName): IconName | null {
   if (!name) return null;
   const base = String(name).replace(/-(outline|sharp)$/, '');
-  return (ION_TO_VERO[base] as IconName | undefined) ?? (ION_TO_VERO[String(name)] as IconName | undefined) ?? null;
+  return (ION_TO_VERO[String(name)] as IconName | undefined) ?? (ION_TO_VERO[base] as IconName | undefined) ?? null;
 }
 
 export function Glyph({ name, size = 20, color, strokeWidth, style }: { name: GlyphName; size?: number; color: string; strokeWidth?: number; style?: StyleProp<ViewStyle> }) {
