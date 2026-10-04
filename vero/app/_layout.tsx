@@ -20,6 +20,7 @@ import { ThemeProvider, useTheme } from '../src/shared/theme/ThemeProvider';
 import { dark } from '../src/shared/theme/theme';
 import '../src/shared/i18n';
 import { AppLockGate } from '../src/features/settings/AppLockGate';
+import { UpdateBanner } from '../src/features/updates/UpdateBanner';
 import { useAccountServices } from '../src/features/settings/useAccountServices';
 
 function ThemedStack() {
@@ -119,6 +120,7 @@ export default function RootLayout() {
       <ThemeProvider>
         <AppLockGate>
           <ThemedStack />
+          <UpdateBanner />
         </AppLockGate>
       </ThemeProvider>
     </GestureHandlerRootView>

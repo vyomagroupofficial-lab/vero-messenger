@@ -332,6 +332,7 @@ export default function SettingsScreen() {
         </>
       )}
       <Row first={isDemo} icon="shieldCheck" label={t('settings.howProtected')} hint={t('settings.howProtectedHint')} onPress={() => setShowAudit(true)} />
+      <Row icon="download" label={t('updates.title', { defaultValue: 'App updates' })} hint={t('updates.hint', { defaultValue: 'Check for a new version' })} onPress={() => router.push('/settings/updates')} />
     </Card>
   );
 

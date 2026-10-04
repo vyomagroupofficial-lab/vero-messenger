@@ -1293,5 +1293,22 @@
     "today": "आज {{time}} पर देखा गया",
     "yesterday": "कल {{time}} पर देखा गया",
     "onDate": "{{date}} को {{time}} पर देखा गया"
+  },
+  "updates": {
+    "title": "ऐप अपडेट",
+    "hint": "नया वर्ज़न देखें",
+    "available": "Vero {{version}} उपलब्ध है",
+    "downloading": "डाउनलोड हो रहा है… {{pct}}%",
+    "reloadHint": "नया वर्ज़न पाने के लिए रीलोड करें।",
+    "installHint": "अपडेट पर टैप करें, फिर इंस्टॉल की पुष्टि करें।",
+    "later": "बाद में",
+    "update": "अपडेट करें",
+    "reload": "रीलोड करें",
+    "checking": "जाँच हो रही है…",
+    "upToDate": "आपके पास नया वर्ज़न है।",
+    "installed": "इंस्टॉल वर्ज़न {{version}}",
+    "checkNow": "अपडेट जाँचें",
+    "ios": "iPhone पर अपडेट App Store या TestFlight से आते हैं।",
+    "allReleases": "सभी डाउनलोड (Android, Windows, macOS, Linux, वेब)"
   }
 }

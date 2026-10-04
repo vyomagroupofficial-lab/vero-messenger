@@ -1293,5 +1293,22 @@
     "today": "last seen today at {{time}}",
     "yesterday": "last seen yesterday at {{time}}",
     "onDate": "last seen {{date}} at {{time}}"
+  },
+  "updates": {
+    "title": "App updates",
+    "hint": "Check for a new version",
+    "available": "Vero {{version}} is available",
+    "downloading": "Downloading… {{pct}}%",
+    "reloadHint": "Reload to get the latest version.",
+    "installHint": "Tap Update, then confirm the install.",
+    "later": "Later",
+    "update": "Update",
+    "reload": "Reload",
+    "checking": "Checking…",
+    "upToDate": "You have the latest version.",
+    "installed": "Installed version {{version}}",
+    "checkNow": "Check for updates",
+    "ios": "On iPhone, updates arrive through the App Store or TestFlight.",
+    "allReleases": "All downloads (Android, Windows, macOS, Linux, web)"
   }
 }

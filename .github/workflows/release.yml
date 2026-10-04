@@ -42,6 +42,7 @@ jobs:
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v4
       - run: npm ci
+      - run: node scripts/set-version.mjs "$GITHUB_REF_NAME"
       - run: npx expo prebuild --platform android --no-install --clean
       - name: Signing key
         id: sign
@@ -79,7 +80,12 @@ jobs:
           cache: npm
           cache-dependency-path: vero/package-lock.json
       - run: npm ci
+      - run: node scripts/set-version.mjs "$GITHUB_REF_NAME"
       - run: npx expo export --platform web --output-dir dist --clear
+        env:
+          EXPO_PUBLIC_BUILD_ID: ${{ github.sha }}
+      - name: version.json (web clients use it to offer a reload)
+        run: node -e "const v=require('./app.json').expo.version;require('fs').writeFileSync('dist/version.json',JSON.stringify({version:v,build:process.env.GITHUB_SHA}))"
       - run: |
           mkdir -p ../out
           (cd dist && zip -qr "../../out/Vero-web-${GITHUB_REF_NAME//\//-}.zip" .)
@@ -114,6 +120,7 @@ jobs:
             vero/package-lock.json
             vero/desktop/package-lock.json
       - run: npm ci
+      - run: node scripts/set-version.mjs "$GITHUB_REF_NAME"
       - run: npm ci
         working-directory: vero/desktop
       - run: npm run ${{ matrix.script }} -- --publish never
@@ -129,6 +136,8 @@ jobs:
             vero/desktop/release/*.AppImage
             vero/desktop/release/*.deb
             vero/desktop/release/*.yml
+            vero/desktop/release/*.blockmap
+            vero/desktop/release/*.zip
           if-no-files-found: error
 
   release:
@@ -140,6 +149,21 @@ jobs:
         with:
           path: assets
           merge-multiple: true
+      - name: vero-update.json (Android in-app updater reads this)
+        run: |
+          apk=$(ls assets/*.apk | head -1)
+          name=$(basename "$apk")
+          node -e '
+            const fs=require("fs"),crypto=require("crypto");
+            const [apk,name,tag,repo]=process.argv.slice(1);
+            const buf=fs.readFileSync(apk);
+            fs.writeFileSync("assets/vero-update.json",JSON.stringify({
+              version: tag.replace(/^v/,""),
+              notes: "See the release notes on GitHub.",
+              releaseUrl: `https://github.com/${repo}/releases/tag/${tag}`,
+              android: { url: `https://github.com/${repo}/releases/download/${tag}/${name}`, sha256: crypto.createHash("sha256").update(buf).digest("hex"), size: buf.length }
+            },null,2));
+          ' "$apk" "$name" "$GITHUB_REF_NAME" "$GITHUB_REPOSITORY"
       - uses: softprops/action-gh-release@v2
         with:
           files: assets/*

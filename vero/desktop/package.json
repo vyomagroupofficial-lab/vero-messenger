@@ -6,7 +6,10 @@
   "main": "main.js",
   "private": true,
   "license": "SEE LICENSE IN ../LICENSE",
-  "author": "Vero",
+  "author": {
+    "name": "Vyoma Group",
+    "email": "vyomagroupofficial@gmail.com"
+  },
   "scripts": {
     "web:export": "cd .. && npx expo export --platform web --output-dir dist",
     "start": "electron .",
@@ -30,9 +33,10 @@
     },
     "files": [
       "main.js",
+      "package.json",
       "preload.js",
       "security.js",
-      "package.json"
+      "updater.js"
     ],
     "extraResources": [
       {
@@ -52,7 +56,13 @@
       }
     ],
     "asar": true,
-    "publish": null,
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "vyomagroupofficial-lab",
+        "repo": "vero-messenger"
+      }
+    ],
     "linux": {
       "target": [
         "AppImage",
@@ -62,7 +72,9 @@
       "icon": "../assets/icon.png",
       "mimeTypes": [
         "x-scheme-handler/vero"
-      ]
+      ],
+      "maintainer": "Vyoma Group <vyomagroupofficial@gmail.com>",
+      "syncDesktopName": true
     },
     "win": {
       "target": [
@@ -87,5 +99,10 @@
         "NSMicrophoneUsageDescription": "Vero uses the microphone for calls and voice messages."
       }
     }
-  }
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9"
+  },
+  "homepage": "https://github.com/vyomagroupofficial-lab/vero-messenger",
+  "desktopName": "vero.desktop"
 }

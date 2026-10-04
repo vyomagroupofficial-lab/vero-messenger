@@ -14,6 +14,7 @@ const { app, BrowserWindow, protocol, net, session, shell, Menu } = require('ele
 const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
+const { startAutoUpdates } = require('./updater');
 const { APP_ORIGIN, contentSecurityPolicy, resolveAppFile, deepLinkToRoute, isAppUrl } = require('./security');
 
 const WEB_ROOT = app.isPackaged ? path.join(process.resourcesPath, 'web') : path.resolve(__dirname, '..', 'dist');
@@ -155,6 +156,7 @@ app.whenReady().then(() => {
   lockDownSession();
   serveApp();
   createWindow();
+  startAutoUpdates(() => mainWindow);
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
