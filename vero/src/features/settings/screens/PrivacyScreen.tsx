@@ -8,15 +8,19 @@ import { Alert, Platform, ScrollView } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { friendlyError } from '../../../core/network/supabase';
 import { useAuthStore } from '../../auth/useAuthStore';
-import { Note, ScreenHeader, ui } from '../../linking/ui';
+import { Note, ScreenHeader, useUi } from '../../linking/ui';
 import { easProjectId, registerForPush, unregisterPush } from '../../notifications/pushRegistration';
 import { APP_LOCK_TIMEOUTS, appLockSupport, authenticate, LockSupport, useAppLockStore } from '../appLock';
 import { ChoiceRow, Section, ToggleRow } from '../components/SettingsUi';
 import { DEFAULT_DISAPPEARING_OPTIONS, LAST_SEEN_OPTIONS, PrivacySettings } from '../privacy';
 import { loadPrivacySettings, updatePrivacySettings } from '../settingsSync';
 import { useSettingsStore } from '../useSettingsStore';
+import { makeStyles, useLegacyColors } from '../../../shared/theme/ThemeProvider';
+import { Glyph } from '../../../shared/ui';
 
 export default function PrivacyScreen() {
+  const Colors = useLegacyColors();
+  const ui = useUi();
   const deviceId = useAuthStore((s) => s.deviceId);
   const isDemo = useAuthStore((s) => s.isDemo);
   const settings = useSettingsStore();

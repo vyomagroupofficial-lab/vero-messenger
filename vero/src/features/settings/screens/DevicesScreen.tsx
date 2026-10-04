@@ -9,17 +9,21 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { router } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
 import dayjs from 'dayjs';
 import { friendlyError, supabase } from '../../../core/network/supabase';
 import { authRepository } from '../../auth/AuthRepository';
 import { useAuthStore } from '../../auth/useAuthStore';
-import { Button, Note, ScreenHeader, ui } from '../../linking/ui';
-import { BorderRadius, Colors, Spacing, Typography } from '../../../shared/theme/theme';
+import { Button, Note, ScreenHeader, useUi } from '../../linking/ui';
+import { makeStyles, useLegacyColors } from '../../../shared/theme/ThemeProvider';
+import { BorderRadius, Spacing, Typography, legacyColors } from '../../../shared/theme/theme';
+import { Glyph } from '../../../shared/ui';
 
 type LinkedDevice = Awaited<ReturnType<typeof authRepository.listDevices>>[number];
 
 export default function DevicesScreen() {
+  const Colors = useLegacyColors();
+  const styles = useStyles();
+  const ui = useUi();
   const deviceId = useAuthStore((s) => s.deviceId);
   const isDemo = useAuthStore((s) => s.isDemo);
   const logout = useAuthStore((s) => s.logout);
@@ -127,7 +131,7 @@ export default function DevicesScreen() {
               return (
                 <View key={d.id} style={styles.device}>
                   <View style={styles.icon}>
-                    <Ionicons name={/web|desktop|browser/i.test(d.deviceLabel) ? 'desktop-outline' : 'phone-portrait-outline'} size={22} color={Colors.accent} />
+                    <Glyph name={/web|desktop|browser/i.test(d.deviceLabel) ? 'desktop-outline' : 'phone-portrait-outline'} size={22} color={Colors.accent} />
                   </View>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.name} numberOfLines={1}>
@@ -167,7 +171,9 @@ export default function DevicesScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((c) => {
+  const Colors = legacyColors(c);
+  return {
   device: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -196,4 +202,5 @@ const styles = StyleSheet.create({
     borderColor: `${Colors.error}66`,
   },
   logoutText: { color: Colors.error, fontSize: Typography.sm, fontWeight: Typography.semibold },
+} as const;
 });

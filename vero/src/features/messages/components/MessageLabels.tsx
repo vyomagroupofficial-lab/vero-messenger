@@ -4,51 +4,60 @@
  */
 
 import React from 'react';
-import { StyleSheet, Text, View } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { Text, View } from 'react-native';
 import type { Message } from '../../../shared/models/Message';
-import { Colors } from '../../../shared/theme/theme';
-import { forwardLabel, isFrequentlyForwarded } from '../forward';
+import { makeStyles, useTheme } from '../../../shared/theme/ThemeProvider';
+import { useT } from '../../../shared/i18n';
+import { Icon } from '../../../shared/ui';
+import { isFrequentlyForwarded } from '../forward';
 
-export function ForwardedLabel({ hops }: { hops?: number }) {
-  const label = forwardLabel(hops);
-  if (!label) return null;
+export function ForwardedLabel({ hops, isOwn }: { hops?: number; isOwn?: boolean }) {
+  const { c } = useTheme();
+  const s = useStyles();
+  const t = useT();
+  if (!hops || hops < 1) return null;
+  const many = isFrequentlyForwarded(hops);
+  const color = isOwn ? c.mineMeta : c.muted;
   return (
-    <View style={styles.row}>
-      <Ionicons
-        name={isFrequentlyForwarded(hops) ? 'play-forward' : 'arrow-redo'}
-        size={12}
-        color={Colors.textSecondary}
-      />
-      <Text style={styles.forwarded}>{label}</Text>
+    <View style={s.row}>
+      <Icon name="forward" size={12} color={color} />
+      {many && <Icon name="forward" size={12} color={color} style={{ marginLeft: -8 }} />}
+      <Text style={[s.forwarded, { color }]}>{many ? t('messages.forwardedMany') : t('messages.forwarded')}</Text>
     </View>
   );
 }
 
 export function RevokedBody({ isOwn }: { isOwn: boolean }) {
+  const { c } = useTheme();
+  const s = useStyles();
+  const t = useT();
+  const color = isOwn ? c.mineMeta : c.faint;
   return (
-    <View style={styles.row}>
-      <Ionicons name="ban-outline" size={14} color={Colors.textTertiary} />
-      <Text style={styles.revoked}>{isOwn ? 'You deleted this message' : 'This message was deleted'}</Text>
+    <View style={[s.row, { marginBottom: 0 }]}>
+      <Icon name="ban" size={14} color={color} />
+      <Text style={[s.revoked, { color }]}>{isOwn ? t('preview.youDeleted') : t('preview.deleted')}</Text>
     </View>
   );
 }
 
 /** Footer markers before the time: ★ and "edited". */
-export function FooterMarkers({ message }: { message: Pick<Message, 'starred' | 'editedAt' | 'revokedAt'> }) {
+export function FooterMarkers({ message }: { message: Pick<Message, 'starred' | 'editedAt' | 'revokedAt' | 'isOwn'> }) {
+  const { c } = useTheme();
+  const s = useStyles();
+  const t = useT();
   if (message.revokedAt) return null;
+  const meta = message.isOwn ? c.mineMeta : c.faint;
   return (
     <>
-      {message.starred && <Ionicons name="star" size={11} color={Colors.warning} style={styles.star} />}
-      {!!message.editedAt && <Text style={styles.edited}>edited</Text>}
+      {message.starred && <Icon name="starFilled" size={11} color={c.accent} />}
+      {!!message.editedAt && <Text style={[s.edited, { color: meta }]}>{t('messages.edited')}</Text>}
     </>
   );
 }
 
-const styles = StyleSheet.create({
-  row: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 2 },
-  forwarded: { fontSize: 11, fontStyle: 'italic', color: Colors.textSecondary },
-  revoked: { fontSize: 13, fontStyle: 'italic', color: Colors.textTertiary },
-  edited: { fontSize: 10, fontStyle: 'italic', color: Colors.textTertiary, marginRight: 4 },
-  star: { marginRight: 4 },
-});
+const useStyles = makeStyles((c, t, f) => ({
+  row: { flexDirection: 'row', alignItems: 'center', gap: 5, marginBottom: 3 },
+  forwarded: { fontFamily: f.medium, fontSize: 11.5, fontStyle: 'italic' },
+  revoked: { fontFamily: f.body, fontSize: 14, fontStyle: 'italic' },
+  edited: { fontFamily: f.body, fontSize: 11, fontStyle: 'italic' },
+}));

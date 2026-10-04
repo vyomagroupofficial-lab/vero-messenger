@@ -9,6 +9,7 @@ import { messagingStore } from '../../core/storage/messagingStore';
 import { friendlyError } from '../../core/network/supabase';
 import type { Message } from '../../shared/models/Message';
 import { notify } from '../groups/components/ui';
+import i18n from '../../shared/i18n';
 import { useChatSearch } from '../search/useMessageSearch';
 import { canEditMessage, EditHistoryEntry, editHistory } from './edits';
 import { isForwardable } from './forward';
@@ -28,7 +29,7 @@ export function useChatMessaging(conversationId: string, myUserId: string | unde
       if (!myUserId) return null;
       const check = canEditMessage(m, myUserId);
       if (!check.ok) {
-        notify('Can’t edit', check.reason);
+        notify(i18n.t('messages.cantEdit'), check.reason);
         return null;
       }
       setEditing(m);
@@ -46,7 +47,7 @@ export function useChatMessaging(conversationId: string, myUserId: string | unde
         await useMessagesStore.getState().edit(target, text);
         return true;
       } catch (e) {
-        notify('Edit not saved', friendlyError(e, 'Could not edit the message.'));
+        notify(i18n.t('messages.editFailed'), friendlyError(e, i18n.t('messages.editFailedBody')));
         return false;
       }
     },
@@ -101,7 +102,7 @@ export function useChatMessaging(conversationId: string, myUserId: string | unde
   const openForward = useCallback((list: Message[]) => {
     const ok = list.filter(isForwardable);
     if (ok.length === 0) {
-      notify('Can’t forward', 'These messages can’t be forwarded.');
+      notify(i18n.t('messages.cantForward'), i18n.t('messages.cantForwardBody'));
       return;
     }
     setForwarding(ok);
@@ -114,10 +115,10 @@ export function useChatMessaging(conversationId: string, myUserId: string | unde
         setForwarding(null);
         clearSelection();
         if (result.failed > 0) {
-          notify('Some messages weren’t forwarded', `${result.failed} could not be sent. Check your connection and try again.`);
+          notify(i18n.t('messages.someNotForwarded'), i18n.t('messages.someNotForwardedBody', { count: result.failed }));
         }
       } catch (e) {
-        notify('Forward failed', friendlyError(e, 'Could not forward.'));
+        notify(i18n.t('messages.forwardFailed'), friendlyError(e, i18n.t('messages.forwardFailedBody')));
       }
     },
     [forwarding, clearSelection]
@@ -131,7 +132,7 @@ export function useChatMessaging(conversationId: string, myUserId: string | unde
       try {
         await useMessagesStore.getState().star(list, starred);
       } catch (e) {
-        notify('Could not update star', friendlyError(e));
+        notify(i18n.t('messages.starFailed'), friendlyError(e));
       }
       clearSelection();
     },

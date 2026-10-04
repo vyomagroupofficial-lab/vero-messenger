@@ -10,9 +10,10 @@
  */
 
 import React, { useEffect, useRef, useState } from 'react';
-import { Animated, PanResponder, Pressable, StyleSheet, Text, View } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
-import { Colors, Spacing, Typography } from '../../../shared/theme/theme';
+import { Animated, PanResponder, Text, View } from 'react-native';
+import { makeStyles, useTheme } from '../../../shared/theme/ThemeProvider';
+import { useT } from '../../../shared/i18n';
+import { Icon, IconButton, Ripple } from '../../../shared/ui';
 import type { VoiceRecorderController } from '../useVoiceRecorder';
 import { formatDuration } from '../waveform';
 
@@ -70,29 +71,38 @@ export function VoiceRecordButton({ voice, disabled }: { voice: VoiceRecorderCon
     })
   ).current;
 
+  const { c } = useTheme();
+  const styles = useStyles();
+  const t = useT();
   const holding = voice.status === 'recording' || voice.status === 'starting';
 
   return (
     <View>
       {holding && (
         <View style={[styles.lockHint, { transform: [{ translateY: Math.max(dragY, LOCK_DY) / 2 }] }]} pointerEvents="none">
-          <Ionicons name="lock-open-outline" size={16} color={Colors.textSecondary} />
-          <Ionicons name="chevron-up" size={14} color={Colors.textTertiary} />
+          <Icon name="lock" size={15} color={c.muted} />
+          <Icon name="chevronUp" size={14} color={c.faint} />
+        </View>
+      )}
+      {holding && (
+        <View style={styles.ripple} pointerEvents="none">
+          <Ripple size={46} color={c.danger} />
         </View>
       )}
       <View
         {...(disabled ? {} : responder.panHandlers)}
         style={[styles.mic, holding && styles.micActive, disabled && styles.disabled]}
         accessibilityRole="button"
-        accessibilityLabel="Record voice message. Hold to record, or tap for hands-free recording."
+        accessibilityLabel={t('voice.recordA11y')}
       >
-        <Ionicons name="mic" size={20} color={Colors.white} />
+        <Icon name="mic" size={21} color={holding ? c.onDanger : c.onAccent} />
       </View>
     </View>
   );
 }
 
 function PulsingDot() {
+  const styles = useStyles();
   const opacity = useRef(new Animated.Value(1)).current;
   useEffect(() => {
     const anim = Animated.loop(
@@ -108,16 +118,15 @@ function PulsingDot() {
 }
 
 export function VoiceRecordingBar({ voice }: { voice: VoiceRecorderController }) {
+  const { c } = useTheme();
+  const styles = useStyles();
+  const t = useT();
   const hintShift = voice.dragX.interpolate({ inputRange: [CANCEL_DX, 0], outputRange: [CANCEL_DX / 2, 0], extrapolate: 'clamp' });
   const hintOpacity = voice.dragX.interpolate({ inputRange: [CANCEL_DX, 0], outputRange: [0.2, 1], extrapolate: 'clamp' });
 
   return (
     <View style={styles.bar}>
-      {voice.isLocked ? (
-        <Pressable onPress={() => void voice.cancel()} style={styles.iconBtn} accessibilityLabel="Delete recording">
-          <Ionicons name="trash-outline" size={22} color={Colors.error} />
-        </Pressable>
-      ) : null}
+      {voice.isLocked ? <IconButton icon="trash" label={t('voice.discard')} color={c.danger} size={38} onPress={() => void voice.cancel()} /> : null}
       <PulsingDot />
       <Text style={styles.timer}>{formatDuration(voice.durationMs)}</Text>
       <View style={styles.levels}>
@@ -126,75 +135,28 @@ export function VoiceRecordingBar({ voice }: { voice: VoiceRecorderController })
         ))}
       </View>
       {voice.isLocked ? (
-        <Pressable onPress={() => void voice.finish()} style={styles.send} accessibilityLabel="Send voice message">
-          <Ionicons name="send" size={18} color={Colors.white} />
-        </Pressable>
+        <IconButton icon="send" label={t('voice.send')} variant="brass" size={38} onPress={() => void voice.finish()} />
       ) : (
         <Animated.View style={[styles.hint, { opacity: hintOpacity, transform: [{ translateX: hintShift }] }]}>
-          <Ionicons name="chevron-back" size={14} color={Colors.textSecondary} />
-          <Text style={styles.hintText}>Slide to cancel</Text>
+          <Icon name="back" size={14} color={c.muted} />
+          <Text style={styles.hintText}>{t('voice.slideCancel')}</Text>
         </Animated.View>
       )}
     </View>
   );
 }
 
-const styles = StyleSheet.create({
-  mic: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: Colors.accent,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  micActive: {
-    backgroundColor: Colors.error,
-    transform: [{ scale: 1.15 }],
-  },
+const useStyles = makeStyles((c, t, f) => ({
+  mic: { width: 46, height: 46, borderRadius: 23, backgroundColor: c.accent, justifyContent: 'center', alignItems: 'center' },
+  micActive: { backgroundColor: c.dangerFill, transform: [{ scale: 1.18 }] },
   disabled: { opacity: 0.5 },
-  lockHint: {
-    position: 'absolute',
-    bottom: 52,
-    left: 6,
-    width: 28,
-    paddingVertical: 6,
-    borderRadius: 14,
-    backgroundColor: Colors.surfaceElevated,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    alignItems: 'center',
-  },
-  bar: {
-    flex: 1,
-    minHeight: 44,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
-    paddingHorizontal: Spacing.sm,
-    borderRadius: 22,
-    backgroundColor: Colors.inputBackground,
-    borderWidth: 1,
-    borderColor: Colors.inputBorder,
-  },
-  dot: { width: 10, height: 10, borderRadius: 5, backgroundColor: Colors.error },
-  timer: {
-    color: Colors.textPrimary,
-    fontSize: Typography.base,
-    fontVariant: ['tabular-nums'],
-    minWidth: 42,
-  },
+  ripple: { position: 'absolute', top: 0, left: 0, width: 46, height: 46, alignItems: 'center', justifyContent: 'center' },
+  lockHint: { position: 'absolute', bottom: 60, left: 9, width: 28, paddingVertical: 7, gap: 2, borderRadius: 14, backgroundColor: c.raised, borderWidth: 1, borderColor: c.line, alignItems: 'center' },
+  bar: { flex: 1, minHeight: 46, flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 12, borderRadius: 23, backgroundColor: c.raised, borderWidth: 1, borderColor: c.dangerTint },
+  dot: { width: 10, height: 10, borderRadius: 5, backgroundColor: c.danger },
+  timer: { fontFamily: f.mono, color: c.text, fontSize: 15, fontVariant: ['tabular-nums'], minWidth: 44 },
   levels: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 2, height: 26, overflow: 'hidden' },
-  level: { width: 2, borderRadius: 1, backgroundColor: Colors.accentLight },
-  hint: { flexDirection: 'row', alignItems: 'center' },
-  hintText: { color: Colors.textSecondary, fontSize: Typography.sm },
-  iconBtn: { width: 32, height: 32, justifyContent: 'center', alignItems: 'center' },
-  send: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: Colors.accent,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-});
+  level: { width: 2.5, borderRadius: 1.25, backgroundColor: c.accent },
+  hint: { flexDirection: 'row', alignItems: 'center', gap: 2 },
+  hintText: { fontFamily: f.medium, color: c.muted, fontSize: 13 },
+}));

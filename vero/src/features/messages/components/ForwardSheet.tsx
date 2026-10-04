@@ -4,20 +4,12 @@
  */
 
 import React, { useMemo, useState } from 'react';
-import {
-  ActivityIndicator,
-  FlatList,
-  Modal,
-  Pressable,
-  StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View,
-} from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { FlatList, Text, View } from 'react-native';
+import Animated, { ZoomIn } from 'react-native-reanimated';
 import { conversationTitle, Message } from '../../../shared/models/Message';
-import { BorderRadius, Colors, Spacing, Typography } from '../../../shared/theme/theme';
+import { makeStyles, useTheme } from '../../../shared/theme/ThemeProvider';
+import { useT } from '../../../shared/i18n';
+import { Avatar, Button, Icon, Pressy, SearchField, Sheet } from '../../../shared/ui';
 import { useChatsStore } from '../../chats/useChatsStore';
 import { checkForwardSelection, maxForwardTargets } from '../forward';
 
@@ -32,7 +24,10 @@ export function ForwardSheet({
   onClose: () => void;
   onForward: (conversationIds: string[]) => Promise<void>;
 }) {
-  const conversations = useChatsStore((s) => s.conversations);
+  const { c, type } = useTheme();
+  const s = useStyles();
+  const t = useT();
+  const conversations = useChatsStore((st) => st.conversations);
   const [selected, setSelected] = useState<string[]>([]);
   const [filter, setFilter] = useState('');
   const [busy, setBusy] = useState(false);
@@ -40,11 +35,11 @@ export function ForwardSheet({
 
   const list = useMemo(() => {
     const q = filter.trim().toLowerCase();
-    return q ? conversations.filter((c) => conversationTitle(c).toLowerCase().includes(q)) : conversations;
+    return q ? conversations.filter((cv) => conversationTitle(cv).toLowerCase().includes(q)) : conversations;
   }, [conversations, filter]);
 
   const toggle = (id: string) =>
-    setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : s.length >= max ? (max === 1 ? [id] : s) : [...s, id]));
+    setSelected((sel) => (sel.includes(id) ? sel.filter((x) => x !== id) : sel.length >= max ? (max === 1 ? [id] : sel) : [...sel, id]));
 
   const close = () => {
     if (busy) return;
@@ -68,119 +63,62 @@ export function ForwardSheet({
   };
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={close}>
-      <Pressable style={styles.backdrop} onPress={close}>
-        <Pressable style={styles.sheet} onPress={() => undefined}>
-          <View style={styles.header}>
-            <Text style={styles.title}>
-              Forward {messages.length > 1 ? `${messages.length} messages` : 'message'}
-            </Text>
-            <Text style={styles.subtitle}>
-              {max === 1 ? 'Forwarded many times: one chat at a time' : `Up to ${max} chats`} · end-to-end encrypted
-            </Text>
-          </View>
-          <View style={styles.search}>
-            <Ionicons name="search" size={16} color={Colors.textTertiary} />
-            <TextInput
-              style={styles.searchInput}
-              value={filter}
-              onChangeText={setFilter}
-              placeholder="Search chats"
-              placeholderTextColor={Colors.textTertiary}
-            />
-          </View>
-          <FlatList
-            data={list}
-            keyExtractor={(c) => c.id}
-            style={styles.list}
-            keyboardShouldPersistTaps="handled"
-            renderItem={({ item }) => {
-              const on = selected.includes(item.id);
-              return (
-                <TouchableOpacity style={styles.row} onPress={() => toggle(item.id)} accessibilityState={{ selected: on }}>
-                  <Ionicons
-                    name={item.conversationType === 'group' ? 'people-circle-outline' : 'person-circle-outline'}
-                    size={30}
-                    color={Colors.accentLight}
-                  />
-                  <Text style={styles.rowText} numberOfLines={1}>
-                    {conversationTitle(item)}
-                  </Text>
-                  <Ionicons
-                    name={on ? 'checkmark-circle' : 'ellipse-outline'}
-                    size={22}
-                    color={on ? Colors.accent : Colors.textTertiary}
-                  />
-                </TouchableOpacity>
-              );
-            }}
-            ListEmptyComponent={<Text style={styles.empty}>No chats</Text>}
-          />
-          <TouchableOpacity
-            style={[styles.sendBtn, (!check.ok || busy) && styles.sendBtnDisabled]}
-            disabled={!check.ok || busy}
-            onPress={send}
-            accessibilityLabel="Forward"
-          >
-            {busy ? (
-              <ActivityIndicator color={Colors.white} />
-            ) : (
-              <>
-                <Ionicons name="arrow-redo" size={18} color={Colors.white} />
-                <Text style={styles.sendText}>
-                  {selected.length ? `Forward to ${selected.length} chat${selected.length > 1 ? 's' : ''}` : 'Choose chats'}
-                </Text>
-              </>
-            )}
-          </TouchableOpacity>
-        </Pressable>
-      </Pressable>
-    </Modal>
+    <Sheet visible={visible} onClose={close} title={t('forward.title', { count: messages.length })}>
+      <View style={s.note}>
+        <Icon name="lock" size={13} color={c.success} />
+        <Text style={[type.caption, { flex: 1 }]}>{max === 1 ? t('forward.oneChat') : t('forward.upTo', { count: max })}</Text>
+      </View>
+      <SearchField value={filter} onChangeText={setFilter} placeholder={t('forward.search')} />
+      <FlatList
+        data={list}
+        keyExtractor={(cv) => cv.id}
+        style={{ maxHeight: 340 }}
+        keyboardShouldPersistTaps="handled"
+        renderItem={({ item }) => {
+          const on = selected.includes(item.id);
+          const name = conversationTitle(item);
+          const group = item.conversationType === 'group';
+          return (
+            <Pressy
+              onPress={() => toggle(item.id)}
+              scaleTo={0.98}
+              hoverStyle={{ backgroundColor: c.tint }}
+              style={[s.row, on && s.rowOn]}
+              accessibilityRole="checkbox"
+              accessibilityState={{ checked: on }}
+              accessibilityLabel={name}
+            >
+              <Avatar name={name} size={42} square={group} icon={group ? 'users' : undefined} />
+              <Text style={[type.body, { flex: 1 }]} numberOfLines={1}>
+                {name}
+              </Text>
+              <View style={[s.check, on && s.checkOn]}>
+                {on && (
+                  <Animated.View entering={ZoomIn.springify().damping(12)}>
+                    <Icon name="check" size={15} color={c.onAccent} strokeWidth={2.4} />
+                  </Animated.View>
+                )}
+              </View>
+            </Pressy>
+          );
+        }}
+        ListEmptyComponent={<Text style={[type.caption, { textAlign: 'center', padding: 20 }]}>{t('forward.noChats')}</Text>}
+      />
+      <Button
+        label={selected.length ? t('forward.sendTo', { count: selected.length }) : t('forward.choose')}
+        icon="forward"
+        loading={busy}
+        disabled={!check.ok}
+        onPress={send}
+      />
+    </Sheet>
   );
 }
 
-const styles = StyleSheet.create({
-  backdrop: { flex: 1, backgroundColor: Colors.overlay, justifyContent: 'flex-end' },
-  sheet: {
-    backgroundColor: Colors.surfaceElevated,
-    borderTopLeftRadius: BorderRadius['2xl'],
-    borderTopRightRadius: BorderRadius['2xl'],
-    paddingTop: Spacing.base,
-    paddingBottom: Spacing.xl,
-    maxHeight: '80%',
-  },
-  header: { paddingHorizontal: Spacing.lg, marginBottom: Spacing.sm },
-  title: { color: Colors.textPrimary, fontSize: Typography.lg, fontWeight: Typography.bold },
-  subtitle: { color: Colors.textTertiary, fontSize: Typography.xs, marginTop: 2 },
-  search: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
-    marginHorizontal: Spacing.lg,
-    marginBottom: Spacing.sm,
-    paddingHorizontal: Spacing.md,
-    height: 40,
-    borderRadius: BorderRadius.lg,
-    backgroundColor: Colors.inputBackground,
-    borderWidth: 1,
-    borderColor: Colors.inputBorder,
-  },
-  searchInput: { flex: 1, color: Colors.textPrimary, fontSize: Typography.sm, height: '100%' },
-  list: { flexGrow: 0 },
-  row: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, paddingHorizontal: Spacing.lg, paddingVertical: Spacing.sm },
-  rowText: { flex: 1, color: Colors.textPrimary, fontSize: Typography.base },
-  empty: { color: Colors.textTertiary, textAlign: 'center', padding: Spacing.lg },
-  sendBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: Spacing.sm,
-    marginHorizontal: Spacing.lg,
-    marginTop: Spacing.md,
-    height: 46,
-    borderRadius: BorderRadius.lg,
-    backgroundColor: Colors.accent,
-  },
-  sendBtnDisabled: { opacity: 0.5 },
-  sendText: { color: Colors.white, fontSize: Typography.base, fontWeight: Typography.semibold },
-});
+const useStyles = makeStyles((c, t, f) => ({
+  note: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  row: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 8, paddingHorizontal: 8, borderRadius: 16 },
+  rowOn: { backgroundColor: c.accentTint },
+  check: { width: 24, height: 24, borderRadius: 12, borderWidth: 1.5, borderColor: c.line3, alignItems: 'center', justifyContent: 'center' },
+  checkOn: { backgroundColor: c.accent, borderColor: c.accent },
+}));

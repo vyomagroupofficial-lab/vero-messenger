@@ -9,14 +9,16 @@ import { router } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import dayjs from 'dayjs';
 import { friendlyError } from '../../../core/network/supabase';
-import { BorderRadius, Colors, Spacing, Typography } from '../../../shared/theme/theme';
 import { useAuthStore } from '../../auth/useAuthStore';
 import { useChatsStore } from '../../chats/useChatsStore';
-import { Button, Card, Note, ScreenHeader, ui } from '../../linking/ui';
+import { Button, Card, Note, ScreenHeader, useUi } from '../../linking/ui';
 import { loadPrivacySettings } from '../../settings/settingsSync';
 import { BackupError, SlotType } from '../backupCrypto';
 import { backupMethods, dismissRestoreOffer, downloadBackup, restoreBackup } from '../BackupService';
 import { RecoveryKeyError } from '../recoveryKey';
+import { makeStyles, useLegacyColors } from '../../../shared/theme/ThemeProvider';
+import { BorderRadius, Spacing, Typography, legacyColors } from '../../../shared/theme/theme';
+import { Glyph } from '../../../shared/ui';
 
 type State =
   | { kind: 'loading' }
@@ -27,6 +29,9 @@ type State =
   | { kind: 'done'; rows: number };
 
 export default function RestoreScreen() {
+  const Colors = useLegacyColors();
+  const styles = useStyles();
+  const ui = useUi();
   const userId = useAuthStore((s) => s.user?.id ?? null);
   const [state, setState] = useState<State>({ kind: 'loading' });
   const [method, setMethod] = useState<SlotType>('recovery');
@@ -180,7 +185,9 @@ export default function RestoreScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((c) => {
+  const Colors = legacyColors(c);
+  return {
   tabs: {
     flexDirection: 'row',
     backgroundColor: Colors.surface,
@@ -194,4 +201,5 @@ const styles = StyleSheet.create({
   tabText: { color: Colors.textSecondary, fontSize: Typography.sm, fontWeight: Typography.semibold },
   tabTextActive: { color: Colors.accentLight },
   keyInput: { height: 96, paddingTop: Spacing.md, fontFamily: 'monospace', textAlignVertical: 'top' },
+} as const;
 });

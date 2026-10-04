@@ -138,7 +138,7 @@ export default function CallsScreen() {
       <View style={{ paddingHorizontal: 20, gap: 16 }}>
         <View style={s.beta}>
           <View style={s.betaIcon}>
-            <Icon name="info" size={19} color={c.accentText} />
+            <Icon name="lock" size={19} color={c.accentText} />
           </View>
           <View style={{ flex: 1, gap: 2 }}>
             <Text style={[type.name, { fontSize: 14.5 }]}>{t('calls.betaTitle')}</Text>

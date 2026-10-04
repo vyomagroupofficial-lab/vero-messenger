@@ -7,13 +7,11 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, ScrollView, Share, StyleSheet, Switch, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { router } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import dayjs from 'dayjs';
 import { friendlyError } from '../../../core/network/supabase';
-import { BorderRadius, Colors, Spacing, Typography } from '../../../shared/theme/theme';
 import { useAuthStore } from '../../auth/useAuthStore';
-import { Button, Card, Note, ScreenHeader, ui } from '../../linking/ui';
+import { Button, Card, Note, ScreenHeader, useUi } from '../../linking/ui';
 import { MIN_PASSPHRASE_LENGTH, validatePassphrase } from '../backupCrypto';
 import {
   getRemoteBackupInfo,
@@ -26,6 +24,9 @@ import {
 import { generateRecoveryKey } from '../recoveryKey';
 import { getSumoSodium } from '../sodiumSumo';
 import { useBackupStatus, useBackupStore } from '../useBackupStore';
+import { makeStyles, useLegacyColors } from '../../../shared/theme/ThemeProvider';
+import { BorderRadius, Spacing, Typography, legacyColors } from '../../../shared/theme/theme';
+import { Glyph } from '../../../shared/ui';
 
 type Phase = 'deriving' | 'encrypting' | 'uploading';
 const PHASE_TEXT: Record<Phase, string> = {
@@ -43,6 +44,9 @@ function formatBytes(n: number | null | undefined): string {
 type Step = 'overview' | 'choose' | 'passphrase' | 'recovery' | 'working';
 
 export default function BackupScreen() {
+  const Colors = useLegacyColors();
+  const styles = useStyles();
+  const ui = useUi();
   const userId = useAuthStore((s) => s.user?.id ?? null);
   const isDemo = useAuthStore((s) => s.isDemo);
   const status = useBackupStatus(userId);
@@ -273,7 +277,7 @@ export default function BackupScreen() {
               </View>
             </View>
             <TouchableOpacity style={styles.check} onPress={() => setSavedIt((v) => !v)} activeOpacity={0.8}>
-              <Ionicons name={savedIt ? 'checkbox' : 'square-outline'} size={22} color={savedIt ? Colors.accent : Colors.textTertiary} />
+              <Glyph name={savedIt ? 'checkbox' : 'square-outline'} size={22} color={savedIt ? Colors.accent : Colors.textTertiary} />
               <Text style={[ui.label, { flex: 1 }]}>I've saved my recovery key somewhere safe</Text>
             </TouchableOpacity>
             <Button label="Turn on backup" onPress={() => void finishSetup()} disabled={!savedIt} />
@@ -282,7 +286,7 @@ export default function BackupScreen() {
           <>
             <Card>
               <View style={styles.statusRow}>
-                <Ionicons name={on ? 'cloud-done-outline' : 'cloud-offline-outline'} size={26} color={on ? Colors.emerald : Colors.textTertiary} />
+                <Glyph name={on ? 'cloud-done-outline' : 'cloud-offline-outline'} size={26} color={on ? Colors.emerald : Colors.textTertiary} />
                 <View style={{ flex: 1 }}>
                   <Text style={ui.label}>{configured === null ? 'Checking…' : on ? 'Backup is on' : 'Backup is off'}</Text>
                   <Text style={ui.muted}>
@@ -351,25 +355,30 @@ function OptionRow({
   value,
   onChange,
 }: {
-  icon: keyof typeof Ionicons.glyphMap;
+  icon: import('../../../shared/ui').GlyphName;
   title: string;
   desc: string;
   value: boolean;
   onChange: (v: boolean) => void;
 }) {
+  const Colors = useLegacyColors();
+  const styles = useStyles();
+  const ui = useUi();
   return (
     <TouchableOpacity style={styles.option} onPress={() => onChange(!value)} activeOpacity={0.8}>
-      <Ionicons name={icon} size={22} color={Colors.accent} />
+      <Glyph name={icon} size={22} color={Colors.accent} />
       <View style={{ flex: 1 }}>
         <Text style={ui.label}>{title}</Text>
         <Text style={ui.muted}>{desc}</Text>
       </View>
-      <Ionicons name={value ? 'checkbox' : 'square-outline'} size={22} color={value ? Colors.accent : Colors.textTertiary} />
+      <Glyph name={value ? 'checkbox' : 'square-outline'} size={22} color={value ? Colors.accent : Colors.textTertiary} />
     </TouchableOpacity>
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((c) => {
+  const Colors = legacyColors(c);
+  return {
   key: {
     fontFamily: 'monospace',
     fontSize: Typography.base,
@@ -387,4 +396,5 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.sm,
     borderRadius: BorderRadius.md,
   },
+} as const;
 });

@@ -146,7 +146,7 @@ const Bubble = React.memo(function Bubble({ message, status, isGroup, firstOfRun
           <Text style={[s.sender, { color: nameTone }, isMedia && { paddingHorizontal: 8, paddingTop: 4 }]}>{name}</Text>
         )}
 
-        {!revoked && <ForwardedLabel hops={message.forwardCount} />}
+        {!revoked && <ForwardedLabel hops={message.forwardCount} isOwn={isOwn} />}
         {revoked && <RevokedBody isOwn={isOwn} />}
 
         {message.replyPreview ? (
@@ -165,7 +165,16 @@ const Bubble = React.memo(function Bubble({ message, status, isGroup, firstOfRun
         )}
 
         {media && (isMedia || messageType === 'document') && (
-          <MediaAttachmentView type={messageType as 'image' | 'video' | 'document'} media={media} caption={undefined} isOwn={isOwn} />
+          <MediaAttachmentView
+            type={messageType as 'image' | 'video' | 'document'}
+            media={media}
+            caption={content}
+            showCaption={false}
+            isOwn={isOwn}
+            scale={wide ? 1.35 : 1}
+            viewerName={isOwn ? t('common.you') : senderName ?? ''}
+            viewerDate={dayjs(createdAt).format('ddd D MMM, h:mm A')}
+          />
         )}
 
         {media && messageType === 'voice' && <VoiceNotePlayer media={media} isOwn={isOwn} onPlayed={() => void markVoicePlayed(message)} />}
@@ -731,7 +740,7 @@ export function ChatThread({
       </Sheet>
 
       {/* Message actions */}
-      <Sheet visible={!!actionMessage} onClose={() => setActionMessage(null)}>
+      <Sheet visible={!!actionMessage} onClose={() => setActionMessage(null)} scroll>
         {actionMessage?.messageType !== 'unavailable' && actionMessage?.status !== 'failed' && !actionRevoked && (
           <View style={s.reactRow}>
             {REACTIONS.map((e, i) => (
@@ -784,7 +793,7 @@ export function ChatThread({
       </Sheet>
 
       {/* Chat options */}
-      <Sheet visible={showMenu} onClose={() => setShowMenu(false)} title={title}>
+      <Sheet visible={showMenu} onClose={() => setShowMenu(false)} title={title} scroll>
         {isGroup && !isDemo && (
           <SheetRow
             icon="info"
@@ -973,16 +982,6 @@ const useStyles = makeStyles((c, t, f) => ({
   text: { fontFamily: f.body, fontSize: 15.5, lineHeight: f.script === 'latin' ? 22 : 25, flexShrink: 1 },
   meta: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4, marginLeft: 'auto' },
   metaText: { fontFamily: f.body, fontSize: 11 },
-  photo: { borderRadius: 16, overflow: 'hidden' },
-  mediaHolder: { alignItems: 'center', justifyContent: 'center', gap: 10, backgroundColor: c.field },
-  videoPlay: { width: 54, height: 54, borderRadius: 27, backgroundColor: 'rgba(237,231,217,0.92)', alignItems: 'center', justifyContent: 'center' },
-  voice: { flexDirection: 'row', alignItems: 'center', gap: 10, minWidth: 220, paddingVertical: 2 },
-  voiceIcon: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
-  voiceLen: { fontFamily: f.mono, fontSize: 12 },
-  doc: { flexDirection: 'row', alignItems: 'center', gap: 12, minWidth: 220, paddingVertical: 2 },
-  docIcon: { width: 44, height: 44, borderRadius: 12, backgroundColor: c.accentTint2, alignItems: 'center', justifyContent: 'center' },
-  docName: { fontFamily: f.semibold, fontSize: 14 },
-  docMeta: { fontFamily: f.body, fontSize: 12, marginTop: 2 },
   reactions: { marginTop: -8, flexDirection: 'row', alignItems: 'center', gap: 6, minHeight: 26, paddingHorizontal: 8, borderRadius: 13, backgroundColor: c.field, borderWidth: 2, borderColor: c.wall },
   reactionText: { fontSize: 13 },
   reactionCount: { fontFamily: f.medium, fontSize: 12, color: c.text },

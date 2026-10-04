@@ -1,7 +1,8 @@
 import React from 'react';
 import { View, Text, StyleSheet, type StyleProp, type ViewStyle } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
-import { Colors, Typography, Spacing, BorderRadius } from '../../../shared/theme/theme';
+import { makeStyles, useTheme } from '../../../shared/theme/ThemeProvider';
+import { useT } from '../../../shared/i18n';
+import { Avatar, Icon } from '../../../shared/ui';
 import type { StreamLike } from '../mediaTypes';
 import { CallVideoView } from './CallVideoView';
 import { videoTrackKey } from './callVideoTypes';
@@ -24,108 +25,59 @@ export interface ParticipantTileProps {
   style?: StyleProp<ViewStyle>;
 }
 
-const CONNECTION_LABEL: Record<string, string> = {
-  waiting: 'Connecting…',
-  connecting: 'Connecting…',
-  interrupted: 'Reconnecting…',
-  failed: "Can't connect",
+const CONNECTION_KEY: Record<string, string> = {
+  waiting: 'call.connecting',
+  connecting: 'call.connecting',
+  interrupted: 'call.reconnecting',
+  failed: 'call.cantConnect',
 };
 
+/** One person in a call: their video, or their avatar on the dark stage. Stays dark in both themes. */
 export function ParticipantTile(props: ParticipantTileProps) {
-  const { name, stream, videoEnabled, audioMuted, screenSharing, isLocal, mirror, active, speaking, connection, compact, zOrder, style } =
-    props;
+  const { name, stream, videoEnabled, audioMuted, screenSharing, isLocal, mirror, active, speaking, connection, compact, zOrder, style } = props;
+  const { c } = useTheme();
+  const s = useStyles();
+  const t = useT();
   const hasVideo = videoEnabled && !!videoTrackKey(stream) && (isLocal || connection === 'connected');
-  const initials = name.trim().slice(0, 2).toUpperCase() || '?';
-  const label = isLocal ? 'You' : name;
-  const status = !isLocal && connection && connection !== 'connected' ? CONNECTION_LABEL[connection] : null;
+  const label = isLocal ? t('common.you') : name;
+  const status = !isLocal && connection && connection !== 'connected' ? t(CONNECTION_KEY[connection]) : null;
+  const size = compact ? 44 : 84;
 
   return (
-    <View style={[styles.tile, active && styles.tileActive, style]}>
+    <View style={[s.tile, active && s.tileActive, style]}>
       {hasVideo ? (
-        <CallVideoView
-          stream={stream}
-          mirror={mirror}
-          objectFit={screenSharing ? 'contain' : 'cover'}
-          zOrder={zOrder}
-          style={StyleSheet.absoluteFill}
-        />
+        <CallVideoView stream={stream} mirror={mirror} objectFit={screenSharing ? 'contain' : 'cover'} zOrder={zOrder} style={StyleSheet.absoluteFill} />
       ) : (
-        <View style={styles.avatarWrap}>
-          <View style={[styles.avatar, compact && styles.avatarCompact, speaking && styles.avatarSpeaking]}>
-            <Text style={[styles.avatarText, compact && styles.avatarTextCompact]}>{initials}</Text>
+        <View style={s.avatarWrap}>
+          <View style={[s.ring, { width: size + 10, height: size + 10, borderRadius: (size + 10) / 2 }, speaking && { borderColor: c.success }]}>
+            <Avatar name={isLocal ? name || label : name} size={size} />
           </View>
         </View>
       )}
-
       {status && (
-        <View style={styles.statusBadge}>
-          <Text style={styles.statusText}>{status}</Text>
+        <View style={s.statusBadge}>
+          <Text style={s.statusText}>{status}</Text>
         </View>
       )}
-
-      <View style={styles.footer}>
-        {audioMuted && <Ionicons name="mic-off" size={12} color={Colors.error} />}
-        {!videoEnabled && !compact && <Ionicons name="videocam-off" size={12} color={Colors.textSecondary} />}
-        {screenSharing && <Ionicons name="desktop-outline" size={12} color={Colors.accentLight} />}
-        <Text style={styles.name} numberOfLines={1}>
-          {screenSharing ? `${label} · presenting` : label}
+      <View style={s.footer}>
+        {audioMuted && <Icon name="micOff" size={12} color="#E5A08A" />}
+        {!videoEnabled && !compact && <Icon name="videoOff" size={12} color={c.onStageMuted} />}
+        {screenSharing && <Icon name="screen" size={12} color="#E7BD72" />}
+        <Text style={s.name} numberOfLines={1}>
+          {screenSharing ? t('call.presenting', { name: label }) : label}
         </Text>
       </View>
     </View>
   );
 }
 
-const styles = StyleSheet.create({
-  tile: {
-    flex: 1,
-    margin: 3,
-    borderRadius: BorderRadius.lg,
-    backgroundColor: Colors.surfaceElevated,
-    overflow: 'hidden',
-    borderWidth: 2,
-    borderColor: 'transparent',
-  },
-  tileActive: {
-    borderColor: Colors.accent,
-  },
+const useStyles = makeStyles((c, t, f) => ({
+  tile: { flex: 1, margin: 4, borderRadius: 22, backgroundColor: '#1A1D1B', overflow: 'hidden', borderWidth: 2, borderColor: 'transparent' },
+  tileActive: { borderColor: '#D6A657' },
   avatarWrap: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  avatar: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    backgroundColor: '#0284C7',
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 3,
-    borderColor: 'transparent',
-  },
-  avatarCompact: { width: 40, height: 40, borderRadius: 20, borderWidth: 2 },
-  avatarSpeaking: { borderColor: Colors.accentLight },
-  avatarText: { color: Colors.white, fontSize: Typography.xl, fontWeight: Typography.bold },
-  avatarTextCompact: { fontSize: Typography.sm },
-  statusBadge: {
-    position: 'absolute',
-    top: Spacing.sm,
-    alignSelf: 'center',
-    backgroundColor: Colors.overlay,
-    paddingHorizontal: Spacing.sm,
-    paddingVertical: 2,
-    borderRadius: BorderRadius.full,
-  },
-  statusText: { color: Colors.textSecondary, fontSize: Typography.xs },
-  footer: {
-    position: 'absolute',
-    left: Spacing.xs,
-    right: Spacing.xs,
-    bottom: Spacing.xs,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: 'rgba(3, 7, 18, 0.6)',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: BorderRadius.sm,
-    alignSelf: 'flex-start',
-  },
-  name: { color: Colors.textPrimary, fontSize: Typography.xs, flexShrink: 1 },
-});
+  ring: { alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: 'transparent' },
+  statusBadge: { position: 'absolute', top: 10, alignSelf: 'center', backgroundColor: 'rgba(12,14,13,0.62)', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 999 },
+  statusText: { fontFamily: f.medium, color: c.onStageMuted, fontSize: 11.5 },
+  footer: { position: 'absolute', left: 8, bottom: 8, maxWidth: '90%', flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: 'rgba(12,14,13,0.62)', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 10 },
+  name: { fontFamily: f.medium, color: c.onStage, fontSize: 12, flexShrink: 1 },
+}));

@@ -1,16 +1,16 @@
 /**
- * Chat list pieces: status/pin/mute markers, the "Archived" entry row, the
- * per-chat action sheet (pin / archive / mark read) and a simple row used by
- * the Archived screen.
+ * Chat list pieces shared by the Chats tab and the Archived screen: the row,
+ * status ticks, pin/mute markers, and the per-chat action sheet
+ * (pin / archive / mark read).
  */
 
 import React from 'react';
-import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
-import dayjs from 'dayjs';
-import relativeTime from 'dayjs/plugin/relativeTime';
+import { Text, View } from 'react-native';
 import { Conversation, MessageStatus, conversationTitle } from '../../../shared/models/Message';
-import { Colors, Spacing, Typography } from '../../../shared/theme/theme';
+import { makeStyles, useTheme } from '../../../shared/theme/ThemeProvider';
+import i18n, { useT } from '../../../shared/i18n';
+import { conversationPreview, listTime } from '../../../shared/i18n/format';
+import { Avatar, Badge, Icon, Pressy, Rise } from '../../../shared/ui';
 import { friendlyError } from '../../../core/network/supabase';
 import { ActionSheet, notify, SheetOption } from '../../groups/components/ui';
 import { useMessagesStore } from '../../messages/useMessagesStore';
@@ -18,76 +18,141 @@ import { isMuted } from '../chatList';
 import { useChatsStore } from '../useChatsStore';
 import { useMuteStore } from '../../notifications/useMuteStore';
 
-dayjs.extend(relativeTime);
-
 export function StatusTicks({ status }: { status?: MessageStatus }) {
+  const { c } = useTheme();
   switch (status) {
     case 'sending':
-      return <Ionicons name="time-outline" size={14} color={Colors.textTertiary} style={styles.tick} />;
+      return <Icon name="clock" size={14} color={c.faint} />;
     case 'failed':
-      return <Ionicons name="alert-circle" size={14} color={Colors.error} style={styles.tick} />;
+      return <Icon name="info" size={14} color={c.danger} />;
     case 'delivered':
-      return <Ionicons name="checkmark-done-outline" size={15} color={Colors.textTertiary} style={styles.tick} />;
+      return <Icon name="checks" size={15} color={c.faint} />;
     case 'read':
-      return <Ionicons name="checkmark-done" size={15} color={Colors.accentLight} style={styles.tick} />;
+      return <Icon name="checks" size={15} color={c.success} />;
     case 'sent':
-      return <Ionicons name="checkmark" size={15} color={Colors.textTertiary} style={styles.tick} />;
+      return <Icon name="check" size={15} color={c.faint} />;
     default:
       return null;
   }
 }
 
-/** Pin and mute markers next to the chat name. */
+/** Mute and pin markers next to the chat name. */
 export function ChatMarkers({ conversation }: { conversation: Conversation }) {
-  // Mute state lives in the notifications feature (005); the row's own column is a fallback.
+  const { c } = useTheme();
+  const t = useT();
+  // Mute state lives in the notifications feature; the row's own column is a fallback.
   const mutedUntil = useMuteStore((s) => s.mutes[conversation.id] ?? null);
   return (
     <>
       {isMuted({ mutedUntil: mutedUntil ?? conversation.mutedUntil }) && (
-        <Ionicons name="volume-mute" size={14} color={Colors.textTertiary} accessibilityLabel="Muted" />
+        <View accessibilityLabel={t('mute.muted')}>
+          <Icon name="bellOff" size={14} color={c.faint} />
+        </View>
       )}
       {!!conversation.pinnedAt && (
-        <Ionicons name="pin" size={14} color={Colors.textTertiary} accessibilityLabel="Pinned" />
+        <View accessibilityLabel={t('chats.pinned')}>
+          <Icon name="pin" size={14} color={c.accentText} />
+        </View>
       )}
     </>
   );
 }
 
+/** One chat in a list: avatar, name with markers, time, preview, unread badge. */
+export function ChatListRow({
+  conversation: conv,
+  index = 0,
+  selected = false,
+  onPress,
+  onLongPress,
+}: {
+  conversation: Conversation;
+  index?: number;
+  selected?: boolean;
+  onPress: () => void;
+  onLongPress?: () => void;
+}) {
+  const { c } = useTheme();
+  const s = useStyles();
+  const t = useT();
+  const name = conversationTitle(conv);
+  const unread = conv.unreadCount || 0;
+  const pv = conversationPreview(t, conv);
+  const group = conv.conversationType === 'group';
+
+  return (
+    <Rise index={index}>
+      <Pressy
+        onPress={onPress}
+        onLongPress={onLongPress}
+        scaleTo={0.98}
+        accessibilityLabel={unread ? t('chats.unreadA11y', { name, count: unread }) : name}
+        accessibilityHint={onLongPress ? t('chats.longPressHint') : undefined}
+        accessibilityState={{ selected }}
+        hoverStyle={!selected ? { backgroundColor: c.tint } : undefined}
+        style={[s.row, selected && s.rowSelected]}
+      >
+        <Avatar name={name} size={52} square={group} icon={group ? 'users' : undefined} />
+        <View style={s.main}>
+          <View style={s.top}>
+            <Text style={[s.name, unread > 0 && s.nameUnread]} numberOfLines={1}>
+              {name}
+            </Text>
+            <ChatMarkers conversation={conv} />
+            <Text style={[s.time, unread > 0 && { color: c.accentText }]}>{listTime(t, conv.lastMessage?.createdAt)}</Text>
+          </View>
+          <View style={s.bottom}>
+            {conv.lastMessage?.isOwn && <StatusTicks status={conv.lastMessage.status ?? 'sent'} />}
+            {pv.icon && <Icon name={pv.icon} size={15} color={unread ? c.text : c.faint} />}
+            <Text style={[s.preview, unread > 0 && { color: c.text }]} numberOfLines={1}>
+              {pv.text}
+            </Text>
+            {unread > 0 && !selected && <Badge count={unread} />}
+          </View>
+        </View>
+      </Pressy>
+    </Rise>
+  );
+}
+
+/** "Archived" entry at the top of the chat list. */
 export function ArchivedEntry({ count, unread, onPress }: { count: number; unread: number; onPress: () => void }) {
+  const { c } = useTheme();
+  const s = useStyles();
+  const t = useT();
   if (count === 0) return null;
   return (
-    <TouchableOpacity style={styles.archivedRow} onPress={onPress} accessibilityRole="button">
-      <View style={styles.archivedIcon}>
-        <Ionicons name="archive-outline" size={20} color={Colors.accentLight} />
+    <Pressy onPress={onPress} scaleTo={0.98} hoverStyle={{ backgroundColor: c.tint }} style={[s.row, { marginTop: 10 }]} accessibilityLabel={t('chats.archived')}>
+      <View style={s.archivedIcon}>
+        <Icon name="archive" size={20} color={c.accentText} />
       </View>
-      <Text style={styles.archivedText}>Archived</Text>
-      <Text style={[styles.archivedCount, unread > 0 && styles.archivedCountUnread]}>{unread > 0 ? unread : count}</Text>
-    </TouchableOpacity>
+      <Text style={[s.name, { flex: 1 }]}>{t('chats.archived')}</Text>
+      {unread > 0 ? <Badge count={unread} /> : <Text style={s.time}>{count}</Text>}
+    </Pressy>
   );
 }
 
 export function chatActionOptions(conversation: Conversation): SheetOption[] {
   const store = useChatsStore.getState();
-  const run = (fn: () => Promise<void>, title: string) => () =>
-    void fn().catch((e) => notify(title, friendlyError(e)));
+  const run = (fn: () => Promise<void>, title: string) => () => void fn().catch((e) => notify(title, friendlyError(e)));
   const options: SheetOption[] = [];
   if (!conversation.archivedAt) {
     options.push({
-      label: conversation.pinnedAt ? 'Unpin chat' : 'Pin chat',
-      icon: 'pin-outline',
-      onPress: run(() => store.setPinned(conversation.id, !conversation.pinnedAt), 'Could not pin chat'),
+      label: conversation.pinnedAt ? i18n.t('chats.unpin') : i18n.t('chats.pin'),
+      icon: 'pin',
+      onPress: run(() => store.setPinned(conversation.id, !conversation.pinnedAt), i18n.t('chats.pinFailed')),
     });
   }
   options.push({
-    label: conversation.archivedAt ? 'Unarchive chat' : 'Archive chat',
-    icon: 'archive-outline',
-    onPress: run(() => store.setArchived(conversation.id, !conversation.archivedAt), 'Could not archive chat'),
+    label: conversation.archivedAt ? i18n.t('chats.unarchive') : i18n.t('chats.archive'),
+    icon: 'archive',
+    onPress: run(() => store.setArchived(conversation.id, !conversation.archivedAt), i18n.t('chats.archiveFailed')),
   });
   if (conversation.unreadCount > 0) {
     options.push({
-      label: 'Mark as read',
-      icon: 'checkmark-done-outline',
-      onPress: run(() => useMessagesStore.getState().markConversationRead(conversation.id), 'Could not mark as read'),
+      label: i18n.t('chats.markRead'),
+      icon: 'checks',
+      onPress: run(() => useMessagesStore.getState().markConversationRead(conversation.id), i18n.t('chats.markReadFailed')),
     });
   }
   return options;
@@ -104,87 +169,15 @@ export function ChatActionSheet({ conversation, onClose }: { conversation: Conve
   );
 }
 
-/** Compact row for the Archived screen. */
-export function SimpleChatRow({
-  conversation,
-  onPress,
-  onLongPress,
-}: {
-  conversation: Conversation;
-  onPress: () => void;
-  onLongPress: () => void;
-}) {
-  const last = conversation.lastMessage;
-  const unread = conversation.unreadCount > 0;
-  return (
-    <TouchableOpacity style={styles.row} onPress={onPress} onLongPress={onLongPress} delayLongPress={300}>
-      <View style={styles.avatar}>
-        <Ionicons name={conversation.conversationType === 'group' ? 'people' : 'person'} size={20} color={Colors.white} />
-      </View>
-      <View style={{ flex: 1 }}>
-        <View style={styles.rowTop}>
-          <Text style={[styles.name, unread && styles.bold]} numberOfLines={1}>
-            {conversationTitle(conversation)}
-          </Text>
-          <ChatMarkers conversation={conversation} />
-          <Text style={styles.time}>{last ? dayjs(last.createdAt).fromNow(true) : ''}</Text>
-        </View>
-        <View style={styles.rowBottom}>
-          {last?.isOwn && <StatusTicks status={last.status} />}
-          <Text style={[styles.preview, unread && styles.previewUnread]} numberOfLines={1}>
-            {last ? last.preview ?? last.content ?? '' : '🔒 End-to-end encrypted'}
-          </Text>
-          {unread && (
-            <View style={styles.badge}>
-              <Text style={styles.badgeText}>{conversation.unreadCount > 99 ? '99+' : conversation.unreadCount}</Text>
-            </View>
-          )}
-        </View>
-      </View>
-    </TouchableOpacity>
-  );
-}
-
-const styles = StyleSheet.create({
-  tick: { marginRight: 4 },
-  archivedRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.base,
-    paddingHorizontal: Spacing.xl,
-    paddingVertical: Spacing.md,
-  },
-  archivedIcon: {
-    width: 52,
-    alignItems: 'center',
-  },
-  archivedText: { flex: 1, color: Colors.textPrimary, fontSize: Typography.base, fontWeight: Typography.semibold },
-  archivedCount: { color: Colors.textTertiary, fontSize: Typography.sm },
-  archivedCountUnread: { color: Colors.accentLight, fontWeight: Typography.bold },
-  row: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, paddingHorizontal: Spacing.lg, paddingVertical: Spacing.md },
-  avatar: {
-    width: 46,
-    height: 46,
-    borderRadius: 23,
-    backgroundColor: Colors.surfaceHighlight,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  rowTop: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 3 },
-  rowBottom: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  name: { flex: 1, color: Colors.textPrimary, fontSize: Typography.base },
-  bold: { fontWeight: Typography.bold },
-  time: { color: Colors.textTertiary, fontSize: Typography.xs },
-  preview: { flex: 1, color: Colors.textSecondary, fontSize: Typography.sm },
-  previewUnread: { color: Colors.textPrimary, fontWeight: Typography.semibold },
-  badge: {
-    backgroundColor: Colors.accent,
-    borderRadius: 10,
-    minWidth: 20,
-    height: 20,
-    paddingHorizontal: 6,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  badgeText: { color: Colors.white, fontSize: 10, fontWeight: Typography.bold },
-});
+const useStyles = makeStyles((c, t, f) => ({
+  row: { flexDirection: 'row', alignItems: 'center', gap: 13, marginHorizontal: 8, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 18 },
+  rowSelected: { backgroundColor: c.raised, borderWidth: 1, borderColor: c.line },
+  main: { flex: 1, minWidth: 0, gap: 4 },
+  top: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  name: { flex: 1, fontFamily: f.semibold, fontSize: 16, color: c.text },
+  nameUnread: { fontFamily: f.bold },
+  time: { fontFamily: f.body, fontSize: 12, color: c.faint, marginLeft: 2 },
+  bottom: { flexDirection: 'row', alignItems: 'center', gap: 6, minHeight: 22 },
+  preview: { flex: 1, fontFamily: f.body, fontSize: 14, color: c.muted },
+  archivedIcon: { width: 52, height: 52, borderRadius: 18, backgroundColor: c.accentTint, borderWidth: 1, borderColor: c.accentTint2, alignItems: 'center', justifyContent: 'center' },
+}));

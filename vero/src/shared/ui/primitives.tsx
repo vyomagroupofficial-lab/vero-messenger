@@ -519,11 +519,19 @@ export function SearchField({ value, onChangeText, placeholder, autoFocus, onCle
 
 // ── Sheets & dialogs ────────────────────────────────────────────────────────
 
-export function Sheet({ visible, onClose, title, children }: { visible: boolean; onClose: () => void; title?: string; children: React.ReactNode }) {
+export function Sheet({ visible, onClose, title, children, scroll }: {
+  visible: boolean;
+  onClose: () => void;
+  title?: string;
+  children: React.ReactNode;
+  /** Long content (menus): scroll inside the sheet instead of growing past the screen. */
+  scroll?: boolean;
+}) {
   const { isWide } = useLayout();
   const { type } = useTheme();
   const s = useStyles();
   const t = useT();
+  const { height } = useWindowDimensions();
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose} statusBarTranslucent>
       <Pressable style={[s.backdrop, isWide && { justifyContent: 'center', alignItems: 'center', padding: 24 }]} onPress={onClose} accessibilityLabel={t('common.close')}>
@@ -531,7 +539,13 @@ export function Sheet({ visible, onClose, title, children }: { visible: boolean;
           <Pressable onPress={() => {}} style={{ gap: 14 }} accessibilityViewIsModal>
             {!isWide && <View style={s.handle} />}
             {title ? <Text style={type.h3}>{title}</Text> : null}
-            {children}
+            {scroll ? (
+              <ScrollView style={{ maxHeight: height * (isWide ? 0.7 : 0.72) }} contentContainerStyle={{ gap: 14 }} showsVerticalScrollIndicator={false}>
+                {children}
+              </ScrollView>
+            ) : (
+              children
+            )}
           </Pressable>
         </Animated.View>
       </Pressable>
@@ -659,7 +673,7 @@ export function Ripple({ size, color = 'rgba(214,166,87,0.55)', count = 3, durat
   color?: string;
   count?: number;
   duration?: number;
-  children: React.ReactNode;
+  children?: React.ReactNode;
 }) {
   return (
     <View style={{ width: size, height: size, alignItems: 'center', justifyContent: 'center' }}>

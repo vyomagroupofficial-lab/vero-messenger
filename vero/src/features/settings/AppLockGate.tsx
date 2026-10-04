@@ -10,11 +10,14 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState, AppStateStatus, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
-import { Colors, Spacing, Typography, BorderRadius } from '../../shared/theme/theme';
 import { appLockSupport, authenticate, shouldLock, useAppLockStore } from './appLock';
+import { makeStyles, useLegacyColors } from '../../shared/theme/ThemeProvider';
+import { BorderRadius, Spacing, Typography, legacyColors } from '../../shared/theme/theme';
+import { Glyph } from '../../shared/ui';
 
 export function AppLockGate({ children }: { children: React.ReactNode }) {
+  const Colors = useLegacyColors();
+  const styles = useStyles();
   const enabled = useAppLockStore((s) => s.enabled);
   const [hydrated, setHydrated] = useState(() => useAppLockStore.persist.hasHydrated());
   const [locked, setLocked] = useState(false);
@@ -96,18 +99,18 @@ export function AppLockGate({ children }: { children: React.ReactNode }) {
       {enabled && locked ? (
         <View style={[StyleSheet.absoluteFill, styles.lock]}>
           <View style={styles.badge}>
-            <Ionicons name="lock-closed" size={34} color={Colors.accent} />
+            <Glyph name="lock-closed" size={34} color={Colors.accent} />
           </View>
           <Text style={styles.title}>Vero is locked</Text>
           <Text style={styles.body}>Unlock with your {methodLabel} to continue.</Text>
           <TouchableOpacity style={styles.button} onPress={() => void unlock()} activeOpacity={0.85}>
-            <Ionicons name="finger-print" size={18} color={Colors.white} style={{ marginRight: 8 }} />
+            <Glyph name="finger-print" size={18} color={Colors.white} style={{ marginRight: 8 }} />
             <Text style={styles.buttonText}>Unlock</Text>
           </TouchableOpacity>
         </View>
       ) : enabled && covered ? (
         <View style={[StyleSheet.absoluteFill, styles.lock]}>
-          <Ionicons name="shield-checkmark" size={44} color={Colors.accent} />
+          <Glyph name="shield-checkmark" size={44} color={Colors.accent} />
           <Text style={styles.title}>Vero</Text>
         </View>
       ) : null}
@@ -115,7 +118,9 @@ export function AppLockGate({ children }: { children: React.ReactNode }) {
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((c) => {
+  const Colors = legacyColors(c);
+  return {
   root: { flex: 1, width: '100%' },
   lock: {
     backgroundColor: Colors.background,
@@ -147,4 +152,5 @@ const styles = StyleSheet.create({
     borderRadius: BorderRadius.lg,
   },
   buttonText: { color: Colors.white, fontWeight: Typography.bold, fontSize: Typography.base },
+} as const;
 });

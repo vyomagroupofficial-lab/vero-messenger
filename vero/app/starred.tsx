@@ -1,45 +1,37 @@
 import React from 'react';
-import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { View } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StarredList } from '../src/features/messages/components/StarredList';
 import { useChatsStore } from '../src/features/chats/useChatsStore';
+import { ScreenHeader } from '../src/features/groups/components/GroupComponents';
 import { conversationTitle } from '../src/shared/models/Message';
-import { Colors, Spacing, Typography } from '../src/shared/theme/theme';
+import { makeStyles } from '../src/shared/theme/ThemeProvider';
+import { useT } from '../src/shared/i18n';
+import { DotWall } from '../src/shared/ui';
 
 /** Starred messages: all chats, or one chat with ?conversationId=<id>. */
 export default function StarredScreen() {
+  const insets = useSafeAreaInsets();
+  const s = useStyles();
+  const t = useT();
   const { conversationId } = useLocalSearchParams<{ conversationId?: string }>();
-  const chat = useChatsStore((s) => s.conversations.find((c) => c.id === conversationId));
+  const chat = useChatsStore((st) => st.conversations.find((cv) => cv.id === conversationId));
   return (
-    <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
-      <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.back} accessibilityLabel="Back">
-          <Ionicons name="arrow-back" size={22} color={Colors.textPrimary} />
-        </TouchableOpacity>
-        <View>
-          <Text style={styles.title}>Starred messages</Text>
-          {chat && <Text style={styles.subtitle}>{conversationTitle(chat)}</Text>}
-        </View>
+    <View style={[s.root, { paddingTop: insets.top }]}>
+      <ScreenHeader
+        title={t('thread.starred')}
+        subtitle={chat ? conversationTitle(chat) : undefined}
+        onBack={() => (router.canGoBack() ? router.back() : router.replace('/(tabs)/chats'))}
+      />
+      <View style={{ flex: 1 }}>
+        <DotWall />
+        <StarredList conversationId={conversationId || undefined} />
       </View>
-      <StarredList conversationId={conversationId || undefined} />
-    </SafeAreaView>
+    </View>
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: Colors.background },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.sm,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-  },
-  back: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
-  title: { color: Colors.textPrimary, fontSize: Typography.lg, fontWeight: Typography.bold },
-  subtitle: { color: Colors.textTertiary, fontSize: Typography.xs },
-});
+const useStyles = makeStyles((c) => ({
+  root: { flex: 1, backgroundColor: c.bg },
+}));

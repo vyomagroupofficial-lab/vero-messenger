@@ -8,13 +8,15 @@
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, LayoutChangeEvent, PanResponder, Pressable, StyleSheet, Text, View } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { ActivityIndicator, LayoutChangeEvent, PanResponder, Text, View } from 'react-native';
 import { setAudioModeAsync, useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
 import { friendlyError } from '../../../core/network/supabase';
-import { Colors, Spacing, Typography } from '../../../shared/theme/theme';
+import { makeStyles, useTheme } from '../../../shared/theme/ThemeProvider';
+import { useT } from '../../../shared/i18n';
+import { Icon, Pressy } from '../../../shared/ui';
 import type { MediaAttachment } from '../../../shared/models/Message';
 import { mediaRepository } from '../MediaRepository';
+import i18n from '../../../shared/i18n';
 import { formatDuration, nextRate, PlaybackRate, resampleForDisplay } from '../waveform';
 
 /** Remembered across notes for this app session (like other messengers do). */
@@ -79,9 +81,12 @@ function Waveform({
     })
   ).current;
 
+  const { c } = useTheme();
+  const styles = useStyles();
+  const t = useT();
   const shown = dragFraction ?? progress;
-  const played = isOwn ? Colors.white : Colors.accentLight;
-  const rest = isOwn ? 'rgba(255,255,255,0.4)' : Colors.textTertiary;
+  const played = isOwn ? c.onMine : c.accent;
+  const rest = isOwn ? c.mineMeta : c.line3;
 
   return (
     <View
@@ -89,7 +94,7 @@ function Waveform({
       onLayout={(e: LayoutChangeEvent) => (width.current = Math.max(1, e.nativeEvent.layout.width))}
       {...responder.panHandlers}
       accessibilityRole="adjustable"
-      accessibilityLabel="Voice message position"
+      accessibilityLabel={t('voice.position')}
     >
       {bars.map((v, i) => (
         <View
@@ -108,39 +113,39 @@ function Waveform({
 const clamp = (f: number) => (Number.isFinite(f) ? Math.min(1, Math.max(0, f)) : 0);
 
 function VoiceNoteView(p: ViewProps) {
+  const { c } = useTheme();
+  const styles = useStyles();
+  const t = useT();
   const bars = resampleForDisplay(p.waveform, BARS);
-  const tint = p.isOwn ? Colors.white : Colors.textPrimary;
+  const glyph = p.isOwn ? c.mine : c.onAccent;
   return (
     <View style={styles.row}>
-      <Pressable
+      <Pressy
         onPress={p.onToggle}
-        style={[styles.play, p.isOwn ? styles.playOwn : styles.playOther]}
-        accessibilityLabel={p.playing ? 'Pause voice message' : 'Play voice message'}
+        scaleTo={0.88}
+        style={[styles.play, { backgroundColor: p.isOwn ? c.onMine : c.accent }]}
+        accessibilityLabel={p.playing ? t('voice.pause') : t('voice.play')}
       >
         {p.loading ? (
-          <ActivityIndicator size="small" color={tint} />
+          <ActivityIndicator size="small" color={glyph} />
         ) : (
-          <Ionicons
-            name={p.error ? 'refresh' : p.playing ? 'pause' : 'play'}
-            size={20}
-            color={p.isOwn ? Colors.bubbleSent : Colors.white}
-          />
+          <Icon name={p.error ? 'refresh' : p.playing ? 'pause' : 'play'} size={18} color={glyph} style={!p.playing && !p.error ? { marginLeft: 2 } : undefined} />
         )}
-      </Pressable>
+      </Pressy>
       <View style={styles.middle}>
         <Waveform bars={bars} progress={p.progress} isOwn={p.isOwn} onSeek={p.onSeek} />
         <View style={styles.meta}>
           {p.unplayed && <View style={styles.unplayedDot} />}
-          <Text style={[styles.time, p.isOwn && styles.timeOwn]} numberOfLines={1}>
+          <Text style={[styles.time, { color: p.error ? c.danger : p.isOwn ? c.mineMeta : c.muted }]} numberOfLines={1}>
             {p.error ?? (p.positionMs > 0 || p.playing
               ? `${formatDuration(p.positionMs)} / ${formatDuration(p.durationMs)}`
               : formatDuration(p.durationMs))}
           </Text>
         </View>
       </View>
-      <Pressable onPress={p.onRate} style={[styles.rate, p.isOwn && styles.rateOwn]} accessibilityLabel={`Playback speed ${p.rate}x`}>
-        <Text style={[styles.rateText, p.isOwn && styles.rateTextOwn]}>{p.rate}x</Text>
-      </Pressable>
+      <Pressy onPress={p.onRate} scaleTo={0.9} style={[styles.rate, { backgroundColor: p.isOwn ? 'rgba(0,0,0,0.18)' : c.tint2 }]} accessibilityLabel={t('voice.speed', { rate: p.rate })}>
+        <Text style={[styles.rateText, { color: p.isOwn ? c.onMine : c.text }]}>{p.rate}×</Text>
+      </Pressy>
     </View>
   );
 }
@@ -274,7 +279,7 @@ export function VoiceNotePlayer({ media, isOwn, onPlayed }: Props) {
       setUri(local);
       setActive(true);
     } catch (e) {
-      setError(friendlyError(e, 'Could not load'));
+      setError(friendlyError(e, i18n.t('voice.loadFailed')));
     } finally {
       setLoading(false);
     }
@@ -318,28 +323,15 @@ export function VoiceNotePlayer({ media, isOwn, onPlayed }: Props) {
   );
 }
 
-const styles = StyleSheet.create({
-  row: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, minWidth: 230, paddingVertical: 2 },
-  play: { width: 38, height: 38, borderRadius: 19, justifyContent: 'center', alignItems: 'center' },
-  playOwn: { backgroundColor: Colors.white },
-  playOther: { backgroundColor: Colors.accent },
+const useStyles = makeStyles((c, t, f) => ({
+  row: { flexDirection: 'row', alignItems: 'center', gap: 10, minWidth: 236, paddingVertical: 2 },
+  play: { width: 40, height: 40, borderRadius: 20, justifyContent: 'center', alignItems: 'center' },
   middle: { flex: 1 },
   wave: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', height: 30 },
   bar: { width: 2.5, borderRadius: 1.5 },
-  meta: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 1 },
-  unplayedDot: { width: 7, height: 7, borderRadius: 3.5, backgroundColor: Colors.accentLight },
-  time: { fontSize: Typography.xs, color: Colors.textSecondary, fontVariant: ['tabular-nums'] },
-  timeOwn: { color: 'rgba(255,255,255,0.8)' },
-  rate: {
-    minWidth: 38,
-    paddingHorizontal: 6,
-    height: 24,
-    borderRadius: 12,
-    backgroundColor: 'rgba(255,255,255,0.08)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  rateOwn: { backgroundColor: 'rgba(255,255,255,0.2)' },
-  rateText: { fontSize: Typography.xs, fontWeight: '700', color: Colors.textPrimary },
-  rateTextOwn: { color: Colors.white },
-});
+  meta: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 2 },
+  unplayedDot: { width: 7, height: 7, borderRadius: 3.5, backgroundColor: c.accent },
+  time: { fontFamily: f.mono, fontSize: 11.5, fontVariant: ['tabular-nums'] },
+  rate: { minWidth: 40, paddingHorizontal: 7, height: 26, borderRadius: 13, justifyContent: 'center', alignItems: 'center' },
+  rateText: { fontFamily: f.mono, fontSize: 12 },
+}));

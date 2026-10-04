@@ -4,28 +4,23 @@
  */
 
 import React, { useCallback, useEffect, useState } from 'react';
-import { Alert, TouchableOpacity, View, StyleSheet, type StyleProp, type ViewStyle } from 'react-native';
+import { Text, View } from 'react-native';
+import Animated, { ZoomIn } from 'react-native-reanimated';
 import { router } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
-import { Colors } from '../../../shared/theme/theme';
 import { friendlyError } from '../../../core/network/supabase';
-import { callService, groupSizeNotice, type CallType } from '../CallService';
+import { makeStyles, useTheme } from '../../../shared/theme/ThemeProvider';
+import { useT } from '../../../shared/i18n';
+import { Icon, IconButton, Sheet, SheetRow, notify } from '../../../shared/ui';
+import { callService, type CallType } from '../CallService';
+import { GROUP_CALL_MAX_PARTICIPANTS } from '../groupCallState';
 
 const POLL_MS = 15_000;
 
-export function GroupCallButton({
-  conversationId,
-  groupName,
-  memberCount,
-  style,
-  iconColor = Colors.textPrimary,
-}: {
-  conversationId: string;
-  groupName: string;
-  memberCount: number;
-  style?: StyleProp<ViewStyle>;
-  iconColor?: string;
-}) {
+export function GroupCallButton({ conversationId, groupName, memberCount }: { conversationId: string; groupName: string; memberCount: number }) {
+  const { c, type } = useTheme();
+  const s = useStyles();
+  const t = useT();
+  const [open, setOpen] = useState(false);
   const [live, setLive] = useState<{ callId: string; callType: CallType; participantCount: number } | null>(null);
 
   const refresh = useCallback(async () => {
@@ -54,66 +49,67 @@ export function GroupCallButton({
   }, [refresh]);
 
   const start = async (callType: CallType) => {
+    setOpen(false);
     try {
       const id = await callService.startGroupCall({ conversationId, groupName, callType });
       router.push(`/call/${id}`);
     } catch (e) {
-      Alert.alert("Couldn't start the call", friendlyError(e));
+      notify(t('groupCall.startFailed'), friendlyError(e));
     }
   };
 
   const join = async () => {
+    setOpen(false);
     if (!live) return;
     try {
       await callService.joinGroupCall({ callId: live.callId, conversationId, groupName, callType: live.callType });
       router.push(`/call/${live.callId}`);
     } catch (e) {
-      Alert.alert("Couldn't join the call", friendlyError(e));
+      notify(t('groupCall.joinFailed'), friendlyError(e));
     }
   };
 
-  const onPress = () => {
-    const notice = groupSizeNotice(memberCount);
-    if (live) {
-      const who = live.participantCount === 1 ? '1 person is' : `${live.participantCount} people are`;
-      Alert.alert('Join group call?', [`${who} in the ${live.callType} call.`, notice].filter(Boolean).join('\n\n'), [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Join', onPress: () => void join() },
-      ]);
-      return;
-    }
-    Alert.alert(`Call ${groupName}`, notice ?? 'Everyone in the group will be invited. Calls are end-to-end encrypted.', [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Voice call', onPress: () => void start('voice') },
-      { text: 'Video call', onPress: () => void start('video') },
-    ]);
-  };
+  const tooBig = memberCount > GROUP_CALL_MAX_PARTICIPANTS;
 
   return (
-    <TouchableOpacity
-      style={style}
-      onPress={onPress}
-      accessibilityRole="button"
-      accessibilityLabel={live ? 'Join group call' : 'Start group call'}
-    >
+    <>
       <View>
-        <Ionicons name={live ? 'call' : 'call-outline'} size={22} color={live ? Colors.emerald : iconColor} />
-        {live && <View style={styles.dot} />}
+        <IconButton icon="phone" label={live ? t('groupCall.join') : t('groupCall.start')} color={live ? c.success : undefined} onPress={() => setOpen(true)} />
+        {live && (
+          <Animated.View entering={ZoomIn.springify()} style={s.dot} pointerEvents="none" />
+        )}
       </View>
-    </TouchableOpacity>
+      <Sheet visible={open} onClose={() => setOpen(false)} title={live ? t('groupCall.joinTitle') : t('groupCall.startTitle', { name: groupName })}>
+        {live ? (
+          <View style={s.live}>
+            <View style={s.liveDot} />
+            <Text style={[type.body, { flex: 1 }]}>{t(live.callType === 'video' ? 'groupCall.inVideo' : 'groupCall.inVoice', { count: live.participantCount })}</Text>
+          </View>
+        ) : (
+          <Text style={type.bodyMuted}>{t('groupCall.everyone')}</Text>
+        )}
+        {tooBig && (
+          <View style={s.notice}>
+            <Icon name="info" size={15} color={c.accentText} />
+            <Text style={[type.caption, { flex: 1, color: c.notice }]}>{t('groupCall.limit', { max: GROUP_CALL_MAX_PARTICIPANTS, members: memberCount })}</Text>
+          </View>
+        )}
+        {live ? (
+          <SheetRow icon={live.callType === 'video' ? 'video' : 'phone'} tone="brass" label={t('groupCall.joinNow')} onPress={() => void join()} />
+        ) : (
+          <>
+            <SheetRow icon="phone" tone="brass" label={t('calls.voice')} onPress={() => void start('voice')} />
+            <SheetRow icon="video" tone="brass" label={t('calls.video')} onPress={() => void start('video')} />
+          </>
+        )}
+      </Sheet>
+    </>
   );
 }
 
-const styles = StyleSheet.create({
-  dot: {
-    position: 'absolute',
-    top: -2,
-    right: -4,
-    width: 9,
-    height: 9,
-    borderRadius: 5,
-    backgroundColor: Colors.emerald,
-    borderWidth: 1.5,
-    borderColor: Colors.background,
-  },
-});
+const useStyles = makeStyles((c, t, f) => ({
+  dot: { position: 'absolute', top: 9, right: 9, width: 10, height: 10, borderRadius: 5, backgroundColor: c.success, borderWidth: 2, borderColor: c.bg },
+  live: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 12, borderRadius: 14, backgroundColor: c.successTint },
+  liveDot: { width: 9, height: 9, borderRadius: 5, backgroundColor: c.success },
+  notice: { flexDirection: 'row', gap: 8, padding: 12, borderRadius: 14, backgroundColor: c.accentTint },
+}));
