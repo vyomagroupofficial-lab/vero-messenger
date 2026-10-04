@@ -6,7 +6,8 @@
 // (pg_cron already runs the SQL part every 5 minutes when enabled; this
 // function additionally removes the blobs from Drive / Storage.)
 
-import { adminClient, corsHeaders, errorResponse, env, json, safeEqual } from "../_shared/http.ts";
+import { adminClient, corsHeaders, errorResponse, json, safeEqual } from "../_shared/http.ts";
+import { configValue } from "../_shared/appConfig.ts";
 import { deleteBlob } from "../_shared/blobStore.ts";
 
 const BATCH = 200;
@@ -15,7 +16,9 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   const token = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
-  if (!safeEqual(token, env("CRON_SECRET"))) return errorResponse("Unauthorized", 401);
+  // CRON_SECRET comes from a function secret, or from Vault (so it can be set with SQL alone).
+  const cronSecret = await configValue(adminClient(), "CRON_SECRET");
+  if (!cronSecret || !safeEqual(token, cronSecret)) return errorResponse("Unauthorized", 401);
 
   try {
     const admin = adminClient();

@@ -99,3 +99,44 @@ drop trigger if exists call_sessions_push_after_insert on public.call_sessions;
 create trigger call_sessions_push_after_insert
   after insert on public.call_sessions
   for each row execute function public.call_sessions_push_after_insert();
+
+-- ── Blob cleanup functions on a schedule ────────────────────────────────────
+-- cleanup-expired (media) and stories-cleanup delete encrypted blobs from
+-- Storage. pg_cron calls them through pg_net with the CRON_SECRET kept in
+-- Vault (005's project_url + 010's get_app_secret). No-op until both secrets
+-- exist, so this is safe to apply before configuration.
+create or replace function public.vero_invoke_cleanup_function(p_name text)
+returns bigint
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_url    text := public.vero_read_secret('project_url');
+  v_secret text := public.get_app_secret('CRON_SECRET');
+  v_id     bigint;
+begin
+  if p_name not in ('cleanup-expired', 'stories-cleanup') or v_url is null or v_secret is null
+     or to_regprocedure('net.http_post(text, jsonb, jsonb, jsonb, integer)') is null then
+    return null;
+  end if;
+  execute 'select net.http_post(url := $1, body := $2, headers := $3, timeout_milliseconds := 30000)'
+    into v_id
+    using rtrim(v_url, '/') || '/functions/v1/' || p_name, '{}'::jsonb,
+          jsonb_build_object('Content-Type', 'application/json', 'Authorization', 'Bearer ' || v_secret);
+  return v_id;
+end;
+$$;
+
+revoke execute on function public.vero_invoke_cleanup_function(text) from public, anon, authenticated;
+
+do $$
+begin
+  if exists (select 1 from pg_extension where extname = 'pg_cron') then
+    perform cron.schedule('vero-blob-cleanup-media', '*/15 * * * *',
+                          $c$select public.vero_invoke_cleanup_function('cleanup-expired')$c$);
+    perform cron.schedule('vero-blob-cleanup-stories', '*/30 * * * *',
+                          $c$select public.vero_invoke_cleanup_function('stories-cleanup')$c$);
+  end if;
+end;
+$$;
