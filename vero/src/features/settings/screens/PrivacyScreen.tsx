@@ -4,6 +4,7 @@
  */
 
 import React, { useEffect, useState } from 'react';
+import { tx } from '../../../shared/i18n/phrases';
 import { Alert, Platform, ScrollView } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { friendlyError } from '../../../core/network/supabase';
@@ -33,7 +34,7 @@ export default function PrivacyScreen() {
     void loadPrivacySettings();
     void appLockSupport().then(setLockSupport);
     if (Platform.OS !== 'web' && !easProjectId()) {
-      setPushNote('Push notifications are not configured for this build (no EAS project id).');
+      setPushNote(tx('Push notifications are not configured for this build (no EAS project id).'));
     }
   }, []);
 
@@ -42,7 +43,7 @@ export default function PrivacyScreen() {
     try {
       await updatePrivacySettings(patch);
     } catch (e) {
-      Alert.alert('Could not save', friendlyError(e));
+      Alert.alert(tx('Could not save'), friendlyError(e));
     } finally {
       setBusy(null);
     }
@@ -63,21 +64,21 @@ export default function PrivacyScreen() {
         } else {
           const why =
             result === 'denied'
-              ? 'Notifications are blocked for Vero in the system settings.'
+              ? tx('Notifications are blocked for Vero in the system settings.')
               : result === 'no-project-id'
-                ? 'Push notifications are not configured for this build (no EAS project id).'
+                ? tx('Push notifications are not configured for this build (no EAS project id).')
                 : result === 'unsupported'
-                  ? 'Push notifications need the iOS or Android app on a real device.'
-                  : 'Could not register for push notifications. Try again later.';
+                  ? tx('Push notifications need the iOS or Android app on a real device.')
+                  : tx('Could not register for push notifications. Try again later.');
           setPushNote(why);
-          Alert.alert('Notifications', why);
+          Alert.alert(tx('Notifications'), why);
         }
       } else {
         await unregisterPush(deviceId);
         settings.set({ notifications: false });
       }
     } catch (e) {
-      Alert.alert('Could not change notifications', friendlyError(e));
+      Alert.alert(tx('Could not change notifications'), friendlyError(e));
     } finally {
       setBusy(null);
     }
@@ -87,41 +88,41 @@ export default function PrivacyScreen() {
     if (enabled) {
       const support = lockSupport ?? (await appLockSupport());
       if (!support.available) {
-        Alert.alert('App lock', support.reason);
+        Alert.alert(tx('App lock'), support.reason);
         return;
       }
       // Confirm the user can actually unlock before turning it on.
-      if (!(await authenticate('Turn on app lock'))) return;
+      if (!(await authenticate(tx('Turn on app lock')))) return;
     }
     lock.setEnabled(enabled);
   };
 
   return (
     <SafeAreaView style={ui.screen} edges={['top']}>
-      <ScreenHeader title="Privacy" />
+      <ScreenHeader title={tx("Privacy")} />
       <ScrollView contentContainerStyle={ui.content}>
-        {isDemo ? <Note icon="sparkles">Demo account: settings are kept on this device only.</Note> : null}
+        {isDemo ? <Note icon="sparkles">{tx("Demo account: settings are kept on this device only.")}</Note> : null}
 
-        <Section title="Messages">
+        <Section title={tx("Messages")}>
           <ToggleRow
             icon="checkmark-done-outline"
-            label="Read receipts"
-            description="Off: others only see that your messages were delivered, and you won't see when they read yours."
+            label={tx("Read receipts")}
+            description={tx("Off: others only see that your messages were delivered, and you won't see when they read yours.")}
             value={settings.readReceipts}
             busy={busy === 'readReceipts'}
             onChange={(v) => void save('readReceipts', { readReceipts: v })}
           />
           <ToggleRow
             icon="create-outline"
-            label="Typing indicators"
-            description="Off: nobody sees when you are typing."
+            label={tx("Typing indicators")}
+            description={tx("Off: nobody sees when you are typing.")}
             value={settings.typingIndicators}
             busy={busy === 'typingIndicators'}
             onChange={(v) => void save('typingIndicators', { typingIndicators: v })}
           />
         </Section>
 
-        <Section title="Default message timer" footer="New chats you start will have disappearing messages set to this timer.">
+        <Section title={tx("Default message timer")} footer={tx("New chats you start will have disappearing messages set to this timer.")}>
           {DEFAULT_DISAPPEARING_OPTIONS.map((o) => (
             <ChoiceRow
               key={o.seconds}
@@ -132,7 +133,7 @@ export default function PrivacyScreen() {
           ))}
         </Section>
 
-        <Section title="Last seen">
+        <Section title={tx("Last seen")}>
           {LAST_SEEN_OPTIONS.map((o) => (
             <ChoiceRow
               key={o.value}
@@ -144,29 +145,29 @@ export default function PrivacyScreen() {
           ))}
         </Section>
 
-        <Section title="Online">
+        <Section title={tx("Online")}>
           <ToggleRow
             icon="radio-button-on-outline"
-            label="Show when I'm online"
-            description="Only people you chat with can see it. Off: you won't see when others are online either."
+            label={tx("Show when I'm online")}
+            description={tx("Only people you chat with can see it. Off: you won't see when others are online either.")}
             value={settings.showOnline}
             busy={busy === 'showOnline'}
             onChange={(v) => void save('showOnline', { showOnline: v })}
           />
         </Section>
 
-        <Section title="Notifications" footer={pushNote ?? 'Notifications never include message text.'}>
+        <Section title={tx("Notifications")} footer={pushNote ?? tx('Notifications never include message text.')}>
           <ToggleRow
             icon="notifications-outline"
-            label="Push notifications on this device"
+            label={tx("Push notifications on this device")}
             value={settings.notifications}
             busy={busy === 'push'}
             onChange={(v) => void toggleNotifications(v)}
           />
           <ToggleRow
             icon="person-outline"
-            label="Show sender name"
-            description='Off: notifications only say "New message".'
+            label={tx("Show sender name")}
+            description={tx('Off: notifications only say "New message".')}
             value={settings.notificationPreviews}
             busy={busy === 'previews'}
             onChange={(v) => void save('previews', { notificationPreviews: v })}
@@ -174,16 +175,16 @@ export default function PrivacyScreen() {
         </Section>
 
         <Section
-          title="App lock"
+          title={tx("App lock")}
           footer={
             lockSupport && !lockSupport.available
               ? lockSupport.reason
-              : 'Require Face ID, fingerprint or your device passcode to open Vero. The app is hidden in the app switcher while locked.'
+              : tx('Require Face ID, fingerprint or your device passcode to open Vero. The app is hidden in the app switcher while locked.')
           }
         >
           <ToggleRow
             icon="lock-closed-outline"
-            label={lockSupport?.available ? `Lock with ${lockSupport.label}` : 'App lock'}
+            label={lockSupport?.available ? tx('Lock with {{method}}', { method: lockSupport.label }) : tx('App lock')}
             value={lock.enabled}
             disabled={!!lockSupport && !lockSupport.available && !lock.enabled}
             onChange={(v) => void toggleAppLock(v)}

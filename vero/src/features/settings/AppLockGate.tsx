@@ -9,6 +9,7 @@
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { tx } from '../../shared/i18n/phrases';
 import { AppState, AppStateStatus, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { appLockSupport, authenticate, shouldLock, useAppLockStore } from './appLock';
 import { makeStyles, useLegacyColors } from '../../shared/theme/ThemeProvider';
@@ -52,7 +53,7 @@ export function AppLockGate({ children }: { children: React.ReactNode }) {
     if (authenticating.current) return;
     authenticating.current = true;
     try {
-      if (await authenticate('Unlock Vero')) {
+      if (await authenticate(tx('Unlock Vero'))) {
         setLocked(false);
         backgroundedAt.current = null;
       }
@@ -101,11 +102,11 @@ export function AppLockGate({ children }: { children: React.ReactNode }) {
           <View style={styles.badge}>
             <Glyph name="lock-closed" size={34} color={Colors.accent} />
           </View>
-          <Text style={styles.title}>Vero is locked</Text>
+          <Text style={styles.title}>{tx("Vero is locked")}</Text>
           <Text style={styles.body}>Unlock with your {methodLabel} to continue.</Text>
           <TouchableOpacity style={styles.button} onPress={() => void unlock()} activeOpacity={0.85}>
             <Glyph name="finger-print" size={18} color={Colors.white} style={{ marginRight: 8 }} />
-            <Text style={styles.buttonText}>Unlock</Text>
+            <Text style={styles.buttonText}>{tx("Unlock")}</Text>
           </TouchableOpacity>
         </View>
       ) : enabled && covered ? (

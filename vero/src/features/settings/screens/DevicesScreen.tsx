@@ -6,6 +6,7 @@
  */
 
 import React, { useCallback, useEffect, useState } from 'react';
+import { tx } from '../../../shared/i18n/phrases';
 import { ActivityIndicator, Alert, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { router } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -35,7 +36,7 @@ export default function DevicesScreen() {
       setDevices(await authRepository.listDevices());
     } catch (e) {
       setDevices([]);
-      Alert.alert('Could not load devices', friendlyError(e));
+      Alert.alert(tx('Could not load devices'), friendlyError(e));
     }
   }, []);
 
@@ -48,12 +49,12 @@ export default function DevicesScreen() {
 
   const logOutDevice = (d: LinkedDevice) => {
     Alert.alert(
-      'Log out device',
-      `Log out "${d.deviceLabel}"? It stops receiving new messages and notifications and can no longer send. Messages already on it stay there.`,
+      tx('Log out device'),
+      tx('Log out "{{name}}"? It stops receiving new messages and notifications and can no longer send. Messages already on it stay there.', { name: d.deviceLabel }),
       [
-        { text: 'Cancel', style: 'cancel' },
+        { text: tx('Cancel'), style: 'cancel' },
         {
-          text: 'Log out',
+          text: tx('Log out'),
           style: 'destructive',
           onPress: async () => {
             setWorking(d.id);
@@ -61,7 +62,7 @@ export default function DevicesScreen() {
               await authRepository.revokeDevice(d.id);
               await load();
             } catch (e) {
-              Alert.alert('Could not log out the device', friendlyError(e));
+              Alert.alert(tx('Could not log out the device'), friendlyError(e));
             } finally {
               setWorking(null);
             }
@@ -73,12 +74,12 @@ export default function DevicesScreen() {
 
   const logOutOthers = () => {
     Alert.alert(
-      'Log out all other devices',
-      'Every other device is unlinked and signed out of your account. Only this device keeps working.',
+      tx('Log out all other devices'),
+      tx('Every other device is unlinked and signed out of your account. Only this device keeps working.'),
       [
-        { text: 'Cancel', style: 'cancel' },
+        { text: tx('Cancel'), style: 'cancel' },
         {
-          text: 'Log out others',
+          text: tx('Log out others'),
           style: 'destructive',
           onPress: async () => {
             setWorking('others');
@@ -88,7 +89,7 @@ export default function DevicesScreen() {
               await supabase.auth.signOut({ scope: 'others' });
               await load();
             } catch (e) {
-              Alert.alert('Could not log out other devices', friendlyError(e));
+              Alert.alert(tx('Could not log out other devices'), friendlyError(e));
             } finally {
               setWorking(null);
             }
@@ -100,12 +101,12 @@ export default function DevicesScreen() {
 
   const logOutThis = () => {
     Alert.alert(
-      'Log out',
-      'Sign out on this device? Notifications stop. Your keys and chats stay on this device so you can sign back in.',
+      tx('Log out'),
+      tx('Sign out on this device? Notifications stop. Your keys and chats stay on this device so you can sign back in.'),
       [
-        { text: 'Cancel', style: 'cancel' },
+        { text: tx('Cancel'), style: 'cancel' },
         {
-          text: 'Log out',
+          text: tx('Log out'),
           style: 'destructive',
           onPress: async () => {
             await logout();
@@ -118,10 +119,10 @@ export default function DevicesScreen() {
 
   return (
     <SafeAreaView style={ui.screen} edges={['top']}>
-      <ScreenHeader title="Linked devices" />
+      <ScreenHeader title={tx("Linked devices")} />
       <ScrollView contentContainerStyle={ui.content}>
         {isDemo ? (
-          <Note icon="sparkles">Linked devices need a real account.</Note>
+          <Note icon="sparkles">{tx("Linked devices need a real account.")}</Note>
         ) : devices === null ? (
           <ActivityIndicator color={Colors.accent} style={{ marginTop: Spacing.xl }} />
         ) : (
@@ -148,18 +149,18 @@ export default function DevicesScreen() {
                     <TouchableOpacity
                       style={styles.logout}
                       onPress={() => (isThis ? logOutThis() : logOutDevice(d))}
-                      accessibilityLabel={`Log out ${d.deviceLabel}`}
+                      accessibilityLabel={tx('Log out {{name}}', { name: d.deviceLabel })}
                     >
-                      <Text style={styles.logoutText}>Log out</Text>
+                      <Text style={styles.logoutText}>{tx("Log out")}</Text>
                     </TouchableOpacity>
                   )}
                 </View>
               );
             })}
             {others.length > 0 ? (
-              <Button label="Log out all other devices" icon="log-out-outline" variant="danger" loading={working === 'others'} onPress={logOutOthers} />
+              <Button label={tx("Log out all other devices")} icon="log-out-outline" variant="danger" loading={working === 'others'} onPress={logOutOthers} />
             ) : null}
-            <Button label="Link a device" icon="qr-code-outline" variant="secondary" onPress={() => router.push('/devices')} />
+            <Button label={tx("Link a device")} icon="qr-code-outline" variant="secondary" onPress={() => router.push('/devices')} />
             <Note icon="key-outline">
               Each device has its own keys; messages are encrypted separately for every linked device. A logged-out
               device no longer receives new messages or notifications.

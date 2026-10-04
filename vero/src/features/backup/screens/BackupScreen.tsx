@@ -4,6 +4,7 @@
  */
 
 import React, { useCallback, useEffect, useState } from 'react';
+import { tx } from '../../../shared/i18n/phrases';
 import { ActivityIndicator, Alert, ScrollView, Share, StyleSheet, Switch, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { router } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -30,9 +31,9 @@ import { Glyph } from '../../../shared/ui';
 
 type Phase = 'deriving' | 'encrypting' | 'uploading';
 const PHASE_TEXT: Record<Phase, string> = {
-  deriving: 'Protecting your backup key… (this can take a while)',
-  encrypting: 'Encrypting your chats…',
-  uploading: 'Uploading…',
+  deriving: tx('Protecting your backup key… (this can take a while)'),
+  encrypting: tx('Encrypting your chats…'),
+  uploading: tx('Uploading…'),
 };
 
 function formatBytes(n: number | null | undefined): string {
@@ -90,7 +91,7 @@ export default function BackupScreen() {
   };
 
   const afterChoose = async () => {
-    if (!usePassphrase && !useRecovery) return Alert.alert('Backup', 'Choose at least one way to unlock your backup.');
+    if (!usePassphrase && !useRecovery) return Alert.alert(tx('Backup'), tx('Choose at least one way to unlock your backup.'));
     if (usePassphrase) return setStep('passphrase');
     await prepareRecoveryKey();
   };
@@ -104,8 +105,8 @@ export default function BackupScreen() {
 
   const afterPassphrase = async () => {
     const problem = validatePassphrase(passphrase);
-    if (problem) return Alert.alert('Passphrase', problem);
-    if (passphrase !== confirm) return Alert.alert('Passphrase', 'The two passphrases do not match.');
+    if (problem) return Alert.alert(tx('Passphrase'), problem);
+    if (passphrase !== confirm) return Alert.alert(tx('Passphrase'), tx('The two passphrases do not match.'));
     if (useRecovery) return prepareRecoveryKey();
     await finishSetup();
   };
@@ -121,10 +122,10 @@ export default function BackupScreen() {
       );
       resetWizard();
       setStep('overview');
-      Alert.alert('Backup is on', 'Your chats are backed up, end-to-end encrypted.');
+      Alert.alert(tx('Backup is on'), tx('Your chats are backed up, end-to-end encrypted.'));
     } catch (e) {
       setStep('overview');
-      Alert.alert('Backup failed', friendlyError(e));
+      Alert.alert(tx('Backup failed'), friendlyError(e));
     } finally {
       setPhase(null);
       void refresh();
@@ -137,7 +138,7 @@ export default function BackupScreen() {
     try {
       await runBackup(userId, setPhase);
     } catch (e) {
-      Alert.alert('Backup failed', friendlyError(e));
+      Alert.alert(tx('Backup failed'), friendlyError(e));
     } finally {
       setPhase(null);
       setStep('overview');
@@ -147,16 +148,16 @@ export default function BackupScreen() {
 
   const turnOff = () => {
     if (!userId) return;
-    Alert.alert('Turn off backup', 'Stop backing up from this device?', [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Keep the backup on the server', onPress: () => void turnOffBackup(userId, false).then(refresh) },
+    Alert.alert(tx('Turn off backup'), tx('Stop backing up from this device?'), [
+      { text: tx('Cancel'), style: 'cancel' },
+      { text: tx('Keep the backup on the server'), onPress: () => void turnOffBackup(userId, false).then(refresh) },
       {
-        text: 'Delete the backup too',
+        text: tx('Delete the backup too'),
         style: 'destructive',
         onPress: () =>
           void turnOffBackup(userId, true)
             .then(refresh)
-            .catch((e) => Alert.alert('Could not delete the backup', friendlyError(e))),
+            .catch((e) => Alert.alert(tx('Could not delete the backup'), friendlyError(e))),
       },
     ]);
   };
@@ -164,20 +165,20 @@ export default function BackupScreen() {
   const copyKey = async () => {
     if (!recoveryKey) return;
     await Clipboard.setStringAsync(recoveryKey);
-    Alert.alert('Copied', 'Paste it into your password manager, then clear your clipboard.');
+    Alert.alert(tx('Copied'), tx('Paste it into your password manager, then clear your clipboard.'));
   };
 
   const shareKey = async () => {
     if (!recoveryKey) return;
-    await Share.share({ message: `Vero backup recovery key:\n\n${recoveryKey}` });
+    await Share.share({ message: `${tx('Vero backup recovery key:')}\n\n${recoveryKey}` });
   };
 
   if (isDemo) {
     return (
       <SafeAreaView style={ui.screen} edges={['top']}>
-        <ScreenHeader title="Chat backup" />
+        <ScreenHeader title={tx("Chat backup")} />
         <ScrollView contentContainerStyle={ui.content}>
-          <Note icon="sparkles">Backups need a real account.</Note>
+          <Note icon="sparkles">{tx("Backups need a real account.")}</Note>
         </ScrollView>
       </SafeAreaView>
     );
@@ -191,18 +192,18 @@ export default function BackupScreen() {
   return (
     <SafeAreaView style={ui.screen} edges={['top']}>
       <ScreenHeader
-        title="Chat backup"
+        title={tx("Chat backup")}
         onBack={step === 'overview' || step === 'working' ? undefined : () => (resetWizard(), setStep('overview'))}
       />
       <ScrollView contentContainerStyle={ui.content} keyboardShouldPersistTaps="handled">
         {step === 'working' ? (
           <Card style={{ alignItems: 'center' }}>
             <ActivityIndicator color={Colors.accent} size="large" />
-            <Text style={ui.body}>{phase ? PHASE_TEXT[phase] : 'Working…'}</Text>
+            <Text style={ui.body}>{phase ? tx(PHASE_TEXT[phase]) : tx('Working…')}</Text>
           </Card>
         ) : step === 'choose' ? (
           <>
-            <Text style={ui.title}>How do you want to unlock your backup?</Text>
+            <Text style={ui.title}>{tx("How do you want to unlock your backup?")}</Text>
             <Text style={ui.body}>
               Your backup is encrypted on this phone. Vero cannot read it and cannot reset these secrets: lose them and
               the backup is gone.
@@ -210,31 +211,31 @@ export default function BackupScreen() {
             <Card>
               <OptionRow
                 icon="key-outline"
-                title="Recovery key (recommended)"
+                title={tx("Recovery key (recommended)")}
                 desc="A 64-character key generated for you. Store it in a password manager or on paper."
                 value={useRecovery}
                 onChange={setUseRecovery}
               />
               <OptionRow
                 icon="text-outline"
-                title="Passphrase"
-                desc={`At least ${MIN_PASSPHRASE_LENGTH} characters that you choose. Use a long, unique phrase.`}
+                title={tx("Passphrase")}
+                desc={tx('At least {{n}} characters that you choose. Use a long, unique phrase.', { n: MIN_PASSPHRASE_LENGTH })}
                 value={usePassphrase}
                 onChange={setUsePassphrase}
               />
             </Card>
-            <Text style={ui.muted}>Choose both and either one will unlock the backup.</Text>
-            <Button label="Continue" onPress={() => void afterChoose()} disabled={!usePassphrase && !useRecovery} />
+            <Text style={ui.muted}>{tx("Choose both and either one will unlock the backup.")}</Text>
+            <Button label={tx("Continue")} onPress={() => void afterChoose()} disabled={!usePassphrase && !useRecovery} />
           </>
         ) : step === 'passphrase' ? (
           <>
-            <Text style={ui.title}>Choose a passphrase</Text>
+            <Text style={ui.title}>{tx("Choose a passphrase")}</Text>
             <Text style={ui.body}>At least {MIN_PASSPHRASE_LENGTH} characters. Vero can't recover it for you.</Text>
             <TextInput
               style={ui.input}
               value={passphrase}
               onChangeText={setPassphrase}
-              placeholder="Passphrase"
+              placeholder={tx("Passphrase")}
               placeholderTextColor={Colors.textTertiary}
               secureTextEntry
               autoCapitalize="none"
@@ -245,7 +246,7 @@ export default function BackupScreen() {
               style={ui.input}
               value={confirm}
               onChangeText={setConfirm}
-              placeholder="Repeat passphrase"
+              placeholder={tx("Repeat passphrase")}
               placeholderTextColor={Colors.textTertiary}
               secureTextEntry
               autoCapitalize="none"
@@ -255,11 +256,11 @@ export default function BackupScreen() {
             <Text style={ui.muted}>
               {passphrase.length > 0 && validatePassphrase(passphrase) ? validatePassphrase(passphrase) : ' '}
             </Text>
-            <Button label="Continue" onPress={() => void afterPassphrase()} disabled={!passphrase || !confirm} />
+            <Button label={tx("Continue")} onPress={() => void afterPassphrase()} disabled={!passphrase || !confirm} />
           </>
         ) : step === 'recovery' && recoveryKey ? (
           <>
-            <Text style={ui.title}>Your recovery key</Text>
+            <Text style={ui.title}>{tx("Your recovery key")}</Text>
             <Text style={ui.body}>
               This is the only time it is shown. Anyone with this key and access to your account can read your backup.
             </Text>
@@ -273,14 +274,14 @@ export default function BackupScreen() {
                 <Button label="Copy" icon="copy-outline" variant="secondary" onPress={() => void copyKey()} />
               </View>
               <View style={{ flex: 1 }}>
-                <Button label="Share" icon="share-outline" variant="secondary" onPress={() => void shareKey()} />
+                <Button label={tx("Share")} icon="share-outline" variant="secondary" onPress={() => void shareKey()} />
               </View>
             </View>
             <TouchableOpacity style={styles.check} onPress={() => setSavedIt((v) => !v)} activeOpacity={0.8}>
               <Glyph name={savedIt ? 'checkbox' : 'square-outline'} size={22} color={savedIt ? Colors.accent : Colors.textTertiary} />
               <Text style={[ui.label, { flex: 1 }]}>I've saved my recovery key somewhere safe</Text>
             </TouchableOpacity>
-            <Button label="Turn on backup" onPress={() => void finishSetup()} disabled={!savedIt} />
+            <Button label={tx("Turn on backup")} onPress={() => void finishSetup()} disabled={!savedIt} />
           </>
         ) : (
           <>
@@ -288,11 +289,11 @@ export default function BackupScreen() {
               <View style={styles.statusRow}>
                 <Glyph name={on ? 'cloud-done-outline' : 'cloud-offline-outline'} size={26} color={on ? Colors.emerald : Colors.textTertiary} />
                 <View style={{ flex: 1 }}>
-                  <Text style={ui.label}>{configured === null ? 'Checking…' : on ? 'Backup is on' : 'Backup is off'}</Text>
+                  <Text style={ui.label}>{configured === null ? tx('Checking…') : on ? tx('Backup is on') : tx('Backup is off')}</Text>
                   <Text style={ui.muted}>
                     {on
-                      ? `Last backup: ${status.lastBackupAt ? dayjs(status.lastBackupAt).format('D MMM YYYY, HH:mm') : 'never'} · ${formatBytes(status.lastBackupBytes)}`
-                      : 'Back up your chats, end-to-end encrypted, to restore them on a new phone.'}
+                      ? tx('Last backup: {{when}} · {{size}}', { when: status.lastBackupAt ? dayjs(status.lastBackupAt).format('D MMM YYYY, HH:mm') : tx('never'), size: formatBytes(status.lastBackupBytes) })
+                      : tx('Back up your chats, end-to-end encrypted, to restore them on a new phone.')}
                   </Text>
                   {on ? <Text style={ui.muted}>Unlocks with your {methodsText}.</Text> : null}
                 </View>
@@ -301,12 +302,12 @@ export default function BackupScreen() {
 
             {on ? (
               <>
-                <Button label="Back up now" icon="cloud-upload-outline" onPress={() => void backupNow()} />
+                <Button label={tx("Back up now")} icon="cloud-upload-outline" onPress={() => void backupNow()} />
                 <Card>
                   <View style={styles.statusRow}>
                     <View style={{ flex: 1 }}>
-                      <Text style={ui.label}>Back up daily</Text>
-                      <Text style={ui.muted}>When you open Vero and the last backup is over a day old.</Text>
+                      <Text style={ui.label}>{tx("Back up daily")}</Text>
+                      <Text style={ui.muted}>{tx("When you open Vero and the last backup is over a day old.")}</Text>
                     </View>
                     <Switch
                       value={status.autoDaily}
@@ -318,12 +319,12 @@ export default function BackupScreen() {
                     />
                   </View>
                 </Card>
-                <Button label="Change passphrase or recovery key" icon="key-outline" variant="secondary" onPress={startSetup} />
-                <Button label="Turn off backup" icon="trash-outline" variant="danger" onPress={turnOff} />
+                <Button label={tx("Change passphrase or recovery key")} icon="key-outline" variant="secondary" onPress={startSetup} />
+                <Button label={tx("Turn off backup")} icon="trash-outline" variant="danger" onPress={turnOff} />
               </>
             ) : (
               <>
-                <Button label="Set up backup" icon="shield-checkmark-outline" onPress={startSetup} disabled={configured === null} />
+                <Button label={tx("Set up backup")} icon="shield-checkmark-outline" onPress={startSetup} disabled={configured === null} />
                 {remote ? (
                   <Note icon="cloud-download-outline">
                     A backup from {remote.updatedAt ? dayjs(remote.updatedAt).format('D MMM YYYY') : 'an earlier device'} exists.
@@ -331,7 +332,7 @@ export default function BackupScreen() {
                   </Note>
                 ) : null}
                 {remote ? (
-                  <Button label="Restore from backup" icon="cloud-download-outline" variant="secondary" onPress={() => router.push('/backup/restore')} />
+                  <Button label={tx("Restore from backup")} icon="cloud-download-outline" variant="secondary" onPress={() => router.push('/backup/restore')} />
                 ) : null}
               </>
             )}

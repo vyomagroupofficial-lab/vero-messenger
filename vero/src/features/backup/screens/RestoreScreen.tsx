@@ -4,6 +4,7 @@
  */
 
 import React, { useEffect, useState } from 'react';
+import { tx } from '../../../shared/i18n/phrases';
 import { ActivityIndicator, Alert, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { router } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -79,8 +80,8 @@ export default function RestoreScreen() {
   };
 
   const skip = () => {
-    Alert.alert('Skip restore', 'Continue without your old chats? You can restore later from Settings → Chat backup.', [
-      { text: 'Cancel', style: 'cancel' },
+    Alert.alert(tx('Skip restore'), tx('Continue without your old chats? You can restore later from Settings → Chat backup.'), [
+      { text: tx('Cancel'), style: 'cancel' },
       {
         text: 'Skip',
         style: 'destructive',
@@ -94,35 +95,35 @@ export default function RestoreScreen() {
 
   return (
     <SafeAreaView style={ui.screen} edges={['top']}>
-      <ScreenHeader title="Restore chats" />
+      <ScreenHeader title={tx("Restore chats")} />
       <ScrollView contentContainerStyle={ui.content} keyboardShouldPersistTaps="handled">
         {state.kind === 'loading' ? (
           <Card style={{ alignItems: 'center' }}>
             <ActivityIndicator color={Colors.accent} />
-            <Text style={ui.body}>Looking for your backup…</Text>
+            <Text style={ui.body}>{tx("Looking for your backup…")}</Text>
           </Card>
         ) : state.kind === 'missing' ? (
           <>
-            <Note icon="cloud-offline-outline">There is no backup for this account.</Note>
-            <Button label="Continue" onPress={() => router.replace('/(tabs)/chats')} />
+            <Note icon="cloud-offline-outline">{tx("There is no backup for this account.")}</Note>
+            <Button label={tx("Continue")} onPress={() => router.replace('/(tabs)/chats')} />
           </>
         ) : state.kind === 'error' ? (
           <>
             <Note icon="alert-circle" tone="warning">
               {state.message}
             </Note>
-            <Button label="Try again" onPress={() => void load()} />
+            <Button label={tx("Try again")} onPress={() => void load()} />
             <Button label="Skip" variant="secondary" onPress={skip} />
           </>
         ) : state.kind === 'done' ? (
           <>
-            <Text style={ui.title}>Chats restored</Text>
+            <Text style={ui.title}>{tx("Chats restored")}</Text>
             <Text style={ui.body}>{state.rows.toLocaleString()} items were restored on this device.</Text>
-            <Button label="Open chats" onPress={() => router.replace('/(tabs)/chats')} />
+            <Button label={tx("Open chats")} onPress={() => router.replace('/(tabs)/chats')} />
           </>
         ) : (
           <>
-            <Text style={ui.title}>Restore your chats</Text>
+            <Text style={ui.title}>{tx("Restore your chats")}</Text>
             <Text style={ui.body}>Backup from {dayjs(state.createdAt).format('D MMM YYYY, HH:mm')}</Text>
 
             {state.methods.length > 1 ? (
@@ -138,7 +139,7 @@ export default function RestoreScreen() {
                     }}
                   >
                     <Text style={[styles.tabText, method === m && styles.tabTextActive]}>
-                      {m === 'recovery' ? 'Recovery key' : 'Passphrase'}
+                      {m === 'recovery' ? tx('Recovery key') : tx('Passphrase')}
                     </Text>
                   </TouchableOpacity>
                 ))}
@@ -149,7 +150,7 @@ export default function RestoreScreen() {
               style={[ui.input, method === 'recovery' && styles.keyInput]}
               value={secret}
               onChangeText={setSecret}
-              placeholder={method === 'recovery' ? 'XXXX-XXXX-XXXX-…' : 'Backup passphrase'}
+              placeholder={method === 'recovery' ? 'XXXX-XXXX-XXXX-…' : tx('Backup passphrase')}
               placeholderTextColor={Colors.textTertiary}
               secureTextEntry={method === 'passphrase'}
               autoCapitalize={method === 'recovery' ? 'characters' : 'none'}
@@ -166,12 +167,12 @@ export default function RestoreScreen() {
               <Card style={{ alignItems: 'center' }}>
                 <ActivityIndicator color={Colors.accent} />
                 <Text style={ui.body}>
-                  {method === 'passphrase' ? 'Checking passphrase and decrypting… this can take a while.' : 'Decrypting…'}
+                  {method === 'passphrase' ? tx('Checking passphrase and decrypting… this can take a while.') : tx('Decrypting…')}
                 </Text>
               </Card>
             ) : (
               <>
-                <Button label="Restore" icon="cloud-download-outline" onPress={() => void restore()} disabled={!secret.trim()} />
+                <Button label={tx("Restore")} icon="cloud-download-outline" onPress={() => void restore()} disabled={!secret.trim()} />
                 <Button label="Skip" variant="secondary" onPress={skip} />
               </>
             )}
