@@ -591,7 +591,10 @@
     "cipherNote": "Stored in the cloud only as ciphertext (XChaCha20-Poly1305)",
     "shareUnavailable": "Sharing unavailable",
     "shareUnavailableBody": "Sharing is not supported on this device.",
-    "toggleControls": "Show or hide controls"
+    "toggleControls": "Show or hide controls",
+    "openFailed": "Couldn't open the file",
+    "tapOpen": "tap to open",
+    "documentA11y": "Document {{name}}"
   },
   "groups": {
     "linkCopied": "Link copied",
@@ -1293,5 +1296,78 @@
     "today": "last seen today at {{time}}",
     "yesterday": "last seen yesterday at {{time}}",
     "onDate": "last seen {{date}} at {{time}}"
+  },
+  "forward": {
+    "title_one": "Forward message",
+    "title_other": "Forward {{count}} messages",
+    "oneChat": "Forwarded many times, so one chat at a time · end-to-end encrypted",
+    "upTo_one": "Up to {{count}} chat · end-to-end encrypted",
+    "upTo_other": "Up to {{count}} chats · end-to-end encrypted",
+    "search": "Search chats",
+    "noChats": "No chats",
+    "choose": "Choose chats",
+    "sendTo_one": "Forward to {{count}} chat",
+    "sendTo_other": "Forward to {{count}} chats"
+  },
+  "groupCall": {
+    "start": "Start group call",
+    "join": "Join group call",
+    "startTitle": "Call {{name}}",
+    "joinTitle": "Join the group call?",
+    "everyone": "Everyone in the group will be invited. Calls are end-to-end encrypted.",
+    "inVoice_one": "{{count}} person is in the voice call",
+    "inVoice_other": "{{count}} people are in the voice call",
+    "inVideo_one": "{{count}} person is in the video call",
+    "inVideo_other": "{{count}} people are in the video call",
+    "joinNow": "Join",
+    "limit": "Group calls are limited to {{max}} people. This group has {{members}} members, so only the first {{max}} to join can take part.",
+    "startFailed": "Couldn't start the call",
+    "joinFailed": "Couldn't join the call"
+  },
+  "messages": {
+    "editing": "Edit message",
+    "addCaption": "Add a caption",
+    "cancelEdit": "Cancel edit",
+    "cancelSelect": "Cancel selection",
+    "selected_one": "selected",
+    "selected_other": "selected",
+    "historyLocal": "Kept on this device only",
+    "original": "Original",
+    "current": "Current",
+    "editN": "Edit {{n}}",
+    "noCaption": "(no caption)",
+    "edited": "edited",
+    "forwarded": "Forwarded",
+    "forwardedMany": "Forwarded many times",
+    "cantEdit": "Can't edit",
+    "editFailed": "Edit not saved",
+    "editFailedBody": "Couldn't edit the message.",
+    "cantForward": "Can't forward",
+    "cantForwardBody": "These messages can't be forwarded.",
+    "someNotForwarded": "Some messages weren't forwarded",
+    "someNotForwardedBody_one": "{{count}} couldn't be sent. Check your connection and try again.",
+    "someNotForwardedBody_other": "{{count}} couldn't be sent. Check your connection and try again.",
+    "forwardFailed": "Forward failed",
+    "forwardFailedBody": "Couldn't forward.",
+    "starFailed": "Couldn't update star"
+  },
+  "search": {
+    "close": "Close search",
+    "inChat": "Search this chat",
+    "none": "No results",
+    "position": "{{index}} of {{total}}",
+    "older": "Older result",
+    "newer": "Newer result"
+  },
+  "voice": {
+    "play": "Play voice message",
+    "pause": "Pause voice message",
+    "position": "Voice message position",
+    "speed": "Playback speed {{rate}}x",
+    "loadFailed": "Couldn't load",
+    "recordA11y": "Record voice message. Hold to record, or tap for hands-free recording.",
+    "discard": "Delete recording",
+    "send": "Send voice message",
+    "slideCancel": "Slide to cancel"
   }
 }

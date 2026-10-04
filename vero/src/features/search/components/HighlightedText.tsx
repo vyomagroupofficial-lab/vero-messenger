@@ -1,9 +1,9 @@
 import React, { useMemo } from 'react';
 import { StyleProp, Text, TextStyle } from 'react-native';
-import { Colors } from '../../../shared/theme/theme';
+import { useTheme } from '../../../shared/theme/ThemeProvider';
 import { highlightSegments } from '../searchQuery';
 
-/** Text with the search terms highlighted (case-insensitive). */
+/** Text with the search terms highlighted (case-insensitive) in a brass wash. */
 export function HighlightedText({
   text,
   query,
@@ -17,6 +17,7 @@ export function HighlightedText({
   highlightStyle?: StyleProp<TextStyle>;
   numberOfLines?: number;
 }) {
+  const { c, f } = useTheme();
   const segments = useMemo(() => (query ? highlightSegments(text, query) : null), [text, query]);
   if (!segments) {
     return (
@@ -25,11 +26,12 @@ export function HighlightedText({
       </Text>
     );
   }
+  const hit: TextStyle = { backgroundColor: c.accentTint2, fontFamily: f.semibold, borderRadius: 4 };
   return (
     <Text style={style} numberOfLines={numberOfLines}>
       {segments.map((s, i) =>
         s.match ? (
-          <Text key={i} style={[defaultHighlight, highlightStyle]}>
+          <Text key={i} style={[hit, highlightStyle]}>
             {s.text}
           </Text>
         ) : (
@@ -39,9 +41,3 @@ export function HighlightedText({
     </Text>
   );
 }
-
-const defaultHighlight: TextStyle = {
-  backgroundColor: 'rgba(250, 204, 21, 0.35)',
-  color: Colors.textPrimary,
-  fontWeight: '700',
-};
