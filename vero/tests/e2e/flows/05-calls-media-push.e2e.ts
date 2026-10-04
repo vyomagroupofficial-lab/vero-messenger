@@ -140,8 +140,12 @@ describe('calls, media, push and channels', () => {
   });
 
   test('a new message enqueues a push request via pg_net (no content in it)', { skip: !hasDb }, async () => {
-    const before = Number(sqlValue('select count(*) from net.http_request_queue') ?? 0) +
-      Number(sqlValue('select count(*) from net._http_response') ?? 0);
+    // pg_net request ids come from one sequence (queue row id == response id);
+    // compare ids rather than counts, since pg_net prunes old responses.
+    const maxId = () => Number(sqlValue(
+      'select greatest(coalesce((select max(id) from net.http_request_queue), 0), coalesce((select max(id) from net._http_response), 0))'
+    ) ?? 0);
+    const before = maxId();
     // Pushes only go to members with a registered push token.
     const tok = await b.client.from('push_tokens').upsert({ device_id: b.deviceId, user_id: bob.id, token: 'ExponentPushToken[e2e-test]', platform: 'android' });
     assert.ifError(tok.error);
@@ -149,8 +153,7 @@ describe('calls, media, push and channels', () => {
     let after = before;
     for (let i = 0; i < 20 && after <= before; i++) {
       await new Promise((r) => setTimeout(r, 250));
-      after = Number(sqlValue('select count(*) from net.http_request_queue') ?? 0) +
-        Number(sqlValue('select count(*) from net._http_response') ?? 0);
+      after = maxId();
     }
     assert.ok(after > before, 'expected a push request for the new message');
     const leaked = sqlValue(`select count(*) from net.http_request_queue where body::text like '%secret push body%'`);
