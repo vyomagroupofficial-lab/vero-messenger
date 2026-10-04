@@ -1,0 +1,4 @@
+node_modules
+out/*.mp4
+!out/vero-trailer-preview.mp4
+public/music.*

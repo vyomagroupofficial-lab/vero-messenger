@@ -1,0 +1,26 @@
+{
+  "name": "vero-trailer",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Vero Messenger launch trailer (Remotion)",
+  "scripts": {
+    "studio": "remotion studio src/index.ts",
+    "render": "remotion render src/index.ts VeroTrailer out/vero-trailer.mp4",
+    "render:vertical": "remotion render src/index.ts VeroTrailerVertical out/vero-trailer-vertical.mp4",
+    "sync": "node scripts/sync-music.mjs",
+    "placeholder-audio": "python3 scripts/make_placeholder_audio.py",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@remotion/cli": "^4.0.532",
+    "@remotion/media-utils": "^4.0.532",
+    "ionicons": "^7.4.0",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3",
+    "remotion": "^4.0.532"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.0",
+    "typescript": "^5.9.3"
+  }
+}
