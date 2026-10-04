@@ -63,7 +63,8 @@
     "typecheck": "tsc --noEmit && tsc -p bots/tsconfig.json",
     "test": "tsx --test tests/*.test.ts",
     "desktop:dev": "npm --prefix desktop run dev",
-    "desktop:build": "npm --prefix desktop run build"
+    "desktop:build": "npm --prefix desktop run build",
+    "test:e2e": "tsx --test --test-concurrency=1 --test-reporter=spec tests/e2e/flows/*.e2e.ts"
   },
   "private": true
 }
