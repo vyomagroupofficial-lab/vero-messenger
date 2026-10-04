@@ -1,35 +1,35 @@
 /**
- * Small building blocks shared by the QR / discovery / linking / transfer
- * screens. Styling uses the app theme tokens only, so a theme revamp carries
- * over automatically.
+ * Building blocks shared by the QR / discovery / linking / transfer screens, in the Ink & Brass
+ * design. Theme-aware, so every screen follows the light/dark setting.
  */
 
-import React from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, StyleProp, ViewStyle } from 'react-native';
+import React, { useEffect } from 'react';
+import { StyleProp, StyleSheet, Text, View, ViewStyle } from 'react-native';
+import Animated, { ZoomIn, useAnimatedStyle, useSharedValue, withRepeat, withSequence, withTiming } from 'react-native-reanimated';
 import { router } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
-import { Colors, Typography, Spacing, BorderRadius } from '../../shared/theme/theme';
+import { makeStyles, useTheme } from '../../shared/theme/ThemeProvider';
+import { useT } from '../../shared/i18n';
+import { BorderRadius, Colors, Spacing, Typography } from '../../shared/theme/theme';
+import { Button as VeroButton, Glyph, GlyphName, glyphToIcon, IconButton, isIconName } from '../../shared/ui';
 
 export function ScreenHeader({ title, onBack, right }: { title: string; onBack?: () => void; right?: React.ReactNode }) {
+  const { type } = useTheme();
+  const s = useStyles();
+  const t = useT();
   return (
-    <View style={styles.header}>
-      <TouchableOpacity
-        style={styles.iconBtn}
-        onPress={onBack ?? (() => (router.canGoBack() ? router.back() : router.replace('/')))}
-        accessibilityLabel="Back"
-      >
-        <Ionicons name="arrow-back" size={22} color={Colors.textPrimary} />
-      </TouchableOpacity>
-      <Text style={styles.headerTitle} numberOfLines={1}>
+    <View style={s.header}>
+      <IconButton icon="back" label={t('common.back')} onPress={onBack ?? (() => (router.canGoBack() ? router.back() : router.replace('/')))} />
+      <Text style={[type.name, { flex: 1, textAlign: 'center', fontSize: 17 }]} numberOfLines={1} accessibilityRole="header">
         {title}
       </Text>
-      <View style={styles.iconBtnPlaceholder}>{right}</View>
+      <View style={{ width: 44, alignItems: 'center' }}>{right}</View>
     </View>
   );
 }
 
 export function Card({ children, style }: { children: React.ReactNode; style?: StyleProp<ViewStyle> }) {
-  return <View style={[styles.card, style]}>{children}</View>;
+  const s = useStyles();
+  return <View style={[s.card, style]}>{children}</View>;
 }
 
 export function Button({
@@ -42,49 +42,106 @@ export function Button({
 }: {
   label: string;
   onPress: () => void;
-  icon?: keyof typeof Ionicons.glyphMap;
+  icon?: GlyphName;
   variant?: 'primary' | 'secondary' | 'danger';
   loading?: boolean;
   disabled?: boolean;
 }) {
-  const color = variant === 'primary' ? Colors.white : variant === 'danger' ? Colors.error : Colors.accentLight;
-  return (
-    <TouchableOpacity
-      style={[styles.btn, styles[variant], (disabled || loading) && styles.disabled]}
-      onPress={onPress}
-      disabled={disabled || loading}
-      activeOpacity={0.85}
-    >
-      {loading ? (
-        <ActivityIndicator color={color} size="small" />
-      ) : (
-        <>
-          {icon && <Ionicons name={icon} size={18} color={color} style={{ marginRight: 8 }} />}
-          <Text style={[styles.btnText, { color }]}>{label}</Text>
-        </>
-      )}
-    </TouchableOpacity>
-  );
+  const mapped = icon ? glyphToIcon(icon) ?? (isIconName(String(icon)) ? (icon as any) : undefined) : undefined;
+  return <VeroButton label={label} onPress={onPress} icon={mapped} variant={variant === 'danger' ? 'dangerSoft' : variant} loading={loading} disabled={disabled} />;
 }
 
-export function Note({ icon = 'information-circle', children, tone = 'info' }: { icon?: keyof typeof Ionicons.glyphMap; children: React.ReactNode; tone?: 'info' | 'warning' | 'success' }) {
-  const color = tone === 'warning' ? Colors.warning : tone === 'success' ? Colors.emerald : Colors.accent;
+export function Note({ icon = 'info', children, tone = 'info' }: { icon?: GlyphName; children: React.ReactNode; tone?: 'info' | 'warning' | 'success' }) {
+  const { c } = useTheme();
+  const s = useStyles();
+  const color = tone === 'warning' ? c.danger : tone === 'success' ? c.success : c.accentText;
+  const bg = tone === 'warning' ? c.dangerTint : tone === 'success' ? c.successTint : c.accentTint;
   return (
-    <View style={styles.note}>
-      <Ionicons name={icon} size={16} color={color} style={{ marginTop: 1 }} />
-      <Text style={styles.noteText}>{children}</Text>
+    <View style={[s.note, { backgroundColor: bg }]}>
+      <View style={s.noteIcon}>
+        <Glyph name={icon} size={15} color={color} />
+      </View>
+      <Text style={s.noteText}>{children}</Text>
     </View>
   );
 }
 
+/** Icon tile + title + body, for the steps of a linking/transfer flow. */
+export function FlowCard({ icon, tone = 'brass', title, body, children }: { icon: GlyphName; tone?: 'brass' | 'success' | 'danger'; title: string; body?: string; children?: React.ReactNode }) {
+  const { c, type } = useTheme();
+  const s = useStyles();
+  const color = tone === 'success' ? c.success : tone === 'danger' ? c.danger : c.accentText;
+  const bg = tone === 'success' ? c.successTint : tone === 'danger' ? c.dangerTint : c.accentTint;
+  return (
+    <Animated.View entering={ZoomIn.springify().damping(16)} style={[s.card, { alignItems: 'center', gap: 14, paddingVertical: 26 }]}>
+      <View style={[s.flowIcon, { backgroundColor: bg }]}>
+        <Glyph name={icon} size={30} color={color} />
+      </View>
+      <Text style={[type.h2, { textAlign: 'center' }]}>{title}</Text>
+      {body ? <Text style={[type.bodyMuted, { textAlign: 'center' }]}>{body}</Text> : null}
+      {children}
+    </Animated.View>
+  );
+}
+
+/** Determinate when `value` is a number, a gentle shimmer when null. */
 export function ProgressBar({ value }: { value: number | null }) {
+  const s = useStyles();
+  const pulse = useSharedValue(0.4);
+  const width = useSharedValue(0);
+  useEffect(() => {
+    if (value == null) pulse.value = withRepeat(withSequence(withTiming(1, { duration: 700 }), withTiming(0.4, { duration: 700 })), -1);
+    else pulse.value = withTiming(1, { duration: 200 });
+  }, [value == null]);
+  useEffect(() => {
+    width.value = withTiming(Math.min(1, Math.max(0.04, value ?? 0.12)), { duration: 260 });
+  }, [value]);
+  const a = useAnimatedStyle(() => ({ width: `${width.value * 100}%`, opacity: pulse.value }));
   return (
-    <View style={styles.progressTrack}>
-      <View style={[styles.progressFill, { width: `${Math.round(Math.min(1, Math.max(0.03, value ?? 0.08)) * 100)}%` }]} />
+    <View style={s.track} accessibilityRole="progressbar" accessibilityValue={value == null ? undefined : { min: 0, max: 100, now: Math.round(value * 100) }}>
+      <Animated.View style={[s.fill, a]} />
     </View>
   );
 }
 
+/** Layout styles for these screens; content is capped and centred for desktop. */
+export const useLinkStyles = makeStyles((c, t, f) => ({
+  title: { ...t.h2, textAlign: 'center' },
+  body: { ...t.bodyMuted, textAlign: 'center' },
+  label: { fontFamily: f.semibold, fontSize: 14, color: c.text },
+  muted: { ...t.caption },
+  content: { padding: 20, gap: 16, paddingBottom: 60, width: '100%', maxWidth: 560, alignSelf: 'center' },
+  center: { alignItems: 'center', gap: 12 },
+  input: {
+    backgroundColor: c.field,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: c.line2,
+    color: c.text,
+    paddingHorizontal: 14,
+    height: 50,
+    fontFamily: f.body,
+    fontSize: 15,
+    outlineStyle: 'none',
+  } as any,
+  screen: { flex: 1, backgroundColor: c.bg },
+}));
+
+const useStyles = makeStyles((c, t, f) => ({
+  header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: c.line, backgroundColor: c.bg },
+  card: { backgroundColor: c.panel, borderRadius: 24, borderWidth: 1, borderColor: c.line, padding: 18, gap: 12 },
+  note: { flexDirection: 'row', gap: 10, borderRadius: 16, padding: 12, alignItems: 'flex-start' },
+  noteIcon: { width: 28, height: 28, borderRadius: 9, backgroundColor: c.raised, alignItems: 'center', justifyContent: 'center' },
+  noteText: { flex: 1, fontFamily: f.body, fontSize: 13, lineHeight: f.script === 'latin' ? 19 : 22, color: c.muted, paddingTop: 4 },
+  flowIcon: { width: 72, height: 72, borderRadius: 24, alignItems: 'center', justifyContent: 'center' },
+  track: { height: 8, borderRadius: 4, backgroundColor: c.field, overflow: 'hidden', width: '100%' },
+  fill: { height: 8, borderRadius: 4, backgroundColor: c.accent },
+}));
+
+/**
+ * Legacy static styles for screens not yet moved to the themed kit (dark palette via the Colors
+ * bridge). Prefer useLinkStyles().
+ */
 export const ui = StyleSheet.create({
   title: { fontSize: Typography.xl, fontWeight: Typography.bold, color: Colors.textPrimary, textAlign: 'center' },
   body: { fontSize: Typography.sm, color: Colors.textSecondary, lineHeight: 20, textAlign: 'center' },
@@ -103,60 +160,4 @@ export const ui = StyleSheet.create({
     fontSize: Typography.base,
   },
   screen: { flex: 1, backgroundColor: Colors.background },
-});
-
-const styles = StyleSheet.create({
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: Spacing.xl,
-    paddingVertical: Spacing.md,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-    backgroundColor: Colors.background,
-  },
-  headerTitle: { flex: 1, textAlign: 'center', fontSize: Typography.lg, fontWeight: Typography.bold, color: Colors.textPrimary },
-  iconBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: Colors.surfaceGlassLight,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  iconBtnPlaceholder: { width: 38, height: 38, justifyContent: 'center', alignItems: 'center' },
-  card: {
-    backgroundColor: Colors.surface,
-    borderRadius: BorderRadius.xl,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    padding: Spacing.lg,
-    gap: Spacing.md,
-  },
-  btn: {
-    height: 50,
-    borderRadius: BorderRadius.lg,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: Spacing.lg,
-  },
-  primary: { backgroundColor: Colors.accent },
-  secondary: { backgroundColor: Colors.accentSubtle, borderWidth: 1, borderColor: Colors.borderAccent },
-  danger: { backgroundColor: 'rgba(244, 63, 94, 0.1)', borderWidth: 1, borderColor: 'rgba(244, 63, 94, 0.35)' },
-  disabled: { opacity: 0.55 },
-  btnText: { fontSize: Typography.base, fontWeight: Typography.bold },
-  note: {
-    flexDirection: 'row',
-    gap: Spacing.sm,
-    backgroundColor: Colors.surfaceElevated,
-    borderRadius: BorderRadius.lg,
-    padding: Spacing.md,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  noteText: { flex: 1, fontSize: Typography.xs, color: Colors.textSecondary, lineHeight: 18 },
-  progressTrack: { height: 8, borderRadius: 4, backgroundColor: Colors.surfaceHighlight, overflow: 'hidden', width: '100%' },
-  progressFill: { height: 8, borderRadius: 4, backgroundColor: Colors.accent },
 });

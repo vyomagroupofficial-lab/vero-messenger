@@ -1,22 +1,29 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Text, ScrollView, ActivityIndicator } from 'react-native';
+import { ActivityIndicator, ScrollView, Text, View } from 'react-native';
+import Animated, { ZoomIn } from 'react-native-reanimated';
 import { router } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { TransferReceiver } from '../../src/features/transfer/flows';
 import { TransferCancelledError, TransferProgress } from '../../src/features/transfer/TransferService';
 import { QrCodeView } from '../../src/features/linking/QrCodeView';
 import { useAuthStore } from '../../src/features/auth/useAuthStore';
 import { useChatsStore } from '../../src/features/chats/useChatsStore';
 import { friendlyError } from '../../src/core/network/supabase';
-import { Button, Card, Note, ProgressBar, ScreenHeader, ui } from '../../src/features/linking/ui';
-import { Colors } from '../../src/shared/theme/theme';
+import { FlowCard, Note, ProgressBar, ScreenHeader, useLinkStyles } from '../../src/features/linking/ui';
+import { makeStyles, useTheme } from '../../src/shared/theme/ThemeProvider';
+import { useT } from '../../src/shared/i18n';
+import { Button } from '../../src/shared/ui';
 
 type Phase = 'preparing' | 'waiting' | 'receiving' | 'done' | 'error';
 
 /** NEW phone: show a QR for the old phone, then import its chats. */
 export default function ReceiveTransferScreen() {
-  const isDemo = useAuthStore((s) => s.isDemo);
+  const insets = useSafeAreaInsets();
+  const { c, type } = useTheme();
+  const ui = useLinkStyles();
+  const s = useStyles();
+  const t = useT();
+  const isDemo = useAuthStore((st) => st.isDemo);
   const receiver = useRef<TransferReceiver | null>(null);
   const [phase, setPhase] = useState<Phase>('preparing');
   const [qr, setQr] = useState<string | null>(null);
@@ -63,58 +70,59 @@ export default function ReceiveTransferScreen() {
     void run(true);
   };
 
+  const status =
+    progress?.phase === 'importing'
+      ? t('transfer.importing')
+      : progress?.phase === 'waiting' || !progress
+      ? t('transfer.waitingOld')
+      : progress.total
+      ? t('transfer.downloadedOf', { done: progress.done, total: progress.total })
+      : t('transfer.downloaded', { done: progress.done });
+
   return (
-    <SafeAreaView style={ui.screen} edges={['top']}>
-      <ScreenHeader title="Receive chats" />
-      <ScrollView contentContainerStyle={ui.content}>
+    <View style={[ui.screen, { paddingTop: insets.top }]}>
+      <ScreenHeader title={t('transfer.receiveTitle')} />
+      <ScrollView contentContainerStyle={[ui.content, { paddingBottom: insets.bottom + 40 }]}>
         {isDemo ? (
-          <Note icon="sparkles">Transfers need a real account.</Note>
+          <Note icon="info">{t('transfer.demo')}</Note>
         ) : phase === 'preparing' ? (
-          <ActivityIndicator color={Colors.accent} style={{ marginTop: 40 }} />
+          <ActivityIndicator color={c.accent} style={{ marginTop: 40 }} />
         ) : phase === 'waiting' && qr ? (
           <>
-            <Card style={ui.center}>
-              <QrCodeView value={qr} size={250} />
-              <Text style={ui.body}>
-                On your OLD phone open Settings → Devices & transfer → "Transfer chats to a new phone" and scan this code.
-              </Text>
-            </Card>
-            <Note icon="lock-closed-outline">
-              The old phone encrypts everything to a one-time key that exists only on this phone. Private keys are not
-              copied: this phone already has its own.
-            </Note>
+            <Animated.View entering={ZoomIn.springify().damping(15)} style={s.card}>
+              <View style={s.qrFrame}>
+                <QrCodeView value={qr} size={240} />
+              </View>
+              <Text style={[type.body, { textAlign: 'center', color: c.muted }]}>{t('transfer.receiveHint')}</Text>
+            </Animated.View>
+            <Note icon="lock">{t('transfer.receiveNote')}</Note>
           </>
         ) : phase === 'receiving' ? (
-          <Card style={ui.center}>
-            <Ionicons name="cloud-download-outline" size={40} color={Colors.accent} />
-            <Text style={ui.title}>Receiving chats…</Text>
-            <ProgressBar value={progress?.total ? progress.done / progress.total : null} />
-            <Text style={ui.muted}>
-              {progress?.phase === 'importing'
-                ? 'Decrypting and saving…'
-                : progress?.phase === 'waiting' || !progress
-                  ? 'Waiting for the old phone…'
-                  : `${progress.done}${progress.total ? ` of ${progress.total}` : ''} parts downloaded`}
-            </Text>
-            <Text style={ui.muted}>If the connection drops, reopen this screen to resume.</Text>
-          </Card>
+          <FlowCard icon="download" title={t('transfer.receiving')}>
+            <View style={{ alignSelf: 'stretch', gap: 8, alignItems: 'center' }}>
+              <ProgressBar value={progress?.total ? progress.done / progress.total : null} />
+              <Text style={type.caption}>{status}</Text>
+              <Text style={type.caption}>{t('transfer.resumeHint')}</Text>
+            </View>
+          </FlowCard>
         ) : phase === 'done' ? (
           <>
-            <Card style={ui.center}>
-              <Ionicons name="checkmark-circle" size={48} color={Colors.emerald} />
-              <Text style={ui.title}>Chats transferred</Text>
-              <Text style={ui.body}>{rows} items imported. Media will download again when you open it.</Text>
-            </Card>
-            <Button label="Go to chats" onPress={() => router.replace('/(tabs)/chats')} />
+            <FlowCard icon="check" tone="success" title={t('transfer.received')} body={t('transfer.receivedBody', { count: rows })} />
+            <Button label={t('transfer.goToChats')} iconRight="arrowRight" onPress={() => router.replace('/(tabs)/chats')} />
           </>
         ) : (
           <>
-            <Note icon="alert-circle" tone="warning">{error || 'Something went wrong.'}</Note>
-            <Button label="Try again" icon="refresh" onPress={() => void run(false)} />
-            <Button label="Start over with a new code" variant="secondary" onPress={() => void startOver()} />
+            <FlowCard icon="info" tone="danger" title={t('transfer.failed')} body={error || t('transfer.somethingWrong')} />
+            <Button label={t('common.retry')} onPress={() => void run(false)} />
+            <Button label={t('transfer.startOver')} variant="secondary" onPress={() => void startOver()} />
           </>
         )}
       </ScrollView>
-    </SafeAreaView>
+    </View>
   );
 }
+
+const useStyles = makeStyles((c, t, f) => ({
+  card: { alignItems: 'center', gap: 16, padding: 22, borderRadius: 28, backgroundColor: c.panel, borderWidth: 1, borderColor: c.line },
+  qrFrame: { padding: 14, borderRadius: 24, backgroundColor: '#FFFFFF', borderWidth: 3, borderColor: c.accent },
+}));

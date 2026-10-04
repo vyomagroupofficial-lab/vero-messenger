@@ -1,71 +1,52 @@
-import React from 'react';
-import { StyleSheet, Text, View } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
-import { BorderRadius, Colors, Typography } from '../../../shared/theme/theme';
-
-const AVATAR_COLORS = [Colors.accent, Colors.purple, Colors.emerald, Colors.warning, Colors.teal];
-
-function colorFor(seed: string): string {
-  let h = 0;
-  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) | 0;
-  return AVATAR_COLORS[Math.abs(h) % AVATAR_COLORS.length];
-}
+import React, { useEffect } from 'react';
+import { View } from 'react-native';
+import Animated, { useAnimatedStyle, useSharedValue, withRepeat, withSequence, withTiming } from 'react-native-reanimated';
+import { useTheme } from '../../../shared/theme/ThemeProvider';
+import { Avatar, Icon } from '../../../shared/ui';
 
 interface Props {
   userId: string;
   name: string;
   size?: number;
-  /** 'unseen' = bright ring, 'seen' = subtle ring, 'none' = no stories. */
+  /** 'unseen' = brass ring, 'seen' = quiet ring, 'none' = no stories. */
   state: 'unseen' | 'seen' | 'none';
   muted?: boolean;
   /** Shows a "+" badge (my own ring). */
   showAdd?: boolean;
+  /** Background behind the ring, for the gap and badge cutout. */
+  cutout?: string;
 }
 
-export function StoryRing({ userId, name, size = 60, state, muted, showAdd }: Props) {
-  const inner = size - 8;
-  const ringColor = state === 'unseen' ? Colors.accentLight : state === 'seen' ? Colors.borderLight : 'transparent';
+export function StoryRing({ userId, name, size = 60, state, muted, showAdd, cutout }: Props) {
+  const { c } = useTheme();
+  const bg = cutout ?? c.bg;
+  const glow = useSharedValue(1);
+  useEffect(() => {
+    if (state === 'unseen') glow.value = withRepeat(withSequence(withTiming(0.55, { duration: 1400 }), withTiming(1, { duration: 1400 })), -1);
+    else glow.value = 1;
+  }, [state]);
+  const ringStyle = useAnimatedStyle(() => ({ opacity: glow.value }));
+  const ring = state === 'unseen' ? 2.5 : state === 'seen' ? 1.5 : 0;
+  const inner = size - (state === 'none' ? 0 : 8);
+
   return (
-    <View style={{ opacity: muted ? 0.45 : 1 }}>
-      <View
-        style={[
-          styles.ring,
-          { width: size, height: size, borderRadius: size / 2, borderColor: ringColor, borderWidth: state === 'unseen' ? 2.5 : 1.5 },
-        ]}
-      >
-        <View
+    <View style={{ width: size, height: size, opacity: muted ? 0.45 : 1 }}>
+      {state !== 'none' && (
+        <Animated.View
           style={[
-            styles.avatar,
-            { width: inner, height: inner, borderRadius: inner / 2, backgroundColor: colorFor(userId) },
+            { position: 'absolute', top: 0, left: 0, width: size, height: size, borderRadius: size / 2, borderWidth: ring, borderColor: state === 'unseen' ? c.accent : c.line3 },
+            state === 'unseen' && ringStyle,
           ]}
-        >
-          <Text style={[styles.initials, { fontSize: inner * 0.34 }]}>{name.slice(0, 2).toUpperCase()}</Text>
-        </View>
+        />
+      )}
+      <View style={{ position: 'absolute', left: (size - inner) / 2, top: (size - inner) / 2 }}>
+        <Avatar name={name || userId} size={inner} />
       </View>
       {showAdd && (
-        <View style={styles.addBadge}>
-          <Ionicons name="add" size={14} color={Colors.textInverse} />
+        <View style={{ position: 'absolute', right: -2, bottom: -2, width: 24, height: 24, borderRadius: 12, backgroundColor: c.accent, borderWidth: 2.5, borderColor: bg, alignItems: 'center', justifyContent: 'center' }}>
+          <Icon name="plus" size={13} color={c.onAccent} strokeWidth={2.6} />
         </View>
       )}
     </View>
   );
 }
-
-const styles = StyleSheet.create({
-  ring: { alignItems: 'center', justifyContent: 'center' },
-  avatar: { alignItems: 'center', justifyContent: 'center' },
-  initials: { color: Colors.white, fontWeight: Typography.bold },
-  addBadge: {
-    position: 'absolute',
-    right: -2,
-    bottom: -2,
-    width: 22,
-    height: 22,
-    borderRadius: BorderRadius.full,
-    backgroundColor: Colors.accentLight,
-    borderWidth: 2,
-    borderColor: Colors.background,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-});

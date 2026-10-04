@@ -1,16 +1,23 @@
 import React, { useEffect, useState } from 'react';
-import { ScrollView, Text, TextInput, View } from 'react-native';
+import { ScrollView, View } from 'react-native';
+import Animated, { FadeIn } from 'react-native-reanimated';
 import { router } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { friendlyError } from '../../src/core/network/supabase';
 import { channelRepository } from '../../src/features/channels/ChannelRepository';
-import { CHANNELS_E2EE_NOTICE, isValidHandle, normalizeHandle, suggestHandle } from '../../src/features/channels/channelUtils';
+import { isValidHandle, normalizeHandle, suggestHandle } from '../../src/features/channels/channelUtils';
 import { channelsStore } from '../../src/features/channels/useChannelsStore';
-import { Banner, groupStyles as gs, PrimaryButton, ScreenHeader, SectionHeader, ToggleRow } from '../../src/features/groups/components/GroupComponents';
+import { Banner, EntityAvatar, ScreenHeader, ToggleRow, useGroupStyles } from '../../src/features/groups/components/GroupComponents';
 import { notify } from '../../src/features/groups/components/ui';
-import { Colors } from '../../src/shared/theme/theme';
+import { useTheme } from '../../src/shared/theme/ThemeProvider';
+import { useT } from '../../src/shared/i18n';
+import { Button, TextField } from '../../src/shared/ui';
 
 export default function NewChannelScreen() {
+  const insets = useSafeAreaInsets();
+  const { c, type } = useTheme();
+  const gs = useGroupStyles();
+  const t = useT();
   const [name, setName] = useState('');
   const [handle, setHandle] = useState('');
   const [handleTouched, setHandleTouched] = useState(false);
@@ -27,7 +34,7 @@ export default function NewChannelScreen() {
     setAvailable(null);
     if (!isValidHandle(handle)) return;
     let cancelled = false;
-    const t = setTimeout(() => {
+    const timer = setTimeout(() => {
       channelRepository
         .handleAvailable(handle)
         .then((ok) => !cancelled && setAvailable(ok))
@@ -35,77 +42,75 @@ export default function NewChannelScreen() {
     }, 300);
     return () => {
       cancelled = true;
-      clearTimeout(t);
+      clearTimeout(timer);
     };
   }, [handle]);
 
   const create = async () => {
     setSaving(true);
     try {
-      const id = await channelRepository.create({
-        name: name.trim(),
-        handle,
-        description: description.trim() || undefined,
-        visibility: isPrivate ? 'private' : 'public',
-      });
+      const id = await channelRepository.create({ name: name.trim(), handle, description: description.trim() || undefined, visibility: isPrivate ? 'private' : 'public' });
       void channelsStore.getState().loadMine().catch(() => undefined);
       router.replace(`/channels/${id}`);
     } catch (e) {
-      notify('Could not create channel', friendlyError(e));
+      notify(t('channels.createFailed'), friendlyError(e));
     } finally {
       setSaving(false);
     }
   };
 
-  const handleHint = !handle
-    ? '3-32 lowercase letters, digits or _'
-    : !isValidHandle(handle)
-      ? 'Use 3-32 lowercase letters, digits or _'
-      : available === false
-        ? 'That handle is taken'
-        : available
-          ? 'Available'
-          : 'Checking…';
+  const valid = isValidHandle(handle);
+  const handleHint = !handle ? t('channels.handleRule') : !valid ? t('channels.handleInvalid') : available === false ? t('channels.handleTaken') : available ? t('channels.handleOk') : t('channels.handleChecking');
+  const hintColor = available === false || (handle && !valid) ? c.danger : available ? c.success : c.muted;
 
   return (
-    <SafeAreaView style={gs.container} edges={['top']}>
-      <ScreenHeader title="New channel" onBack={() => router.back()} />
-      <ScrollView contentContainerStyle={gs.scroll} keyboardShouldPersistTaps="handled">
-        <Banner icon="information-circle-outline" tone="warning" text={CHANNELS_E2EE_NOTICE + ' Followers can\'t see who runs the channel or who else follows it.'} />
-        <SectionHeader title="Name" />
-        <TextInput style={gs.input} value={name} onChangeText={setName} maxLength={64} placeholder="Channel name" placeholderTextColor={Colors.textTertiary} />
-        <SectionHeader title="Handle" />
-        <TextInput
-          style={gs.input}
-          value={handle}
-          onChangeText={(t) => {
-            setHandleTouched(true);
-            setHandle(normalizeHandle(t));
-          }}
-          autoCapitalize="none"
-          placeholder="handle"
-          placeholderTextColor={Colors.textTertiary}
-        />
-        <Text style={[gs.muted, { paddingHorizontal: 16, color: available === false ? Colors.error : Colors.textTertiary }]}>{handleHint}</Text>
-        <SectionHeader title="Description" />
-        <TextInput
-          style={[gs.input, { minHeight: 80 }]}
+    <View style={[gs.container, { paddingTop: insets.top }]}>
+      <ScreenHeader title={t('channels.new')} onBack={() => router.back()} />
+      <ScrollView contentContainerStyle={[gs.scroll, { paddingHorizontal: 16, gap: 14, paddingTop: 16 }]} keyboardShouldPersistTaps="handled">
+        <View style={{ alignItems: 'center', paddingVertical: 8 }}>
+          <EntityAvatar name={name} size={84} icon="megaphone" />
+        </View>
+        <View style={{ marginHorizontal: -16 }}>
+          <Banner icon="info" tone="warning" text={`${t('channels.notice')} ${t('channels.anonNote')}`} />
+        </View>
+        <TextField label={t('channels.name')} icon="megaphone" value={name} onChangeText={setName} maxLength={64} placeholder={t('channels.namePlaceholder')} />
+        <View style={{ gap: 6 }}>
+          <TextField
+            label={t('channels.handle')}
+            icon="at"
+            value={handle}
+            onChangeText={(v) => {
+              setHandleTouched(true);
+              setHandle(normalizeHandle(v));
+            }}
+            autoCapitalize="none"
+            placeholder="handle"
+          />
+          <Animated.Text key={handleHint} entering={FadeIn} style={[type.caption, { color: hintColor, paddingHorizontal: 4 }]}>
+            {handleHint}
+          </Animated.Text>
+        </View>
+        <TextField
+          label={t('channels.description')}
+          icon="edit"
           value={description}
           onChangeText={setDescription}
           maxLength={1024}
           multiline
-          placeholder="What is this channel about? (optional)"
-          placeholderTextColor={Colors.textTertiary}
+          placeholder={t('channels.descriptionPlaceholder')}
         />
-        <ToggleRow
-          label="Private channel"
-          sublabel="Hidden from search; people follow it with an invite link"
-          value={isPrivate}
-          onChange={setIsPrivate}
+        <View style={{ marginHorizontal: -16 }}>
+          <ToggleRow label={t('channels.private')} sublabel={t('channels.privateHint')} value={isPrivate} onChange={setIsPrivate} />
+        </View>
+        <Button
+          label={t('channels.create')}
+          icon="megaphone"
+          loading={saving}
+          disabled={!name.trim() || !valid || available === false}
+          onPress={() => void create()}
+          style={{ marginBottom: insets.bottom + 16 }}
         />
-        <View style={{ height: 12 }} />
-        <PrimaryButton label="Create channel" onPress={() => void create()} disabled={saving || !name.trim() || !isValidHandle(handle) || available === false} />
       </ScrollView>
-    </SafeAreaView>
+    </View>
   );
 }

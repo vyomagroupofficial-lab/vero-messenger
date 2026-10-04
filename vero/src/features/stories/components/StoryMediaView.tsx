@@ -5,10 +5,11 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Image, StyleSheet, Text, View } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
 import { useEventListener } from 'expo';
 import { useVideoPlayer, VideoView } from 'expo-video';
-import { Colors, Spacing, Typography } from '../../../shared/theme/theme';
+import i18n from '../../../shared/i18n';
+import { Fonts } from '../../../shared/theme/theme';
+import { Icon } from '../../../shared/ui';
 import { MAX_STORY_VIDEO_MS, StoryMediaRef } from '../payload';
 import { downloadStoryMedia } from '../storyMedia';
 import { PHOTO_STORY_MS } from '../viewerMachine';
@@ -35,7 +36,7 @@ export function StoryMediaView({ storyId, kind, media, paused, onReady }: Props)
       .then((u) => alive && setUri(u))
       .catch((e) => {
         if (!alive) return;
-        setError(e?.message || "This story couldn't be loaded.");
+        setError(e?.message || i18n.t('stories.loadFailed'));
         onReady(ERROR_STORY_MS);
       });
     return () => {
@@ -48,7 +49,7 @@ export function StoryMediaView({ storyId, kind, media, paused, onReady }: Props)
   if (error) {
     return (
       <View style={styles.center}>
-        <Ionicons name="lock-closed" size={28} color={Colors.textSecondary} />
+        <Icon name="lock" size={28} color="#D9D2C1" />
         <Text style={styles.error}>{error}</Text>
       </View>
     );
@@ -56,8 +57,8 @@ export function StoryMediaView({ storyId, kind, media, paused, onReady }: Props)
   if (!uri) {
     return (
       <View style={styles.center}>
-        <ActivityIndicator color={Colors.white} />
-        <Text style={styles.hint}>Decrypting…</Text>
+        <ActivityIndicator color="#E7BD72" />
+        <Text style={styles.hint}>{i18n.t('stories.decrypting')}</Text>
       </View>
     );
   }
@@ -69,7 +70,7 @@ export function StoryMediaView({ storyId, kind, media, paused, onReady }: Props)
       resizeMode="contain"
       onLoad={() => onReady(PHOTO_STORY_MS)}
       onError={() => {
-        setError("This photo couldn't be shown.");
+        setError(i18n.t('stories.photoFailed'));
         onReady(ERROR_STORY_MS);
       }}
     />
@@ -111,7 +112,7 @@ function StoryVideo({ uri, paused, onReady }: { uri: string; paused: boolean; on
 }
 
 const styles = StyleSheet.create({
-  center: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, alignItems: 'center', justifyContent: 'center', gap: Spacing.sm, padding: Spacing.xl },
-  hint: { color: Colors.textSecondary, fontSize: Typography.sm },
-  error: { color: Colors.textSecondary, fontSize: Typography.base, textAlign: 'center' },
+  center: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, alignItems: 'center', justifyContent: 'center', gap: 10, padding: 24 },
+  hint: { fontFamily: Fonts.medium, color: '#D9D2C1', fontSize: 13 },
+  error: { fontFamily: Fonts.body, color: '#D9D2C1', fontSize: 15, textAlign: 'center' },
 });

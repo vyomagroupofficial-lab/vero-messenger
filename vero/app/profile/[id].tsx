@@ -1,17 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import {
-  View,
-  Text,
-  ScrollView,
-  StyleSheet,
-  TouchableOpacity,
-  Alert,
-  ActivityIndicator,
-} from 'react-native';
-import { useLocalSearchParams, router } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
-import { Colors, Typography, Spacing, BorderRadius } from '../../src/shared/theme/theme';
+import { ActivityIndicator, Platform, ScrollView, Share, Text, View } from 'react-native';
+import Animated, { FadeIn, ZoomIn } from 'react-native-reanimated';
+import { router, useLocalSearchParams } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import * as Clipboard from 'expo-clipboard';
 import { friendlyError } from '../../src/core/network/supabase';
 import { useAuthStore } from '../../src/features/auth/useAuthStore';
 import { useChatsStore } from '../../src/features/chats/useChatsStore';
@@ -19,20 +11,62 @@ import { DEMO_CONTACTS } from '../../src/features/demo/demoData';
 import { conversationRepository } from '../../src/features/chats/ConversationRepository';
 import { callService } from '../../src/features/calls/CallService';
 import { databaseService } from '../../src/core/storage/DatabaseService';
+import { makeStyles, useTheme } from '../../src/shared/theme/ThemeProvider';
+import { useT } from '../../src/shared/i18n';
+import { Avatar, Eyebrow, Grain, Hatch, Icon, IconButton, IconName, Pill, Pressy, Rise, Sheet, SheetRow, confirmAction, notify, useLayout } from '../../src/shared/ui';
+
+function Item({ icon, label, hint, hintColor, onPress, right, first, danger }: {
+  icon: IconName;
+  label: string;
+  hint?: string;
+  hintColor?: string;
+  onPress?: () => void;
+  right?: React.ReactNode;
+  first?: boolean;
+  danger?: boolean;
+}) {
+  const { c, type } = useTheme();
+  const s = useStyles();
+  const body = (
+    <View style={[s.item, !first && s.itemBorder]}>
+      <View style={[s.itemIcon, danger && { backgroundColor: c.dangerTint }]}>
+        <Icon name={icon} size={19} color={danger ? c.danger : c.accentText} />
+      </View>
+      <View style={{ flex: 1, gap: 2 }}>
+        <Text style={[s.itemLabel, danger && { color: c.danger }]}>{label}</Text>
+        {hint ? <Text style={[type.caption, hintColor ? { color: hintColor } : null]}>{hint}</Text> : null}
+      </View>
+      {right ?? (onPress && !danger ? <Icon name="forwardChevron" size={18} color={c.faint} /> : null)}
+    </View>
+  );
+  return onPress ? (
+    <Pressy onPress={onPress} scaleTo={0.985} accessibilityLabel={label}>
+      {body}
+    </Pressy>
+  ) : (
+    body
+  );
+}
 
 export default function ProfileScreen() {
+  const insets = useSafeAreaInsets();
+  const { isWide } = useLayout();
+  const { c, type } = useTheme();
+  const s = useStyles();
+  const t = useT();
   const { id } = useLocalSearchParams<{ id: string }>();
-  const isDemo = useAuthStore((s) => s.isDemo);
-  const conversations = useChatsStore((s) => s.conversations);
+  const isDemo = useAuthStore((st) => st.isDemo);
+  const conversations = useChatsStore((st) => st.conversations);
 
-  const [displayName, setDisplayName] = useState('Contact');
+  const [displayName, setDisplayName] = useState(t('profile.contact'));
   const [username, setUsername] = useState('');
   const [about, setAbout] = useState<string | null>(null);
   const [isVerified, setIsVerified] = useState(false);
   const [isBlocked, setIsBlocked] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [showReport, setShowReport] = useState(false);
 
-  const directConversation = conversations.find((c) => c.otherUser?.id === id);
+  const directConversation = conversations.find((cv) => cv.otherUser?.id === id);
 
   useEffect(() => {
     let cancelled = false;
@@ -48,10 +82,7 @@ export default function ProfileScreen() {
           setAbout(profile.about ?? null);
         }
         if (!isDemo) {
-          const [verified, blocked] = await Promise.all([
-            databaseService.getVerifiedSafetyNumber(id),
-            conversationRepository.isBlocked(id),
-          ]);
+          const [verified, blocked] = await Promise.all([databaseService.getVerifiedSafetyNumber(id), conversationRepository.isBlocked(id)]);
           if (cancelled) return;
           setIsVerified(verified !== null);
           setIsBlocked(blocked);
@@ -72,25 +103,24 @@ export default function ProfileScreen() {
       router.push(`/chat/${directConversation.id}`);
       return;
     }
-    if (isDemo) return;
+    if (isDemo) return notify(t('profile.demoTitle'), t('profile.demoBody'));
     try {
       const conversationId = await conversationRepository.createDirectConversation(id);
       router.push(`/chat/${conversationId}`);
     } catch (e) {
-      Alert.alert('Could not start chat', friendlyError(e));
+      notify(t('contacts.startFailed'), friendlyError(e));
     }
   };
 
-  const handleStartCall = async (type: 'voice' | 'video') => {
+  const handleStartCall = async (callType: 'voice' | 'video') => {
     if (!id) return;
     try {
-      const conversationId =
-        directConversation?.id ?? (isDemo ? null : await conversationRepository.createDirectConversation(id));
-      if (!conversationId) return;
-      const callId = await callService.startCall({ conversationId, peerId: id, peerName: displayName, callType: type });
+      const conversationId = directConversation?.id ?? (isDemo ? null : await conversationRepository.createDirectConversation(id));
+      if (!conversationId) return notify(t('profile.demoTitle'), t('profile.demoBody'));
+      const callId = await callService.startCall({ conversationId, peerId: id, peerName: displayName, callType });
       router.push(`/call/${callId}`);
     } catch (e) {
-      Alert.alert('Call failed', friendlyError(e));
+      notify(t('calls.failed'), friendlyError(e));
     }
   };
 
@@ -100,499 +130,171 @@ export default function ProfileScreen() {
   };
 
   const handleToggleBlock = () => {
-    if (!id || isDemo) return;
+    if (!id || isDemo) return notify(t('profile.demoTitle'), t('profile.demoBody'));
     if (isBlocked) {
       conversationRepository
         .unblockUser(id)
         .then(() => setIsBlocked(false))
-        .catch((e) => Alert.alert('Could not unblock', friendlyError(e)));
+        .catch((e) => notify(t('profile.unblockFailed'), friendlyError(e)));
       return;
     }
-    Alert.alert('Block contact', `Block ${displayName}? They won't be able to message or call you.`, [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Block',
-        style: 'destructive',
-        onPress: () =>
-          conversationRepository
-            .blockUser(id)
-            .then(() => setIsBlocked(true))
-            .catch((e) => Alert.alert('Could not block', friendlyError(e))),
-      },
-    ]);
+    confirmAction({
+      title: t('profile.blockTitle'),
+      message: t('profile.blockBody', { name: displayName }),
+      confirmLabel: t('profile.blockConfirm'),
+      destructive: true,
+      onConfirm: () =>
+        conversationRepository
+          .blockUser(id)
+          .then(() => setIsBlocked(true))
+          .catch((e) => notify(t('profile.blockFailed'), friendlyError(e))),
+    });
   };
 
-  const handleReport = () => {
+  const submitReport = (reason: string) => {
+    setShowReport(false);
     if (!id || isDemo) return;
-    const submit = (reason: string) =>
-      conversationRepository
-        .reportUser(id, reason, directConversation?.id)
-        .then(() => Alert.alert('Report sent', 'Thanks. Reports never include your message content.'))
-        .catch((e) => Alert.alert('Could not send report', friendlyError(e)));
-    Alert.alert('Report contact', 'Why are you reporting this account?', [
-      { text: 'Spam', onPress: () => submit('spam') },
-      { text: 'Harassment', onPress: () => submit('harassment') },
-      { text: 'Impersonation', onPress: () => submit('impersonation') },
-      { text: 'Cancel', style: 'cancel' },
-    ]);
+    conversationRepository
+      .reportUser(id, reason, directConversation?.id)
+      .then(() => notify(t('profile.reportSent'), t('profile.reportSentBody')))
+      .catch((e) => notify(t('profile.reportFailed'), friendlyError(e)));
   };
 
-  const initials = displayName.slice(0, 2).toUpperCase();
+  const shareContact = async () => {
+    const text = t('profile.shareText', { name: displayName, username });
+    try {
+      if (Platform.OS === 'web' && !(typeof navigator !== 'undefined' && 'share' in navigator)) throw new Error('no share');
+      await Share.share({ message: text });
+    } catch {
+      await Clipboard.setStringAsync(text).catch(() => undefined);
+      notify(t('settings.keys.copied'), text);
+    }
+  };
+
+  const actions: [IconName, string, () => void][] = [
+    ['chat', t('profile.message'), handleStartChat],
+    ['phone', t('profile.voice'), () => handleStartCall('voice')],
+    ['video', t('profile.video'), () => handleStartCall('video')],
+  ];
+
+  const hero = (
+    <View style={[s.hero, isWide && s.heroWide]}>
+      {isWide && <Hatch />}
+      <Animated.View entering={ZoomIn.springify().damping(13)}>
+        <Avatar name={displayName} size={isWide ? 148 : 120} ring />
+      </Animated.View>
+      <Animated.View entering={FadeIn.delay(100)} style={{ alignItems: 'center', gap: 4 }}>
+        <Text style={[type.title, { fontSize: isWide ? 34 : 28, textAlign: 'center' }]}>{displayName}</Text>
+        {username ? <Text style={s.handle}>@{username}</Text> : null}
+      </Animated.View>
+      {about ? (
+        <Animated.Text entering={FadeIn.delay(160)} style={[type.body, { textAlign: 'center', color: c.muted, maxWidth: 360 }]}>
+          {about}
+        </Animated.Text>
+      ) : null}
+      <Animated.View entering={FadeIn.delay(200)} style={{ flexDirection: 'row', gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
+        {isVerified ? <Pill icon="shieldCheck" label={t('profile.verified')} /> : <Pill icon="shield" label={t('profile.notVerified')} tone="brass" />}
+        {isBlocked && <Pill icon="ban" label={t('profile.blocked')} tone="ember" />}
+      </Animated.View>
+      <View style={s.actions}>
+        {actions.map(([icon, label, fn], i) => (
+          <Rise key={label} index={i} delay={150} style={{ flex: 1 }}>
+            <Pressy onPress={fn} style={s.action} scaleTo={0.94} hoverStyle={{ backgroundColor: c.field }} accessibilityLabel={label}>
+              <Icon name={icon} size={22} color={c.accentText} />
+              <Text style={s.actionLabel}>{label}</Text>
+            </Pressy>
+          </Rise>
+        ))}
+      </View>
+    </View>
+  );
+
+  const encryption = (
+    <Rise index={1} style={{ gap: 8 }}>
+      <Eyebrow style={{ paddingHorizontal: 4 }}>{t('profile.encryption')}</Eyebrow>
+      <View style={s.panel}>
+        <Item
+          first
+          icon="shieldCheck"
+          label={t('profile.safetyNumber')}
+          hint={isVerified ? t('profile.safetyVerifiedHint') : t('profile.safetyHint')}
+          hintColor={isVerified ? c.success : undefined}
+          onPress={handleOpenVerification}
+        />
+        <Item icon="lock" label={t('profile.cipher')} hint={t('profile.cipherHint')} right={<Pill label="256-bit" tone="sage" />} />
+      </View>
+    </Rise>
+  );
+
+  const privacy = (
+    <Rise index={2} style={{ gap: 8 }}>
+      <Eyebrow style={{ paddingHorizontal: 4 }}>{t('profile.privacy')}</Eyebrow>
+      <View style={s.panel}>
+        <Item
+          first
+          icon="ban"
+          label={isBlocked ? t('profile.unblock', { name: displayName }) : t('profile.block', { name: displayName })}
+          hint={isBlocked ? t('profile.blockedHint') : t('profile.blockHint')}
+          danger
+          onPress={handleToggleBlock}
+        />
+        <Item icon="flag" label={t('profile.report', { name: displayName })} hint={t('profile.reportHint')} danger onPress={() => (isDemo ? notify(t('profile.demoTitle'), t('profile.demoBody')) : setShowReport(true))} />
+      </View>
+    </Rise>
+  );
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
-        {/* Frosted Glass Cyber Header */}
-        <View style={styles.header}>
-          <TouchableOpacity style={styles.backBtn} onPress={() => router.back()} activeOpacity={0.7}>
-            <Ionicons name="arrow-back" size={20} color={Colors.textPrimary} />
-          </TouchableOpacity>
-          <Text style={styles.headerTitle}>Contact</Text>
-          <TouchableOpacity style={styles.moreBtn} activeOpacity={0.7}>
-            <Ionicons name="shield-outline" size={20} color={Colors.accent} />
-          </TouchableOpacity>
-        </View>
-
-        {isLoading ? (
-          <ActivityIndicator size="large" color={Colors.accent} style={{ marginTop: 40 }} />
-        ) : (
-          <>
-            {/* Cyber Hero Avatar Section */}
-            <View style={styles.avatarSection}>
-              <View style={styles.avatarHalo}>
-                <View style={styles.avatar}>
-                  <Text style={styles.avatarText}>{initials}</Text>
-                </View>
-              </View>
-
-              <View style={styles.nameRow}>
-                <Text style={styles.displayName}>{displayName}</Text>
-                {isVerified ? (
-                  <View style={styles.verifiedBadge}>
-                    <Ionicons name="shield-checkmark" size={14} color={Colors.online} />
-                    <Text style={styles.verifiedText}>VERIFIED</Text>
-                  </View>
-                ) : (
-                  <View style={styles.unverifiedBadge}>
-                    <Text style={styles.unverifiedText}>UNVERIFIED</Text>
-                  </View>
-                )}
-              </View>
-
-              {username ? <Text style={styles.username}>@{username}</Text> : null}
-
-              {about ? (
-                <View style={styles.aboutCard}>
-                  <Ionicons name="finger-print-outline" size={14} color={Colors.accent} />
-                  <Text style={styles.about}>{about}</Text>
-                </View>
-              ) : null}
-            </View>
-
-            {/* Quick Action Matrix */}
-            <View style={styles.actionsContainer}>
-              <TouchableOpacity style={styles.actionBtn} onPress={handleStartChat} activeOpacity={0.8}>
-                <View style={[styles.actionIconWrap, { borderColor: 'rgba(6, 182, 212, 0.4)' }]}>
-                  <Ionicons name="chatbubble-ellipses-outline" size={22} color={Colors.accent} />
-                </View>
-                <Text style={styles.actionLabel}>Message</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={styles.actionBtn} onPress={() => handleStartCall('voice')} activeOpacity={0.8}>
-                <View style={[styles.actionIconWrap, { borderColor: 'rgba(139, 92, 246, 0.4)' }]}>
-                  <Ionicons name="call-outline" size={22} color="#8B5CF6" />
-                </View>
-                <Text style={[styles.actionLabel, { color: '#8B5CF6' }]}>Voice</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={styles.actionBtn} onPress={() => handleStartCall('video')} activeOpacity={0.8}>
-                <View style={[styles.actionIconWrap, { borderColor: 'rgba(16, 185, 129, 0.4)' }]}>
-                  <Ionicons name="videocam-outline" size={22} color={Colors.online} />
-                </View>
-                <Text style={[styles.actionLabel, { color: Colors.online }]}>Video</Text>
-              </TouchableOpacity>
-            </View>
-
-            {/* Cryptographic Verification Card */}
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>ENCRYPTION</Text>
-              <View style={styles.card}>
-                <TouchableOpacity
-                  style={styles.cardRowInteractive}
-                  onPress={handleOpenVerification}
-                  activeOpacity={0.7}
-                >
-                  <View style={styles.rowIconWrap}>
-                    <Ionicons name="qr-code-outline" size={22} color={Colors.accent} />
-                  </View>
-                  <View style={styles.rowContent}>
-                    <View style={styles.rowHeaderLine}>
-                      <Text style={styles.rowTitle}>Verify Safety Number</Text>
-                      {isVerified ? (
-                        <View style={styles.statusPillActive}>
-                          <Text style={styles.statusPillActiveText}>VERIFIED</Text>
-                        </View>
-                      ) : (
-                        <View style={styles.statusPillPending}>
-                          <Text style={styles.statusPillPendingText}>NOT VERIFIED</Text>
-                        </View>
-                      )}
-                    </View>
-                    <Text style={styles.rowSub}>
-                      {isVerified
-                        ? 'You confirmed the safety number matches'
-                        : 'Compare safety numbers to rule out key substitution'}
-                    </Text>
-                  </View>
-                  <Ionicons name="chevron-forward" size={16} color={Colors.textTertiary} />
-                </TouchableOpacity>
-
-                <View style={styles.divider} />
-
-                <View style={styles.cardRow}>
-                  <View style={styles.rowIconWrap}>
-                    <Ionicons name="lock-closed" size={20} color={Colors.online} />
-                  </View>
-                  <View style={styles.rowContent}>
-                    <Text style={styles.rowTitle}>Cipher Suite</Text>
-                    <Text style={styles.rowSub}>X25519 • XChaCha20-Poly1305 • BLAKE2b</Text>
-                  </View>
-                  <View style={styles.badgePill}>
-                    <Text style={styles.badgePillText}>256-BIT</Text>
-                  </View>
-                </View>
+    <View style={s.container}>
+      <Grain />
+      <View style={[s.top, { paddingTop: insets.top + 8 }]}>
+        <IconButton icon="back" label={t('common.back')} onPress={() => (router.canGoBack() ? router.back() : router.replace('/(tabs)/chats'))} />
+        {!!username && <IconButton icon="share" label={t('profile.share')} onPress={shareContact} />}
+      </View>
+      {isLoading ? (
+        <ActivityIndicator size="large" color={c.accent} style={{ marginTop: 60 }} />
+      ) : (
+        <ScrollView contentContainerStyle={[s.scroll, { paddingBottom: insets.bottom + 40 }]} showsVerticalScrollIndicator={false}>
+          {isWide ? (
+            <View style={s.wideRow}>
+              <View style={{ flex: 1, minWidth: 380 }}>{hero}</View>
+              <View style={{ flex: 1.2, minWidth: 420, gap: 22 }}>
+                {encryption}
+                {privacy}
               </View>
             </View>
-
-            {/* Privacy Controls & Danger Zone */}
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>PRIVACY</Text>
-              <View style={styles.card}>
-                <TouchableOpacity
-                  style={styles.cardRow}
-                  activeOpacity={0.7}
-                  onPress={handleToggleBlock}
-                >
-                  <View style={[styles.rowIconWrap, { backgroundColor: 'rgba(239, 68, 68, 0.1)' }]}>
-                    <Ionicons name="ban-outline" size={20} color={Colors.error} />
-                  </View>
-                  <View style={styles.rowContent}>
-                    <Text style={[styles.rowTitle, { color: Colors.error }]}>{isBlocked ? `Unblock ${displayName}` : `Block ${displayName}`}</Text>
-                    <Text style={styles.rowSub}>{isBlocked ? 'They currently cannot message or call you' : 'Stop messages and calls from this person'}</Text>
-                  </View>
-                </TouchableOpacity>
-
-                <View style={styles.divider} />
-
-                <TouchableOpacity
-                  style={styles.cardRow}
-                  activeOpacity={0.7}
-                  onPress={handleReport}
-                >
-                  <View style={[styles.rowIconWrap, { backgroundColor: 'rgba(239, 68, 68, 0.1)' }]}>
-                    <Ionicons name="flag-outline" size={20} color={Colors.error} />
-                  </View>
-                  <View style={styles.rowContent}>
-                    <Text style={[styles.rowTitle, { color: Colors.error }]}>Report Contact</Text>
-                    <Text style={styles.rowSub}>Spam, harassment or impersonation</Text>
-                  </View>
-                </TouchableOpacity>
-              </View>
+          ) : (
+            <View style={{ gap: 20 }}>
+              {hero}
+              {encryption}
+              {privacy}
             </View>
-          </>
-        )}
-      </ScrollView>
-    </SafeAreaView>
+          )}
+        </ScrollView>
+      )}
+      <Sheet visible={showReport} onClose={() => setShowReport(false)} title={t('profile.reportTitle')}>
+        {(['spam', 'harassment', 'impersonation'] as const).map((r) => (
+          <SheetRow key={r} icon="flag" tone="ember" label={t(`profile.reasons.${r}`)} onPress={() => submitReport(r)} />
+        ))}
+        <SheetRow icon="close" label={t('common.cancel')} onPress={() => setShowReport(false)} />
+      </Sheet>
+    </View>
   );
 }
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: Colors.background,
-  },
-  scrollContent: {
-    paddingBottom: Spacing['3xl'],
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: Spacing.base,
-    paddingVertical: Spacing.sm,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(6, 182, 212, 0.15)',
-    backgroundColor: 'rgba(8, 14, 26, 0.95)',
-  },
-  backBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: '#0E1726',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#1E293B',
-  },
-  headerTitle: {
-    fontSize: Typography.base,
-    fontWeight: Typography.bold,
-    color: Colors.textPrimary,
-  },
-  moreBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: '#0E1726',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(6, 182, 212, 0.25)',
-  },
-  avatarSection: {
-    alignItems: 'center',
-    paddingVertical: Spacing['2xl'],
-    paddingHorizontal: Spacing.base,
-    backgroundColor: '#080E1A',
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(6, 182, 212, 0.12)',
-  },
-  avatarHalo: {
-    padding: 6,
-    borderRadius: 54,
-    backgroundColor: 'rgba(6, 182, 212, 0.08)',
-    borderWidth: 1.5,
-    borderColor: 'rgba(6, 182, 212, 0.35)',
-    position: 'relative',
-    marginBottom: Spacing.md,
-  },
-  avatar: {
-    width: 88,
-    height: 88,
-    borderRadius: 44,
-    backgroundColor: '#0284C7',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 2,
-    borderColor: 'rgba(255, 255, 255, 0.15)',
-    shadowColor: Colors.accent,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.5,
-    shadowRadius: 16,
-    elevation: 8,
-  },
-  avatarText: {
-    fontSize: Typography['3xl'],
-    fontWeight: Typography.extrabold,
-    color: Colors.white,
-    letterSpacing: -0.5,
-  },
-  onlineBadge: {
-    position: 'absolute',
-    bottom: 6,
-    right: 6,
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    backgroundColor: '#080E1A',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  onlineInner: {
-    width: 14,
-    height: 14,
-    borderRadius: 7,
-    backgroundColor: Colors.online,
-  },
-  nameRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 4,
-  },
-  displayName: {
-    fontSize: Typography['2xl'],
-    fontWeight: Typography.bold,
-    color: Colors.textPrimary,
-  },
-  verifiedBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: 'rgba(16, 185, 129, 0.15)',
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: BorderRadius.full,
-    borderWidth: 1,
-    borderColor: 'rgba(16, 185, 129, 0.35)',
-  },
-  verifiedText: {
-    fontSize: 9.5,
-    fontWeight: Typography.bold,
-    color: Colors.online,
-    letterSpacing: 0.5,
-  },
-  unverifiedBadge: {
-    backgroundColor: 'rgba(100, 116, 139, 0.2)',
-    paddingHorizontal: 7,
-    paddingVertical: 2,
-    borderRadius: BorderRadius.full,
-  },
-  unverifiedText: {
-    fontSize: 9.5,
-    fontWeight: Typography.semibold,
-    color: Colors.textTertiary,
-  },
-  username: {
-    fontSize: Typography.xs,
-    color: Colors.accent,
-    letterSpacing: 0.4,
-    marginBottom: Spacing.sm,
-  },
-  aboutCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: '#0E1726',
-    borderRadius: BorderRadius.full,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: 6,
-    borderWidth: 1,
-    borderColor: '#1E293B',
-    marginTop: 4,
-  },
-  about: {
-    fontSize: Typography.xs,
-    color: Colors.textSecondary,
-  },
-  actionsContainer: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    paddingVertical: Spacing.lg,
-    paddingHorizontal: Spacing.base,
-    backgroundColor: '#060B16',
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(6, 182, 212, 0.1)',
-  },
-  actionBtn: {
-    alignItems: 'center',
-    gap: 6,
-  },
-  actionIconWrap: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
-    backgroundColor: '#0E1726',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1.5,
-  },
-  actionLabel: {
-    fontSize: 11,
-    fontWeight: Typography.semibold,
-    color: Colors.accent,
-  },
-  section: {
-    paddingHorizontal: Spacing.base,
-    marginTop: Spacing.lg,
-  },
-  sectionTitle: {
-    fontSize: 10.5,
-    fontWeight: Typography.bold,
-    color: Colors.textSecondary,
-    letterSpacing: 0.8,
-    marginBottom: Spacing.sm,
-  },
-  card: {
-    backgroundColor: '#080E1A',
-    borderRadius: BorderRadius.xl,
-    borderWidth: 1,
-    borderColor: 'rgba(6, 182, 212, 0.15)',
-    overflow: 'hidden',
-  },
-  cardRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: Spacing.base,
-    gap: Spacing.md,
-  },
-  cardRowInteractive: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: Spacing.base,
-    gap: Spacing.md,
-  },
-  rowIconWrap: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: 'rgba(6, 182, 212, 0.1)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  rowContent: {
-    flex: 1,
-  },
-  rowHeaderLine: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 2,
-  },
-  rowTitle: {
-    fontSize: Typography.sm,
-    fontWeight: Typography.semibold,
-    color: Colors.textPrimary,
-  },
-  rowSub: {
-    fontSize: 11,
-    color: Colors.textSecondary,
-    marginTop: 2,
-    lineHeight: 15,
-  },
-  statusPillActive: {
-    backgroundColor: 'rgba(16, 185, 129, 0.15)',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
-    borderWidth: 1,
-    borderColor: 'rgba(16, 185, 129, 0.3)',
-  },
-  statusPillActiveText: {
-    fontSize: 9,
-    fontWeight: Typography.bold,
-    color: Colors.online,
-  },
-  statusPillPending: {
-    backgroundColor: 'rgba(6, 182, 212, 0.15)',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
-    borderWidth: 1,
-    borderColor: 'rgba(6, 182, 212, 0.3)',
-  },
-  statusPillPendingText: {
-    fontSize: 9,
-    fontWeight: Typography.bold,
-    color: Colors.accent,
-  },
-  badgePill: {
-    backgroundColor: 'rgba(16, 185, 129, 0.12)',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: BorderRadius.full,
-    borderWidth: 1,
-    borderColor: 'rgba(16, 185, 129, 0.3)',
-  },
-  badgePillText: {
-    fontSize: 9,
-    fontWeight: Typography.bold,
-    color: Colors.online,
-  },
-  divider: {
-    height: 1,
-    backgroundColor: '#142036',
-    marginLeft: 58,
-  },
-});
-
+const useStyles = makeStyles((c, t, f) => ({
+  container: { flex: 1, backgroundColor: c.bg },
+  top: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 8 },
+  scroll: { paddingHorizontal: 16, maxWidth: 1180, width: '100%', alignSelf: 'center' },
+  wideRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 22, paddingTop: 8 },
+  hero: { alignItems: 'center', gap: 12, paddingBottom: 6 },
+  heroWide: { padding: 32, paddingTop: 40, borderRadius: 26, backgroundColor: c.panel, borderWidth: 1, borderColor: c.line, overflow: 'hidden', gap: 16 },
+  handle: { fontFamily: f.script === 'latin' ? f.mono : f.body, fontSize: 14, color: c.muted },
+  actions: { flexDirection: 'row', gap: 8, width: '100%', marginTop: 8 },
+  action: { height: 76, borderRadius: 18, backgroundColor: c.raised, borderWidth: 1, borderColor: c.line, alignItems: 'center', justifyContent: 'center', gap: 6 },
+  actionLabel: { fontFamily: f.medium, fontSize: 12.5, color: c.text },
+  panel: { backgroundColor: c.panel, borderRadius: 22, borderWidth: 1, borderColor: c.line, paddingHorizontal: 16, paddingVertical: 4 },
+  item: { flexDirection: 'row', alignItems: 'center', gap: 14, minHeight: 62, paddingVertical: 8 },
+  itemBorder: { borderTopWidth: 1, borderTopColor: c.line },
+  itemIcon: { width: 38, height: 38, borderRadius: 12, backgroundColor: c.raised, alignItems: 'center', justifyContent: 'center' },
+  itemLabel: { fontFamily: f.medium, fontSize: 15.5, color: c.text },
+}));

@@ -4,10 +4,12 @@
  */
 
 import React, { useMemo } from 'react';
-import { Image, Modal, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Image, Text, View } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import qrcode from 'qrcode-generator';
-import { Colors } from '../../../shared/theme/theme';
+import { useT } from '../../../shared/i18n';
+import { makeStyles, useTheme } from '../../../shared/theme/ThemeProvider';
+import { Button, Sheet, notify } from '../../../shared/ui';
 import type { PaymentCard } from '../../../shared/models/payloadExtensions';
 import { formatINR, upiUrlForCard } from '../upi';
 
@@ -19,51 +21,46 @@ export function upiQrDataUrl(url: string): string {
 }
 
 export function UpiQrModal({ card, visible, onClose }: { card: PaymentCard | null; visible: boolean; onClose: () => void }) {
+  const { type } = useTheme();
+  const s = useStyles();
+  const t = useT();
   const url = card ? upiUrlForCard(card) : null;
   const dataUrl = useMemo(() => (url ? upiQrDataUrl(url) : null), [url]);
   if (!card || !url || !dataUrl) return null;
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable style={styles.backdrop} onPress={onClose}>
-        <Pressable style={styles.card} onPress={() => undefined}>
-          <Text style={styles.title}>Scan with any UPI app</Text>
-          <Text style={styles.amount}>{formatINR(card.amountPaise)}</Text>
-          <View style={styles.qrWrap}>
-            <Image source={{ uri: dataUrl }} style={styles.qr} resizeMode="contain" accessibilityLabel="UPI payment QR code" />
-          </View>
-          <Text style={styles.vpa} selectable>
-            {card.payeeName ? `${card.payeeName} · ` : ''}
-            {card.payeeVpa}
-          </Text>
-          {card.note ? <Text style={styles.note}>{card.note}</Text> : null}
-          <View style={styles.row}>
-            <TouchableOpacity style={styles.secondary} onPress={() => void Clipboard.setStringAsync(card.payeeVpa ?? '')}>
-              <Text style={styles.secondaryText}>Copy UPI id</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.primary} onPress={onClose}>
-              <Text style={styles.primaryText}>Done</Text>
-            </TouchableOpacity>
-          </View>
-          <Text style={styles.hint}>After paying, come back and mark the payment as paid.</Text>
-        </Pressable>
-      </Pressable>
-    </Modal>
+    <Sheet visible={visible} onClose={onClose} title={t('payments.scanTitle')}>
+      <View style={{ alignItems: 'center', gap: 12 }}>
+        <Text style={s.amount}>{formatINR(card.amountPaise)}</Text>
+        <View style={s.qrWrap}>
+          <Image source={{ uri: dataUrl }} style={s.qr} resizeMode="contain" accessibilityLabel={t('payments.qrA11y')} />
+        </View>
+        <Text style={[type.body, { textAlign: 'center' }]} selectable>
+          {card.payeeName ? `${card.payeeName} · ` : ''}
+          {card.payeeVpa}
+        </Text>
+        {card.note ? <Text style={[type.caption, { textAlign: 'center' }]}>{card.note}</Text> : null}
+      </View>
+      <View style={{ flexDirection: 'row', gap: 10 }}>
+        <Button
+          label={t('payments.copyVpa')}
+          icon="copy"
+          variant="secondary"
+          size="md"
+          style={{ flex: 1 }}
+          onPress={() => {
+            void Clipboard.setStringAsync(card.payeeVpa ?? '');
+            notify(t('verify.copied'));
+          }}
+        />
+        <Button label={t('common.done')} size="md" style={{ flex: 1 }} onPress={onClose} />
+      </View>
+      <Text style={[type.caption, { textAlign: 'center' }]}>{t('payments.markAfter')}</Text>
+    </Sheet>
   );
 }
 
-const styles = StyleSheet.create({
-  backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', padding: 20 },
-  card: { width: '100%', maxWidth: 360, backgroundColor: Colors.surfaceElevated, borderRadius: 20, padding: 20, alignItems: 'center' },
-  title: { color: Colors.textSecondary, fontSize: 14, marginBottom: 4 },
-  amount: { color: Colors.textPrimary, fontSize: 28, fontWeight: '700', marginBottom: 12 },
-  qrWrap: { backgroundColor: '#fff', borderRadius: 12, padding: 8 },
-  qr: { width: 240, height: 240 },
-  vpa: { color: Colors.textPrimary, fontSize: 14, marginTop: 12, textAlign: 'center' },
-  note: { color: Colors.textSecondary, fontSize: 13, marginTop: 4, textAlign: 'center' },
-  row: { flexDirection: 'row', gap: 10, marginTop: 16 },
-  primary: { backgroundColor: Colors.accent, borderRadius: 12, paddingVertical: 10, paddingHorizontal: 20 },
-  primaryText: { color: Colors.white, fontWeight: '600' },
-  secondary: { borderColor: Colors.border, borderWidth: 1, borderRadius: 12, paddingVertical: 10, paddingHorizontal: 16 },
-  secondaryText: { color: Colors.textPrimary },
-  hint: { color: Colors.textTertiary, fontSize: 12, marginTop: 12, textAlign: 'center' },
-});
+const useStyles = makeStyles((c, t, f) => ({
+  amount: { fontFamily: f.display, fontSize: 34, color: c.text },
+  qrWrap: { backgroundColor: '#FFFFFF', borderRadius: 22, padding: 12, borderWidth: 3, borderColor: c.accent },
+  qr: { width: 232, height: 232 },
+}));

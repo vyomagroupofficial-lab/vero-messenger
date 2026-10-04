@@ -1,15 +1,22 @@
 import React, { useState } from 'react';
-import { ActivityIndicator, ScrollView, StyleSheet, Switch, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { ScrollView, Text, View } from 'react-native';
+import Animated, { FadeIn } from 'react-native-reanimated';
 import { router } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { friendlyError } from '../../src/core/network/supabase';
 import { botRepository } from '../../src/features/bots/BotRepository';
 import { TokenReveal } from '../../src/features/bots/components/TokenReveal';
 import { isValidMiniAppUrl, parseCommandLines, validateBotUsername } from '../../src/features/bots/validation';
-import { Colors } from '../../src/shared/theme/theme';
+import { Banner, ScreenHeader, ToggleRow } from '../../src/features/groups/components/GroupComponents';
+import { makeStyles, useTheme } from '../../src/shared/theme/ThemeProvider';
+import { useT } from '../../src/shared/i18n';
+import { Button, Icon, TextField } from '../../src/shared/ui';
 
 export default function NewBotScreen() {
+  const insets = useSafeAreaInsets();
+  const { c, type } = useTheme();
+  const s = useStyles();
+  const t = useT();
   const [name, setName] = useState('');
   const [username, setUsername] = useState('');
   const [description, setDescription] = useState('');
@@ -22,23 +29,16 @@ export default function NewBotScreen() {
 
   const create = async () => {
     setError(null);
-    if (!name.trim()) return setError('Give your bot a name.');
+    if (!name.trim()) return setError(t('bots.nameRequired'));
     const u = username.trim().toLowerCase();
     const uErr = validateBotUsername(u);
     if (uErr) return setError(uErr);
     const parsed = parseCommandLines(commands);
     if (parsed.error) return setError(parsed.error);
-    if (miniApp.trim() && !isValidMiniAppUrl(miniApp.trim())) return setError('Mini-app URL must be https://… with a real domain.');
+    if (miniApp.trim() && !isValidMiniAppUrl(miniApp.trim())) return setError(t('bots.badMiniApp'));
     setBusy(true);
     try {
-      const res = await botRepository.create({
-        username: u,
-        name: name.trim(),
-        description: description.trim(),
-        commands: parsed.commands,
-        miniAppUrl: miniApp.trim() || undefined,
-        isPublic,
-      });
+      const res = await botRepository.create({ username: u, name: name.trim(), description: description.trim(), commands: parsed.commands, miniAppUrl: miniApp.trim() || undefined, isPublic });
       setToken(res.token);
     } catch (e) {
       setError(friendlyError(e));
@@ -48,56 +48,33 @@ export default function NewBotScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
-      <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={{ padding: 8 }}>
-          <Ionicons name="arrow-back" size={22} color={Colors.textPrimary} />
-        </TouchableOpacity>
-        <Text style={styles.title}>New bot</Text>
-      </View>
-      <ScrollView contentContainerStyle={styles.body} keyboardShouldPersistTaps="handled">
-        <Text style={styles.intro}>
-          A bot is its own Vero account. You get a token once; run the bot with the Vero bot SDK (bots/README.md) on
-          your own server. Messages to your bot are end-to-end encrypted to the bot’s device.
-        </Text>
-        <Text style={styles.label}>Name</Text>
-        <TextInput style={styles.input} value={name} onChangeText={setName} maxLength={64} placeholder="Weather" placeholderTextColor={Colors.textTertiary} />
-        <Text style={styles.label}>Username (must end in “bot”)</Text>
-        <TextInput
-          style={styles.input}
-          value={username}
-          onChangeText={setUsername}
-          autoCapitalize="none"
-          autoCorrect={false}
-          maxLength={30}
-          placeholder="weather_bot"
-          placeholderTextColor={Colors.textTertiary}
-        />
-        <Text style={styles.label}>Description</Text>
-        <TextInput style={[styles.input, { minHeight: 60 }]} value={description} onChangeText={setDescription} multiline maxLength={512} placeholderTextColor={Colors.textTertiary} />
-        <Text style={styles.label}>Commands (one per line: command - description)</Text>
-        <TextInput style={[styles.input, { minHeight: 90 }]} value={commands} onChangeText={setCommands} multiline autoCapitalize="none" placeholderTextColor={Colors.textTertiary} />
-        <Text style={styles.label}>Mini-app URL (optional, https only)</Text>
-        <TextInput
-          style={styles.input}
-          value={miniApp}
-          onChangeText={setMiniApp}
-          autoCapitalize="none"
-          keyboardType="url"
-          placeholder="https://example.com/app"
-          placeholderTextColor={Colors.textTertiary}
-        />
-        <View style={styles.switchRow}>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.switchLabel}>List in the bot directory</Text>
-            <Text style={styles.hint}>Anyone can find and chat with public bots.</Text>
+    <View style={[s.root, { paddingTop: insets.top }]}>
+      <ScreenHeader title={t('bots.newTitle')} onBack={() => (router.canGoBack() ? router.back() : router.replace('/bots'))} />
+      <ScrollView contentContainerStyle={[s.body, { paddingBottom: insets.bottom + 40 }]} keyboardShouldPersistTaps="handled">
+        <View style={s.hero}>
+          <View style={s.avatar}>
+            <Icon name="bot" size={34} color={c.accentText} />
           </View>
-          <Switch value={isPublic} onValueChange={setIsPublic} />
+          <Text style={[type.h2, { textAlign: 'center' }]}>{name.trim() || t('bots.newTitle')}</Text>
+          {!!username && <Text style={s.handle}>@{username.trim().toLowerCase()}</Text>}
         </View>
-        {error ? <Text style={styles.error}>{error}</Text> : null}
-        <TouchableOpacity style={[styles.submit, busy && { opacity: 0.6 }]} onPress={create} disabled={busy}>
-          {busy ? <ActivityIndicator color={Colors.white} /> : <Text style={styles.submitText}>Create bot</Text>}
-        </TouchableOpacity>
+        <View style={{ marginHorizontal: -16 }}>
+          <Banner icon="info" text={t('bots.intro')} />
+        </View>
+        <TextField label={t('channels.name')} icon="bot" value={name} onChangeText={setName} maxLength={64} placeholder="Weather" />
+        <TextField label={t('bots.usernameLabel')} icon="at" value={username} onChangeText={setUsername} autoCapitalize="none" autoCorrect={false} maxLength={30} placeholder="weather_bot" />
+        <TextField label={t('channels.description')} icon="edit" value={description} onChangeText={setDescription} multiline maxLength={512} />
+        <TextField label={t('bots.commandsLabel')} icon="sliders" value={commands} onChangeText={setCommands} multiline autoCapitalize="none" />
+        <TextField label={t('bots.miniAppUrl')} icon="link" value={miniApp} onChangeText={setMiniApp} autoCapitalize="none" keyboardType="url" placeholder="https://example.com/app" />
+        <View style={{ marginHorizontal: -16 }}>
+          <ToggleRow label={t('bots.listPublic')} sublabel={t('bots.listPublicHint')} value={isPublic} onChange={setIsPublic} />
+        </View>
+        {error ? (
+          <Animated.Text entering={FadeIn} style={[type.caption, { color: c.danger }]}>
+            {error}
+          </Animated.Text>
+        ) : null}
+        <Button label={t('bots.createBtn')} icon="bot" loading={busy} onPress={create} />
       </ScrollView>
       <TokenReveal
         token={token}
@@ -107,30 +84,14 @@ export default function NewBotScreen() {
           router.back();
         }}
       />
-    </SafeAreaView>
+    </View>
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: Colors.background },
-  header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, paddingVertical: 8, gap: 4 },
-  title: { color: Colors.textPrimary, fontSize: 20, fontWeight: '700' },
-  body: { padding: 16, paddingBottom: 40, maxWidth: 640, width: '100%', alignSelf: 'center' },
-  intro: { color: Colors.textSecondary, fontSize: 13, lineHeight: 18 },
-  label: { color: Colors.textSecondary, fontSize: 12, marginTop: 14, marginBottom: 4 },
-  input: {
-    borderWidth: 1,
-    borderColor: Colors.border,
-    borderRadius: 10,
-    color: Colors.textPrimary,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 15,
-  },
-  switchRow: { flexDirection: 'row', alignItems: 'center', marginTop: 16 },
-  switchLabel: { color: Colors.textPrimary, fontSize: 14 },
-  hint: { color: Colors.textTertiary, fontSize: 12 },
-  error: { color: Colors.error, marginTop: 12 },
-  submit: { backgroundColor: Colors.accent, borderRadius: 12, alignItems: 'center', paddingVertical: 13, marginTop: 20 },
-  submitText: { color: Colors.white, fontWeight: '600', fontSize: 15 },
-});
+const useStyles = makeStyles((c, t, f) => ({
+  root: { flex: 1, backgroundColor: c.bg },
+  body: { padding: 16, gap: 14, maxWidth: 640, width: '100%', alignSelf: 'center' },
+  hero: { alignItems: 'center', gap: 8, paddingVertical: 8 },
+  avatar: { width: 80, height: 80, borderRadius: 26, backgroundColor: c.accentTint, borderWidth: 1, borderColor: c.accentTint2, alignItems: 'center', justifyContent: 'center' },
+  handle: { fontFamily: f.mono, color: c.muted, fontSize: 13 },
+}));

@@ -1,243 +1,109 @@
 import React, { useState } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  Image,
-  Dimensions,
-  Alert,
-  StatusBar,
-} from 'react-native';
-import { useLocalSearchParams, router } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
-import { Colors, Typography, Spacing, BorderRadius } from '../src/shared/theme/theme';
+import { Image, Pressable, Text, View } from 'react-native';
+import Animated, { FadeIn, FadeInDown, FadeInUp, FadeOut, ZoomIn } from 'react-native-reanimated';
+import { router, useLocalSearchParams } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Sharing from 'expo-sharing';
 import { useVideoPlayer, VideoView } from 'expo-video';
+import { makeStyles, useTheme } from '../src/shared/theme/ThemeProvider';
+import { useT } from '../src/shared/i18n';
+import { Grain, Icon, IconButton, notify, useLayout } from '../src/shared/ui';
 
-const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
+// The viewer stays dark in both themes: photos read best on a near-black stage.
 
 function VideoContent({ uri }: { uri: string }) {
+  const s = useStyles();
   const player = useVideoPlayer(uri, (p) => {
     p.play();
   });
-  return <VideoView player={player} style={styles.image} nativeControls contentFit="contain" />;
+  return <VideoView player={player} style={s.media} nativeControls contentFit="contain" />;
 }
 
 export default function MediaViewerScreen() {
-  const { uri, type, name, caption } = useLocalSearchParams<{
-    uri: string;
-    type?: string;
-    name?: string;
-    caption?: string;
-  }>();
-
+  const insets = useSafeAreaInsets();
+  const { isWide } = useLayout();
+  const { c, type } = useTheme();
+  const s = useStyles();
+  const t = useT();
+  const { uri, type: kind, name, caption } = useLocalSearchParams<{ uri: string; type?: string; name?: string; caption?: string }>();
   const [showControls, setShowControls] = useState(true);
-  const isVideo = type === 'video';
+  const isVideo = kind === 'video';
 
   const handleShare = async () => {
     if (!uri) return;
-    if (!(await Sharing.isAvailableAsync())) {
-      Alert.alert('Sharing unavailable', 'Sharing is not supported on this device.');
-      return;
-    }
+    if (!(await Sharing.isAvailableAsync())) return notify(t('media.shareUnavailable'), t('media.shareUnavailableBody'));
     // Shares the decrypted local copy; whatever app you pick will see the plaintext.
     await Sharing.shareAsync(uri);
   };
 
-  return (
-    <View style={styles.container}>
-      <StatusBar barStyle="light-content" backgroundColor="#000000" />
+  const back = () => (router.canGoBack() ? router.back() : router.replace('/(tabs)/chats'));
 
-      {/* Media Canvas */}
-      <TouchableOpacity
-        style={styles.mediaContainer}
-        activeOpacity={1}
-        onPress={() => setShowControls(!showControls)}
-      >
+  return (
+    <View style={s.stage}>
+      <Grain tone="light" opacity={0.05} />
+      <Pressable style={s.canvas} onPress={() => setShowControls((v) => !v)} accessibilityLabel={t('media.toggleControls')}>
         {uri && isVideo ? (
           <VideoContent uri={uri} />
         ) : uri ? (
-          <Image
-            source={{ uri }}
-            style={styles.image}
-            resizeMode="contain"
-          />
+          <Animated.View entering={ZoomIn.duration(260)} style={{ flex: 1, alignSelf: 'stretch' }}>
+            <Image source={{ uri }} style={s.media} resizeMode="contain" accessibilityLabel={caption || name || t('media.photo')} />
+          </Animated.View>
         ) : (
-          <View style={styles.placeholder}>
-            <View style={styles.placeholderIconHalo}>
-              <Ionicons
-                name={type === 'video' ? 'videocam' : 'image'}
-                size={48}
-                color={Colors.accent}
-              />
+          <Animated.View entering={FadeIn} style={s.placeholder}>
+            <View style={s.placeholderIcon}>
+              <Icon name={isVideo ? 'video' : 'image'} size={40} color="#E7BD72" />
             </View>
-            <Text style={styles.placeholderText}>Nothing to show</Text>
-            <Text style={styles.placeholderSub}>The file could not be opened.</Text>
-          </View>
+            <Text style={[type.h3, { color: c.onStage }]}>{t('media.nothing')}</Text>
+            <Text style={[type.caption, { color: c.onStageMuted }]}>{t('media.nothingBody')}</Text>
+          </Animated.View>
         )}
-      </TouchableOpacity>
+      </Pressable>
 
-      {/* Floating Frosted Overlay Controls */}
       {showControls && (
-        <SafeAreaView style={styles.overlay} edges={['top', 'bottom']}>
-          {/* Top Bar */}
-          <View style={styles.topBar}>
-            <TouchableOpacity style={styles.iconBtn} onPress={() => router.back()} activeOpacity={0.7}>
-              <Ionicons name="arrow-back" size={20} color={Colors.white} />
-            </TouchableOpacity>
-
-            <View style={styles.mediaInfo}>
-              <Text style={styles.mediaTitle} numberOfLines={1}>
-                {name || (isVideo ? 'Video' : 'Photo')}
+        <>
+          <Animated.View entering={FadeInDown.duration(220)} exiting={FadeOut.duration(160)} style={[s.top, { paddingTop: insets.top + 10 }]} pointerEvents="box-none">
+            <IconButton icon="back" label={t('common.back')} variant="glass" color={c.onStage} onPress={back} />
+            <View style={{ flex: 1, minWidth: 0, alignItems: isWide ? 'flex-start' : 'center', gap: 2 }}>
+              <Text style={s.title} numberOfLines={1}>
+                {name || (isVideo ? t('media.video') : t('media.photo'))}
               </Text>
-              <View style={styles.securityRow}>
-                <Ionicons name="lock-closed" size={10} color={Colors.online} />
-                <Text style={styles.securityLabel}>Decrypted on this device</Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                <Icon name="lock" size={11} color="#86C09F" />
+                <Text style={s.sub}>{t('media.decrypted')}</Text>
               </View>
             </View>
+            {uri ? <IconButton icon="share" label={t('media.share')} variant="glass" color={c.onStage} onPress={handleShare} /> : <View style={{ width: 44 }} />}
+          </Animated.View>
 
-            <View style={styles.actions}>
-              <TouchableOpacity style={styles.iconBtn} onPress={handleShare} activeOpacity={0.7}>
-                <Ionicons name="share-outline" size={20} color={Colors.white} />
-              </TouchableOpacity>
-            </View>
-          </View>
-
-          {/* Bottom Bar / Metadata */}
-          <View style={styles.bottomBar}>
+          <Animated.View entering={FadeInUp.duration(220)} exiting={FadeOut.duration(160)} style={[s.bottom, { paddingBottom: insets.bottom + 18 }]} pointerEvents="box-none">
             {caption ? (
-              <View style={styles.captionContainer}>
-                <Text style={styles.captionText}>{caption}</Text>
+              <View style={s.caption}>
+                <Text style={s.captionText}>{caption}</Text>
               </View>
             ) : null}
-            <View style={styles.metaBadge}>
-              <Ionicons name="shield-checkmark" size={13} color={Colors.online} />
-              <Text style={styles.metaBadgeText}>
-                Stored in the cloud only as ciphertext (XChaCha20-Poly1305)
-              </Text>
+            <View style={s.badge}>
+              <Icon name="shieldCheck" size={13} color="#86C09F" />
+              <Text style={s.badgeText}>{t('media.cipherNote')}</Text>
             </View>
-          </View>
-        </SafeAreaView>
+          </Animated.View>
+        </>
       )}
     </View>
   );
 }
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#020408',
-  },
-  mediaContainer: {
-    ...StyleSheet.absoluteFill,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  image: {
-    width: SCREEN_WIDTH,
-    height: SCREEN_HEIGHT,
-  },
-  placeholder: {
-    alignItems: 'center',
-    gap: Spacing.sm,
-  },
-  placeholderIconHalo: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: 'rgba(6, 182, 212, 0.1)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(6, 182, 212, 0.3)',
-    marginBottom: Spacing.xs,
-  },
-  placeholderText: {
-    color: Colors.textPrimary,
-    fontSize: Typography.base,
-    fontWeight: Typography.semibold,
-  },
-  placeholderSub: {
-    color: Colors.textTertiary,
-    fontSize: Typography.xs,
-  },
-  overlay: {
-    ...StyleSheet.absoluteFill,
-    justifyContent: 'space-between',
-    pointerEvents: 'box-none',
-  },
-  topBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: Spacing.base,
-    paddingVertical: Spacing.sm,
-    backgroundColor: 'rgba(5, 10, 20, 0.88)',
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(6, 182, 212, 0.15)',
-  },
-  iconBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.12)',
-  },
-  mediaInfo: {
-    flex: 1,
-    paddingHorizontal: Spacing.md,
-  },
-  mediaTitle: {
-    color: Colors.white,
-    fontSize: Typography.sm,
-    fontWeight: Typography.semibold,
-  },
-  securityRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    marginTop: 2,
-  },
-  securityLabel: {
-    color: Colors.accent,
-    fontSize: 10,
-    fontWeight: Typography.medium,
-  },
-  actions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.xs,
-  },
-  bottomBar: {
-    paddingHorizontal: Spacing.base,
-    paddingVertical: Spacing.md,
-    backgroundColor: 'rgba(5, 10, 20, 0.88)',
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(6, 182, 212, 0.15)',
-    gap: Spacing.xs,
-  },
-  captionContainer: {
-    paddingVertical: 2,
-  },
-  captionText: {
-    color: Colors.white,
-    fontSize: Typography.sm,
-  },
-  metaBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    justifyContent: 'center',
-  },
-  metaBadgeText: {
-    color: Colors.textSecondary,
-    fontSize: 10.5,
-    letterSpacing: 0.2,
-  },
-});
-
+const useStyles = makeStyles((c, t, f) => ({
+  stage: { flex: 1, backgroundColor: c.stage },
+  canvas: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  media: { flex: 1, width: '100%', height: '100%' },
+  placeholder: { alignItems: 'center', gap: 10, padding: 24 },
+  placeholderIcon: { width: 96, height: 96, borderRadius: 32, backgroundColor: 'rgba(237,231,217,0.08)', borderWidth: 1, borderColor: 'rgba(237,231,217,0.12)', alignItems: 'center', justifyContent: 'center', marginBottom: 6 },
+  top: { position: 'absolute', top: 0, left: 0, right: 0, flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 12, paddingBottom: 14, backgroundColor: 'rgba(8,9,8,0.55)' },
+  title: { fontFamily: f.semibold, fontSize: 16, color: c.onStage },
+  sub: { fontFamily: f.medium, fontSize: 11.5, color: c.onStageMuted },
+  bottom: { position: 'absolute', bottom: 0, left: 0, right: 0, alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingTop: 18, backgroundColor: 'rgba(8,9,8,0.55)' },
+  caption: { maxWidth: 720, alignSelf: 'stretch', alignItems: 'center' },
+  captionText: { fontFamily: f.body, fontSize: 15, lineHeight: t.body.lineHeight, color: c.onStage, textAlign: 'center' },
+  badge: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, height: 30, borderRadius: 15, backgroundColor: 'rgba(237,231,217,0.08)', borderWidth: 1, borderColor: 'rgba(237,231,217,0.1)' },
+  badgeText: { fontFamily: f.medium, fontSize: 11.5, color: c.onStageMuted },
+}));

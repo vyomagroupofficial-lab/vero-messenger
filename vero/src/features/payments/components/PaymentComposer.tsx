@@ -3,25 +3,23 @@
  */
 
 import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, Platform, ScrollView, StyleSheet, Switch, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Platform, ScrollView, Text, TextInput, View } from 'react-native';
+import Animated, { FadeIn } from 'react-native-reanimated';
 import { router } from 'expo-router';
 import { friendlyError } from '../../../core/network/supabase';
-import { Colors } from '../../../shared/theme/theme';
+import { useT } from '../../../shared/i18n';
+import { makeStyles, useTheme } from '../../../shared/theme/ThemeProvider';
+import { Button, Icon, Pressy, Segmented, TextField, Toggle } from '../../../shared/ui';
 import type { Conversation } from '../../../shared/models/Message';
 import { isPaymentMessage, MyUpiProfile, paymentService } from '../PaymentService';
 import { formatINR, normalizeVpa, parseAmount } from '../upi';
 import { UpiQrModal } from './UpiQrModal';
 import type { PaymentCard } from '../../../shared/models/payloadExtensions';
 
-export function PaymentComposer({
-  conversation,
-  isDemo,
-  onDone,
-}: {
-  conversation: Conversation;
-  isDemo: boolean;
-  onDone: () => void;
-}) {
+export function PaymentComposer({ conversation, isDemo, onDone }: { conversation: Conversation; isDemo: boolean; onDone: () => void }) {
+  const { c, type } = useTheme();
+  const s = useStyles();
+  const t = useT();
   const [mode, setMode] = useState<'request' | 'pay'>('request');
   const [amount, setAmount] = useState('');
   const [note, setNote] = useState('');
@@ -63,16 +61,10 @@ export function PaymentComposer({
         onDone();
       } else {
         if (!normalizeVpa(payeeVpa)) {
-          setError('Enter the UPI id of the person you’re paying (e.g. name@okbank).');
+          setError(t('payments.enterVpa'));
           return;
         }
-        const sent = await paymentService.pay(conversation.id, {
-          amountPaise: a.paise,
-          note,
-          payeeVpa,
-          payeeName,
-          to: other?.id,
-        });
+        const sent = await paymentService.pay(conversation.id, { amountPaise: a.paise, note, payeeVpa, payeeName, to: other?.id });
         if (isPaymentMessage(sent)) {
           if (Platform.OS === 'web') setQrCard(sent.ext.card);
           else {
@@ -88,124 +80,99 @@ export function PaymentComposer({
     }
   };
 
+  const blocked = busy || (mode === 'request' && !useLink && !myUpi);
+
   return (
-    <ScrollView contentContainerStyle={styles.wrap} keyboardShouldPersistTaps="handled">
-      <View style={styles.segment}>
-        {(['request', 'pay'] as const).map((m) => (
-          <TouchableOpacity key={m} style={[styles.segBtn, mode === m && styles.segActive]} onPress={() => setMode(m)}>
-            <Text style={[styles.segText, mode === m && styles.segTextActive]}>{m === 'request' ? 'Request money' : 'Pay'}</Text>
-          </TouchableOpacity>
-        ))}
+    <ScrollView contentContainerStyle={s.wrap} keyboardShouldPersistTaps="handled">
+      <View style={{ alignItems: 'center' }}>
+        <Segmented
+          label={t('payments.mode')}
+          value={mode}
+          onChange={setMode}
+          options={[
+            { value: 'request', label: t('payments.request') },
+            { value: 'pay', label: t('payments.pay') },
+          ]}
+        />
       </View>
 
-      <Text style={styles.label}>Amount (₹1 – ₹1,00,000)</Text>
-      <TextInput
-        style={[styles.input, styles.amountInput]}
-        value={amount}
-        onChangeText={setAmount}
-        placeholder="₹0"
-        placeholderTextColor={Colors.textTertiary}
-        keyboardType="decimal-pad"
-        maxLength={12}
-      />
-      {parsed && parsed.ok ? <Text style={styles.preview}>{formatINR(parsed.paise)}</Text> : null}
+      <View style={s.amountBox}>
+        <Text style={s.rupee}>₹</Text>
+        <TextInput style={s.amountInput} value={amount} onChangeText={setAmount} placeholder="0" placeholderTextColor={c.placeholder} keyboardType="decimal-pad" maxLength={12} accessibilityLabel={t('payments.amount')} />
+      </View>
+      <Text style={[type.caption, { textAlign: 'center' }]}>{parsed && parsed.ok ? formatINR(parsed.paise) : t('payments.range')}</Text>
 
-      <Text style={styles.label}>Note</Text>
-      <TextInput
-        style={styles.input}
-        value={note}
-        onChangeText={setNote}
-        placeholder={mode === 'request' ? 'What’s it for?' : 'Add a note'}
-        placeholderTextColor={Colors.textTertiary}
-        maxLength={80}
-      />
+      <TextField icon="edit" value={note} onChangeText={setNote} placeholder={mode === 'request' ? t('payments.whatFor') : t('payments.addNote')} maxLength={80} />
 
       {mode === 'request' ? (
         useLink ? (
-          <Text style={styles.info}>A Razorpay payment page (cards, netbanking, UPI) will be created. Money goes to this server’s Razorpay account.</Text>
+          <Text style={s.info}>{t('payments.linkInfo')}</Text>
         ) : myUpi === undefined ? (
-          <ActivityIndicator color={Colors.accent} />
+          <ActivityIndicator color={c.accent} />
         ) : myUpi ? (
-          <Text style={styles.info}>
-            They’ll pay to your UPI id <Text style={styles.strong}>{myUpi.vpa}</Text>. It’s shared only inside this encrypted chat.
-          </Text>
+          <View style={s.infoRow}>
+            <Icon name="lock" size={14} color={c.success} />
+            <Text style={[s.info, { flex: 1 }]}>
+              {t('payments.payTo')} <Text style={s.strong}>{myUpi.vpa}</Text>. {t('payments.sharedInChat')}
+            </Text>
+          </View>
         ) : (
-          <TouchableOpacity onPress={() => { onDone(); router.push('/payments'); }}>
-            <Text style={[styles.info, styles.link]}>Add your UPI id first (Settings → Payments) →</Text>
-          </TouchableOpacity>
+          <Pressy
+            onPress={() => {
+              onDone();
+              router.push('/payments');
+            }}
+            style={s.addUpi}
+            accessibilityRole="link"
+          >
+            <Icon name="wallet" size={17} color={c.accentText} />
+            <Text style={[s.info, { color: c.accentText, flex: 1, marginTop: 0 }]}>{t('payments.addUpiFirst')}</Text>
+            <Icon name="forwardChevron" size={16} color={c.accentText} />
+          </Pressy>
         )
       ) : (
-        <>
-          <Text style={styles.label}>Pay to UPI id</Text>
-          <TextInput
-            style={styles.input}
-            value={payeeVpa}
-            onChangeText={setPayeeVpa}
-            placeholder="name@bank"
-            placeholderTextColor={Colors.textTertiary}
-            autoCapitalize="none"
-            autoCorrect={false}
-            keyboardType="email-address"
-            maxLength={100}
-          />
-          <Text style={styles.info}>
-            {Platform.OS === 'web'
-              ? 'You’ll get a QR code to scan with a UPI app on your phone.'
-              : 'Your UPI app opens to complete the payment. Vero never sees your bank details.'}
-          </Text>
-        </>
+        <Animated.View entering={FadeIn} style={{ gap: 8 }}>
+          <TextField label={t('payments.payToVpa')} icon="at" value={payeeVpa} onChangeText={setPayeeVpa} placeholder="name@bank" autoCapitalize="none" autoCorrect={false} keyboardType="email-address" maxLength={100} />
+          <Text style={s.info}>{Platform.OS === 'web' ? t('payments.webQr') : t('payments.appOpens')}</Text>
+        </Animated.View>
       )}
 
       {mode === 'request' && links.allowed ? (
-        <View style={styles.switchRow}>
-          <Text style={styles.switchLabel}>Card / netbanking link (Razorpay, optional)</Text>
-          <Switch value={useLink} onValueChange={setUseLink} />
+        <View style={s.switchRow}>
+          <Text style={s.switchLabel}>{t('payments.linkOption')}</Text>
+          <Toggle label={t('payments.linkOption')} value={useLink} onValueChange={setUseLink} />
         </View>
       ) : null}
 
-      {error ? <Text style={styles.error}>{error}</Text> : null}
+      {error ? (
+        <Animated.Text entering={FadeIn} style={[type.caption, { color: c.danger }]}>
+          {error}
+        </Animated.Text>
+      ) : null}
 
-      <TouchableOpacity
-        style={[styles.submit, (busy || (mode === 'request' && !useLink && !myUpi)) && styles.submitDisabled]}
-        disabled={busy || (mode === 'request' && !useLink && !myUpi)}
-        onPress={submit}
-      >
-        {busy ? <ActivityIndicator color={Colors.white} /> : (
-          <Text style={styles.submitText}>{mode === 'request' ? 'Send request' : 'Continue to pay'}</Text>
-        )}
-      </TouchableOpacity>
+      <Button label={mode === 'request' ? t('payments.sendRequest') : t('payments.continuePay')} icon={mode === 'request' ? 'send' : 'wallet'} loading={busy} disabled={blocked} onPress={submit} />
 
-      <UpiQrModal card={qrCard} visible={!!qrCard} onClose={() => { setQrCard(null); onDone(); }} />
+      <UpiQrModal
+        card={qrCard}
+        visible={!!qrCard}
+        onClose={() => {
+          setQrCard(null);
+          onDone();
+        }}
+      />
     </ScrollView>
   );
 }
 
-const styles = StyleSheet.create({
-  wrap: { padding: 16, paddingBottom: 32 },
-  segment: { flexDirection: 'row', backgroundColor: Colors.surface, borderRadius: 12, padding: 4, marginBottom: 12 },
-  segBtn: { flex: 1, paddingVertical: 8, borderRadius: 9, alignItems: 'center' },
-  segActive: { backgroundColor: Colors.accent },
-  segText: { color: Colors.textSecondary, fontWeight: '500' },
-  segTextActive: { color: Colors.white, fontWeight: '600' },
-  label: { color: Colors.textSecondary, fontSize: 12, marginTop: 10, marginBottom: 4 },
-  input: {
-    borderWidth: 1,
-    borderColor: Colors.border,
-    borderRadius: 10,
-    color: Colors.textPrimary,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 15,
-  },
-  amountInput: { fontSize: 24, fontWeight: '600' },
-  preview: { color: Colors.textTertiary, fontSize: 12, marginTop: 4 },
-  info: { color: Colors.textSecondary, fontSize: 12, marginTop: 10, lineHeight: 17 },
-  strong: { color: Colors.textPrimary, fontWeight: '600' },
-  link: { color: Colors.accent },
-  switchRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 12 },
-  switchLabel: { color: Colors.textPrimary, fontSize: 13, flex: 1, marginRight: 8 },
-  error: { color: Colors.error, fontSize: 13, marginTop: 10 },
-  submit: { backgroundColor: Colors.accent, borderRadius: 12, alignItems: 'center', paddingVertical: 13, marginTop: 16 },
-  submitDisabled: { opacity: 0.5 },
-  submitText: { color: Colors.white, fontWeight: '600', fontSize: 15 },
-});
+const useStyles = makeStyles((c, t, f) => ({
+  wrap: { padding: 16, paddingBottom: 32, gap: 12 },
+  amountBox: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4, paddingVertical: 8 },
+  rupee: { fontFamily: f.display, fontSize: 36, color: c.accentText },
+  amountInput: { fontFamily: f.display, fontSize: 48, color: c.text, minWidth: 80, textAlign: 'center', outlineStyle: 'none' } as any,
+  info: { fontFamily: f.body, color: c.muted, fontSize: 12.5, lineHeight: f.script === 'latin' ? 18 : 21 },
+  infoRow: { flexDirection: 'row', gap: 8, alignItems: 'flex-start' },
+  strong: { fontFamily: f.semibold, color: c.text },
+  addUpi: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 12, borderRadius: 14, backgroundColor: c.accentTint, borderWidth: 1, borderColor: c.accentTint2 },
+  switchRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
+  switchLabel: { fontFamily: f.medium, color: c.text, fontSize: 13.5, flex: 1 },
+}));

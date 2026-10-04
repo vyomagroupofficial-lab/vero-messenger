@@ -1,438 +1,222 @@
-import React, { useState, useRef } from 'react';
-import {
-  View,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  StyleSheet,
-  KeyboardAvoidingView,
-  Platform,
-  ScrollView,
-  ActivityIndicator,
-  Alert,
-  Animated,
-} from 'react-native';
+import React, { useMemo, useState } from 'react';
+import { Text, View } from 'react-native';
+import Animated, { FadeInDown, useAnimatedStyle, withSpring } from 'react-native-reanimated';
 import { router } from 'expo-router';
 import { useAuthStore } from '../../src/features/auth/useAuthStore';
 import { isSupabaseConfigured } from '../../src/core/network/supabase';
-import { Colors, Typography, Spacing, BorderRadius } from '../../src/shared/theme/theme';
-import { Ionicons } from '@expo/vector-icons';
+import { AuthShell } from '../../src/features/auth/AuthShell';
+import { makeStyles, useTheme } from '../../src/shared/theme/ThemeProvider';
+import { useT } from '../../src/shared/i18n';
+import { Button, Icon, IconButton, Pressy, TextField, notify, useLayout, useShake } from '../../src/shared/ui';
+
+function strengthOf(pw: string) {
+  let s = 0;
+  if (pw.length >= 8) s++;
+  if (pw.length >= 12) s++;
+  if (/[A-Z]/.test(pw) && /[a-z]/.test(pw)) s++;
+  if (/[0-9]/.test(pw) && /[^A-Za-z0-9]/.test(pw)) s++;
+  return s;
+}
+
+function Segment({ on, color }: { on: boolean; color: string }) {
+  const s = useStyles();
+  const a = useAnimatedStyle(() => ({ transform: [{ scaleX: withSpring(on ? 1 : 0, { damping: 18, stiffness: 200 }) }] }));
+  return (
+    <View style={s.seg}>
+      <Animated.View style={[s.segFill, { backgroundColor: color, transformOrigin: 'left' } as any, a]} />
+    </View>
+  );
+}
+
+function Step({ n, title, body, active, index }: { n: string; title: string; body: string; active?: boolean; index: number }) {
+  const { type } = useTheme();
+  const s = useStyles();
+  return (
+    <Animated.View entering={FadeInDown.delay(150 + index * 100).duration(600)} style={s.step}>
+      <View style={[s.stepNum, active ? s.stepActive : s.stepIdle]}>
+        <Text style={[s.stepNumText, active && s.stepNumActive]}>{n}</Text>
+      </View>
+      <View style={{ flex: 1, gap: 3, paddingTop: 6 }}>
+        <Text style={type.name}>{title}</Text>
+        <Text style={type.bodyMuted}>{body}</Text>
+      </View>
+    </Animated.View>
+  );
+}
 
 export default function SignupScreen() {
+  const { c, type } = useTheme();
+  const s = useStyles();
+  const t = useT();
+  const { isWide } = useLayout();
   const [displayName, setDisplayName] = useState('');
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [focusedField, setFocusedField] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
-
   const { signUp, isLoading } = useAuthStore();
-  const shakeAnim = useRef(new Animated.Value(0)).current;
+  const { style: shakeStyle, shake } = useShake();
+  const strength = useMemo(() => strengthOf(password), [password]);
+  const strengthColor = [c.danger, c.danger, c.accentText, c.success, c.success][strength];
 
-  const shake = () => {
-    Animated.sequence([
-      Animated.timing(shakeAnim, { toValue: 10, duration: 50, useNativeDriver: true }),
-      Animated.timing(shakeAnim, { toValue: -10, duration: 50, useNativeDriver: true }),
-      Animated.timing(shakeAnim, { toValue: 8, duration: 50, useNativeDriver: true }),
-      Animated.timing(shakeAnim, { toValue: -8, duration: 50, useNativeDriver: true }),
-      Animated.timing(shakeAnim, { toValue: 0, duration: 50, useNativeDriver: true }),
-    ]).start();
+  const set = (key: string, fn: (v: string) => void) => (v: string) => {
+    fn(v);
+    setErrors((e) => ({ ...e, [key]: '' }));
   };
 
   const validate = () => {
-    const newErrors: Record<string, string> = {};
-
-    if (!displayName.trim()) newErrors.displayName = 'Display name is required';
-    else if (displayName.trim().length > 64) newErrors.displayName = 'Must be 64 characters or fewer';
-
-    if (!username.trim()) newErrors.username = 'Username is required';
-    else if (username.trim().length < 3 || username.trim().length > 30) newErrors.username = 'Must be 3-30 characters';
-    else if (!/^[a-zA-Z0-9_]+$/.test(username.trim())) newErrors.username = 'Only letters, numbers & underscores';
-
-    if (!email.trim()) newErrors.email = 'Email address is required';
-    else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) newErrors.email = 'Enter a valid email address';
-
-    if (!password) newErrors.password = 'Password is required';
-    else if (password.length < 8) newErrors.password = 'Minimum 8 characters required';
-
-    if (!confirmPassword) newErrors.confirmPassword = 'Confirmation required';
-    else if (password !== confirmPassword) newErrors.confirmPassword = 'Passwords do not match';
-
-    setErrors(newErrors);
-    return Object.keys(newErrors).length === 0;
+    const e: Record<string, string> = {};
+    const name = displayName.trim();
+    const user = username.trim();
+    if (!name) e.displayName = t('auth.errNameRequired');
+    else if (name.length > 64) e.displayName = t('auth.errNameLong', { count: 64 });
+    if (!user) e.username = t('auth.errUsernameRequired');
+    else if (user.length < 3 || user.length > 30) e.username = t('auth.errUsernameLength');
+    else if (!/^[a-zA-Z0-9_]+$/.test(user)) e.username = t('auth.errUsernameChars');
+    if (!email.trim()) e.email = t('auth.errEmailRequired');
+    else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) e.email = t('auth.errEmailInvalid');
+    if (!password) e.password = t('auth.errNewPasswordRequired');
+    else if (password.length < 8) e.password = t('auth.errNewPasswordShort', { count: 8 });
+    if (!confirmPassword) e.confirmPassword = t('auth.errConfirmRequired');
+    else if (password !== confirmPassword) e.confirmPassword = t('auth.errConfirmMismatch');
+    setErrors(e);
+    return Object.keys(e).length === 0;
   };
 
   const handleSignUp = async () => {
     if (!isSupabaseConfigured) {
-      Alert.alert('Backend not configured', 'Set EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY in .env first.');
+      notify(t('auth.notConfigured'), t('auth.notConfiguredBody'));
       return;
     }
     if (!validate()) {
       shake();
       return;
     }
-
     const result = await signUp({
       email: email.trim(),
       password,
       username: username.trim().toLowerCase(),
       displayName: displayName.trim(),
     });
-
     if (!result.success) {
       shake();
-      Alert.alert('Registration failed', result.error || 'Could not create your account.');
+      notify(t('auth.signupFailed'), result.error || t('auth.signupFailedBody'));
     } else if (result.needsEmailConfirmation) {
-      Alert.alert(
-        'Confirm your email',
-        `We sent a confirmation link to ${email.trim()}. Open it, then sign in. Your encryption keys are created on first sign-in.`
-      );
+      notify(t('auth.confirmEmail'), t('auth.confirmEmailBody', { email: email.trim() }));
       router.replace('/(auth)/login');
     } else {
       router.replace('/(tabs)/chats');
     }
   };
 
-  const renderField = (
-    label: string,
-    value: string,
-    onChange: (v: string) => void,
-    options: {
-      placeholder: string;
-      icon: keyof typeof Ionicons.glyphMap;
-      secure?: boolean;
-      keyboardType?: 'default' | 'email-address';
-      autoCapitalize?: 'none' | 'words';
-      fieldKey: string;
-      suffix?: React.ReactNode;
-    }
-  ) => {
-    const isFocused = focusedField === options.fieldKey;
-    const hasError = !!errors[options.fieldKey];
-
-    return (
-      <View style={styles.inputGroup}>
-        <Text style={styles.inputLabel}>{label}</Text>
-        <View
-          style={[
-            styles.inputWrapper,
-            isFocused && styles.inputWrapperFocused,
-            hasError ? styles.inputError : null,
-          ]}
-        >
-          <Ionicons
-            name={options.icon}
-            size={18}
-            color={isFocused ? Colors.accent : Colors.textSecondary}
-            style={styles.inputIcon}
-          />
-          <TextInput
-            style={styles.input}
-            placeholder={options.placeholder}
-            placeholderTextColor={Colors.textTertiary}
-            value={value}
-            onChangeText={(t) => {
-              onChange(t);
-              setErrors((e) => ({ ...e, [options.fieldKey]: '' }));
-            }}
-            onFocus={() => setFocusedField(options.fieldKey)}
-            onBlur={() => setFocusedField(null)}
-            secureTextEntry={options.secure && !showPassword}
-            keyboardType={options.keyboardType}
-            autoCapitalize={options.autoCapitalize || 'none'}
-          />
-          {options.suffix}
-        </View>
-        {hasError ? (
-          <Text style={styles.errorText}>{errors[options.fieldKey]}</Text>
-        ) : null}
-      </View>
-    );
-  };
+  const eye = (
+    <Pressy onPress={() => setShowPassword((v) => !v)} accessibilityLabel={showPassword ? t('auth.hidePassword') : t('auth.showPassword')} style={s.eye}>
+      <Icon name={showPassword ? 'eyeOff' : 'eye'} size={19} color={c.faint} />
+    </Pressy>
+  );
 
   return (
-    <KeyboardAvoidingView
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      style={styles.container}
+    <AuthShell
+      headline={t('auth.signupHeadline')}
+      mobileHeadline={t('auth.signupMobileHeadline')}
+      tone="surface"
+      topBar={
+        <IconButton
+          icon="back"
+          label={t('auth.backToSignIn')}
+          variant="filled"
+          onPress={() => (router.canGoBack() ? router.back() : router.replace('/(auth)/login'))}
+        />
+      }
+      panel={
+        <View style={{ gap: 26 }}>
+          <Step index={0} n="01" active title={t('auth.step1Title')} body={t('auth.step1Body')} />
+          <Step index={1} n="02" title={t('auth.step2Title')} body={t('auth.step2Body')} />
+          <Step index={2} n="03" title={t('auth.step3Title')} body={t('auth.step3Body')} />
+        </View>
+      }
     >
-      <ScrollView
-        contentContainerStyle={styles.scrollContent}
-        keyboardShouldPersistTaps="handled"
-        showsVerticalScrollIndicator={false}
-      >
-        {/* Top Back Action */}
-        <TouchableOpacity style={styles.backButton} onPress={() => router.back()} activeOpacity={0.7}>
-          <Ionicons name="arrow-back" size={20} color={Colors.textPrimary} />
-        </TouchableOpacity>
-
-        {/* Hero Header */}
-        <View style={styles.header}>
-          <View style={styles.logoHalo}>
-            <View style={styles.logoContainer}>
-              <Ionicons name="key-outline" size={32} color={Colors.accent} />
-            </View>
-          </View>
-          <Text style={styles.title}>Create account</Text>
-          <Text style={styles.subtitle}>Your keys are generated on this device</Text>
-        </View>
-
-        {/* Form Container */}
-        <Animated.View style={[styles.form, { transform: [{ translateX: shakeAnim }] }]}>
-          {renderField('DISPLAY NAME', displayName, setDisplayName, {
-            placeholder: 'Alex Rivera',
-            icon: 'person-outline',
-            autoCapitalize: 'words',
-            fieldKey: 'displayName',
-          })}
-
-          {renderField('USERNAME', username, setUsername, {
-            placeholder: 'alex_r',
-            icon: 'at-outline',
-            fieldKey: 'username',
-          })}
-
-          {renderField('EMAIL ADDRESS', email, setEmail, {
-            placeholder: 'alex@example.com',
-            icon: 'mail-outline',
-            keyboardType: 'email-address',
-            fieldKey: 'email',
-          })}
-
-          {renderField('PASSWORD', password, setPassword, {
-            placeholder: 'Minimum 8 characters',
-            icon: 'lock-closed-outline',
-            secure: true,
-            fieldKey: 'password',
-            suffix: (
-              <TouchableOpacity onPress={() => setShowPassword(!showPassword)} style={styles.eyeIcon}>
-                <Ionicons
-                  name={showPassword ? 'eye-off-outline' : 'eye-outline'}
-                  size={19}
-                  color={Colors.textSecondary}
-                />
-              </TouchableOpacity>
-            ),
-          })}
-
-          {renderField('CONFIRM PASSWORD', confirmPassword, setConfirmPassword, {
-            placeholder: 'Re-enter passphrase',
-            icon: 'shield-checkmark-outline',
-            secure: true,
-            fieldKey: 'confirmPassword',
-          })}
-
-          {/* Cryptographic notice */}
-          <View style={styles.privacyNotice}>
-            <Ionicons name="shield-checkmark" size={18} color={Colors.online} />
-            <Text style={styles.privacyText}>
-              Your X25519 identity key pair is generated on this device. Vero's servers never see your private keys or your messages.
+      <Animated.View style={[{ gap: 16 }, shakeStyle]}>
+        {isWide ? (
+          <Animated.View entering={FadeInDown.duration(500)} style={{ gap: 6, marginBottom: 4 }}>
+            <Text style={[type.eyebrow, { color: c.accentText }]}>{t('auth.step', { n: 1, total: 3 })}</Text>
+            <Text style={[type.title, { fontSize: 34 }]} accessibilityRole="header">
+              {t('auth.signupTitle')}
             </Text>
-          </View>
+          </Animated.View>
+        ) : (
+          <Text style={type.bodyMuted}>{t('auth.signupSub')}</Text>
+        )}
 
-          {/* Submit */}
-          <TouchableOpacity
-            style={[styles.signupButton, isLoading && styles.buttonDisabled]}
-            onPress={handleSignUp}
-            disabled={isLoading}
-            activeOpacity={0.88}
-          >
-            {isLoading ? (
-              <ActivityIndicator color={Colors.white} size="small" />
-            ) : (
-              <View style={styles.btnContent}>
-                <Ionicons name="finger-print-outline" size={19} color={Colors.white} style={{ marginRight: 8 }} />
-                <Text style={styles.signupButtonText}>Generate Keys & Register</Text>
+        <TextField label={t('auth.displayName')} icon="user" placeholder={t('auth.displayNamePlaceholder')} value={displayName} onChangeText={set('displayName', setDisplayName)} error={errors.displayName} autoCapitalize="words" textContentType="name" />
+        <TextField label={t('auth.username')} icon="at" placeholder={t('auth.usernamePlaceholder')} value={username} onChangeText={set('username', setUsername)} error={errors.username} autoCapitalize="none" textContentType="username" />
+        <TextField label={t('auth.email')} icon="mail" placeholder={t('auth.emailPlaceholder')} value={email} onChangeText={set('email', setEmail)} error={errors.email} autoCapitalize="none" keyboardType="email-address" textContentType="emailAddress" />
+        <View style={{ gap: 8 }}>
+          <TextField
+            label={t('auth.password')}
+            icon="lock"
+            placeholder={t('auth.newPasswordPlaceholder')}
+            value={password}
+            onChangeText={set('password', setPassword)}
+            error={errors.password}
+            secureTextEntry={!showPassword}
+            textContentType="newPassword"
+            right={eye}
+          />
+          {password.length > 0 && (
+            <Animated.View entering={FadeInDown.duration(250)} style={{ gap: 6 }} accessibilityLiveRegion="polite">
+              <View style={{ flexDirection: 'row', gap: 6 }}>
+                {[1, 2, 3, 4].map((i) => (
+                  <Segment key={i} on={strength >= i} color={strengthColor} />
+                ))}
               </View>
-            )}
-          </TouchableOpacity>
-        </Animated.View>
-
-        {/* Footer */}
-        <View style={styles.footer}>
-          <Text style={styles.footerText}>Already have an encrypted vault?</Text>
-          <TouchableOpacity onPress={() => router.push('/(auth)/login')}>
-            <Text style={styles.loginLink}> Sign In</Text>
-          </TouchableOpacity>
+              <Text style={[type.caption, { color: strengthColor }]}>{t(`auth.strength${strength}`)}</Text>
+            </Animated.View>
+          )}
         </View>
-      </ScrollView>
-    </KeyboardAvoidingView>
+        <TextField
+          label={t('auth.confirmPassword')}
+          icon="shieldCheck"
+          placeholder={t('auth.confirmPlaceholder')}
+          value={confirmPassword}
+          onChangeText={set('confirmPassword', setConfirmPassword)}
+          error={errors.confirmPassword}
+          secureTextEntry={!showPassword}
+          textContentType="newPassword"
+          onSubmitEditing={handleSignUp}
+        />
+
+        <View style={s.note}>
+          <Icon name="key" size={18} color={c.success} />
+          <Text style={[type.caption, { flex: 1, color: c.successInk }]}>{t('auth.keysNote')}</Text>
+        </View>
+
+        <Button label={t('auth.create')} iconRight="arrowRight" onPress={handleSignUp} loading={isLoading} />
+
+        <View style={s.footer}>
+          <Text style={type.bodyMuted}>{t('auth.haveAccount')}</Text>
+          <Pressy onPress={() => router.replace('/(auth)/login')} accessibilityRole="link">
+            <Text style={s.link}>{t('auth.signIn')}</Text>
+          </Pressy>
+        </View>
+      </Animated.View>
+    </AuthShell>
   );
 }
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: Colors.background,
-  },
-  scrollContent: {
-    flexGrow: 1,
-    paddingHorizontal: Spacing['2xl'],
-    paddingVertical: Spacing.xl,
-  },
-  backButton: {
-    marginBottom: Spacing.md,
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: '#080E1A',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(6, 182, 212, 0.25)',
-  },
-  header: {
-    alignItems: 'center',
-    marginBottom: Spacing.xl,
-  },
-  logoHalo: {
-    padding: 5,
-    borderRadius: 30,
-    backgroundColor: 'rgba(6, 182, 212, 0.08)',
-    borderWidth: 1,
-    borderColor: 'rgba(6, 182, 212, 0.25)',
-    marginBottom: Spacing.sm,
-  },
-  logoContainer: {
-    width: 58,
-    height: 58,
-    borderRadius: 24,
-    backgroundColor: '#0A1526',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(6, 182, 212, 0.35)',
-    shadowColor: Colors.accent,
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.5,
-    shadowRadius: 15,
-  },
-  title: {
-    fontSize: Typography['2xl'],
-    fontWeight: Typography.bold,
-    color: Colors.textPrimary,
-    marginBottom: 4,
-  },
-  subtitle: {
-    fontSize: Typography.xs,
-    color: Colors.textSecondary,
-    letterSpacing: 0.4,
-  },
-  form: {
-    backgroundColor: '#080E1A',
-    borderRadius: BorderRadius['2xl'],
-    padding: Spacing['2xl'],
-    borderWidth: 1,
-    borderColor: 'rgba(6, 182, 212, 0.2)',
-    marginBottom: Spacing.xl,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.5,
-    shadowRadius: 20,
-  },
-  inputGroup: {
-    marginBottom: Spacing.md,
-  },
-  inputLabel: {
-    fontSize: 10.5,
-    fontWeight: Typography.bold,
-    color: Colors.textSecondary,
-    marginBottom: 5,
-    letterSpacing: 0.8,
-  },
-  inputWrapper: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#040711',
-    borderRadius: BorderRadius.lg,
-    borderWidth: 1.5,
-    borderColor: '#1E293B',
-    paddingHorizontal: Spacing.md,
-    height: 48,
-  },
-  inputWrapperFocused: {
-    borderColor: Colors.accent,
-    backgroundColor: '#070D1E',
-  },
-  inputError: {
-    borderColor: Colors.error,
-  },
-  inputIcon: {
-    marginRight: Spacing.sm,
-  },
-  input: {
-    flex: 1,
-    color: Colors.textPrimary,
-    fontSize: Typography.sm,
-    height: '100%',
-  },
-  eyeIcon: {
-    padding: Spacing.xs,
-  },
-  errorText: {
-    fontSize: Typography.xs,
-    color: Colors.error,
-    marginTop: 3,
-    marginLeft: Spacing.xs,
-  },
-  privacyNotice: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(16, 185, 129, 0.08)',
-    borderRadius: BorderRadius.lg,
-    padding: Spacing.md,
-    marginVertical: Spacing.base,
-    borderWidth: 1,
-    borderColor: 'rgba(16, 185, 129, 0.25)',
-    gap: Spacing.sm,
-  },
-  privacyText: {
-    flex: 1,
-    fontSize: 11,
-    color: Colors.textSecondary,
-    lineHeight: 16,
-  },
-  signupButton: {
-    backgroundColor: Colors.accent,
-    borderRadius: BorderRadius.lg,
-    height: 50,
-    justifyContent: 'center',
-    alignItems: 'center',
-    shadowColor: Colors.accent,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.45,
-    shadowRadius: 14,
-    elevation: 8,
-    marginTop: Spacing.xs,
-  },
-  btnContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  buttonDisabled: {
-    opacity: 0.65,
-  },
-  signupButtonText: {
-    color: Colors.white,
-    fontSize: Typography.base,
-    fontWeight: Typography.bold,
-    letterSpacing: 0.4,
-  },
-  footer: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingBottom: Spacing.lg,
-  },
-  footerText: {
-    fontSize: Typography.sm,
-    color: Colors.textSecondary,
-  },
-  loginLink: {
-    fontSize: Typography.sm,
-    color: Colors.accent,
-    fontWeight: Typography.bold,
-  },
-});
-
+const useStyles = makeStyles((c, t, f) => ({
+  eye: { width: 44, height: 44, marginRight: -10, alignItems: 'center', justifyContent: 'center' },
+  seg: { flex: 1, height: 5, borderRadius: 3, backgroundColor: c.field, overflow: 'hidden' },
+  segFill: { height: '100%', borderRadius: 3 },
+  note: { flexDirection: 'row', gap: 10, padding: 14, borderRadius: 16, backgroundColor: c.successTint },
+  link: { fontFamily: f.semibold, fontSize: 14.5, color: c.accentText },
+  footer: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', alignItems: 'center', gap: 6, marginTop: 4 },
+  step: { flexDirection: 'row', gap: 16, alignItems: 'flex-start' },
+  stepNum: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
+  stepActive: { backgroundColor: c.accent },
+  stepIdle: { backgroundColor: c.raised, borderWidth: 1, borderColor: c.line2 },
+  stepNumText: { fontFamily: f.monoMedium, fontSize: 13, color: c.text },
+  stepNumActive: { color: c.onAccent },
+}));

@@ -4,64 +4,56 @@
  */
 
 import React from 'react';
-import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { Colors } from '../../../shared/theme/theme';
+import { ScrollView, Text, View } from 'react-native';
+import Animated, { FadeInDown } from 'react-native-reanimated';
+import { useT } from '../../../shared/i18n';
+import { makeStyles, useTheme } from '../../../shared/theme/ThemeProvider';
+import { Pressy } from '../../../shared/ui';
 import { useBotInfo } from '../BotRepository';
 import { matchCommands } from '../validation';
 
 /** Inline " BOT" tag; a Text so it can sit inside a title <Text>. */
 export function BotBadge({ userId }: { userId?: string | null }) {
+  const s = useStyles();
+  const t = useT();
   const bot = useBotInfo(userId);
   if (!bot) return null;
   return (
-    <Text style={styles.badgeText} accessibilityLabel="Bot account">
+    <Text style={s.badgeText} accessibilityLabel={t('bots.botAccount')}>
       {'  BOT'}
     </Text>
   );
 }
 
-export function BotCommandSuggestions({
-  botUserId,
-  text,
-  onPick,
-}: {
-  botUserId?: string | null;
-  text: string;
-  onPick: (text: string) => void;
-}) {
+export function BotCommandSuggestions({ botUserId, text, onPick }: { botUserId?: string | null; text: string; onPick: (text: string) => void }) {
+  const { c } = useTheme();
+  const s = useStyles();
   const bot = useBotInfo(botUserId);
   if (!bot || !text.startsWith('/')) return null;
   const matches = matchCommands(text, bot.commands);
   if (matches.length === 0) return null;
   return (
-    <View style={styles.menu}>
+    <Animated.View entering={FadeInDown.springify().damping(18)} style={s.menu}>
       <ScrollView keyboardShouldPersistTaps="always" style={{ maxHeight: 220 }}>
-        {matches.map((c) => (
-          <TouchableOpacity key={c.command} style={styles.item} onPress={() => onPick(`/${c.command} `)}>
-            <Text style={styles.cmd}>/{c.command}</Text>
-            {c.description ? (
-              <Text style={styles.desc} numberOfLines={1}>
-                {c.description}
+        {matches.map((cmd) => (
+          <Pressy key={cmd.command} style={s.item} onPress={() => onPick(`/${cmd.command} `)} hoverStyle={{ backgroundColor: c.tint }} accessibilityLabel={`/${cmd.command}`}>
+            <Text style={s.cmd}>/{cmd.command}</Text>
+            {cmd.description ? (
+              <Text style={s.desc} numberOfLines={1}>
+                {cmd.description}
               </Text>
             ) : null}
-          </TouchableOpacity>
+          </Pressy>
         ))}
       </ScrollView>
-    </View>
+    </Animated.View>
   );
 }
 
-const styles = StyleSheet.create({
-  badgeText: { color: Colors.accent, fontSize: 11, fontWeight: '800', letterSpacing: 0.5 },
-  menu: {
-    marginHorizontal: 8,
-    marginBottom: 4,
-    backgroundColor: Colors.surfaceElevated,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  item: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, paddingVertical: 10, gap: 10 },
-  cmd: { color: Colors.accent, fontWeight: '600', fontSize: 14 },
-  desc: { color: Colors.textSecondary, fontSize: 13, flex: 1 },
-});
+const useStyles = makeStyles((c, t, f) => ({
+  badgeText: { fontFamily: f.mono, color: c.accentText, fontSize: 10.5, letterSpacing: 1 },
+  menu: { marginHorizontal: 12, marginBottom: 6, backgroundColor: c.raised, borderRadius: 18, borderWidth: 1, borderColor: c.line, overflow: 'hidden' },
+  item: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 11, gap: 12 },
+  cmd: { fontFamily: f.mono, color: c.accentText, fontSize: 14 },
+  desc: { fontFamily: f.body, color: c.muted, fontSize: 13, flex: 1 },
+}));

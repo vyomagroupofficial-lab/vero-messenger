@@ -1,24 +1,30 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, FlatList, RefreshControl, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, FlatList, RefreshControl, Text, View } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuthStore } from '../../src/features/auth/useAuthStore';
-import { CHANNELS_E2EE_NOTICE, followersLabel } from '../../src/features/channels/channelUtils';
+import { formatCount } from '../../src/features/channels/channelUtils';
 import { ChannelSummary } from '../../src/features/channels/types';
 import { channelsStore, useChannelsStore } from '../../src/features/channels/useChannelsStore';
-import { Banner, EntityAvatar, groupStyles as gs, Row, ScreenHeader } from '../../src/features/groups/components/GroupComponents';
-import { Colors, Spacing } from '../../src/shared/theme/theme';
+import { Banner, EntityAvatar, Row, ScreenHeader, useGroupStyles } from '../../src/features/groups/components/GroupComponents';
+import { makeStyles, useTheme } from '../../src/shared/theme/ThemeProvider';
+import { useT } from '../../src/shared/i18n';
+import { Chip, EmptyState, Grain, Icon, IconButton, Pressy, Rise, SearchField } from '../../src/shared/ui';
 
 type Tab = 'following' | 'discover';
 
 /** Channels hub: channels you follow/run, the public directory, and communities. */
 export default function ChannelsScreen() {
-  const isDemo = useAuthStore((s) => s.isDemo);
-  const mine = useChannelsStore((s) => s.mine);
-  const directory = useChannelsStore((s) => s.directory);
-  const isLoadingMine = useChannelsStore((s) => s.isLoadingMine);
-  const isSearching = useChannelsStore((s) => s.isSearching);
+  const insets = useSafeAreaInsets();
+  const { c } = useTheme();
+  const gs = useGroupStyles();
+  const s = useStyles();
+  const t = useT();
+  const isDemo = useAuthStore((st) => st.isDemo);
+  const mine = useChannelsStore((st) => st.mine);
+  const directory = useChannelsStore((st) => st.directory);
+  const isLoadingMine = useChannelsStore((st) => st.isLoadingMine);
+  const isSearching = useChannelsStore((st) => st.isSearching);
   const [tab, setTab] = useState<Tab>('following');
   const [query, setQuery] = useState('');
 
@@ -30,95 +36,101 @@ export default function ChannelsScreen() {
 
   useEffect(() => {
     if (isDemo || tab !== 'discover') return;
-    const t = setTimeout(() => void channelsStore.getState().search(query).catch(() => undefined), 250);
-    return () => clearTimeout(t);
+    const timer = setTimeout(() => void channelsStore.getState().search(query).catch(() => undefined), 250);
+    return () => clearTimeout(timer);
   }, [query, tab, isDemo]);
 
-  const renderChannel = ({ item }: { item: ChannelSummary }) => (
-    <TouchableOpacity onPress={() => router.push(`/channels/${item.id}`)} activeOpacity={0.7}>
-      <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: Spacing.base, paddingVertical: Spacing.md, gap: Spacing.md }}>
-        <EntityAvatar name={item.name} dataUri={item.avatarData} size={48} icon="megaphone" />
-        <View style={{ flex: 1 }}>
-          <Text style={gs.body} numberOfLines={1}>
-            {item.name}
-            {item.visibility === 'private' ? '  🔒' : ''}
-          </Text>
-          <Text style={gs.muted} numberOfLines={1}>
-            @{item.handle} · {followersLabel(item.followerCount)}
-            {item.myRole ? ` · ${item.myRole === 'owner' ? 'Owner' : 'Admin'}` : ''}
-            {item.muted ? ' · Muted' : ''}
-          </Text>
-        </View>
-        {tab === 'discover' && item.isFollowing && <Ionicons name="checkmark-circle" size={18} color={Colors.accent} />}
-      </View>
-    </TouchableOpacity>
-  );
+  const renderChannel = ({ item, index }: { item: ChannelSummary; index: number }) => {
+    const meta = [
+      `@${item.handle}`,
+      t('channels.followers', { count: item.followerCount, n: formatCount(item.followerCount) }),
+      item.myRole ? (item.myRole === 'owner' ? t('thread.role_owner') : t('thread.role_admin')) : null,
+      item.muted ? t('channels.muted') : null,
+    ].filter(Boolean);
+    return (
+      <Rise index={Math.min(index, 10)}>
+        <Pressy onPress={() => router.push(`/channels/${item.id}`)} scaleTo={0.98} hoverStyle={{ backgroundColor: c.tint }} style={s.item} accessibilityLabel={item.name}>
+          <EntityAvatar name={item.name} dataUri={item.avatarData} size={50} icon="megaphone" />
+          <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <Text style={s.name} numberOfLines={1}>
+                {item.name}
+              </Text>
+              {item.visibility === 'private' && <Icon name="lock" size={13} color={c.muted} />}
+            </View>
+            <Text style={s.meta} numberOfLines={1}>
+              {meta.join(' · ')}
+            </Text>
+          </View>
+          {tab === 'discover' && item.isFollowing && (
+            <View style={s.following}>
+              <Icon name="check" size={13} color={c.success} strokeWidth={2.4} />
+            </View>
+          )}
+        </Pressy>
+      </Rise>
+    );
+  };
 
   return (
-    <SafeAreaView style={gs.container} edges={['top']}>
+    <View style={[gs.container, { paddingTop: insets.top }]}>
+      <Grain />
       <ScreenHeader
-        title="Channels"
-        subtitle="Broadcast updates"
-        onBack={() => router.back()}
-        right={
-          !isDemo ? (
-            <TouchableOpacity onPress={() => router.push('/channels/new')} accessibilityLabel="New channel" style={{ padding: Spacing.sm }}>
-              <Ionicons name="add-circle-outline" size={24} color={Colors.accentLight} />
-            </TouchableOpacity>
-          ) : null
-        }
+        title={t('channels.title')}
+        subtitle={t('channels.subtitle')}
+        onBack={() => (router.canGoBack() ? router.back() : router.replace('/(tabs)/chats'))}
+        right={!isDemo ? <IconButton icon="plus" label={t('channels.new')} variant="brass" onPress={() => router.push('/channels/new')} /> : null}
       />
 
       {isDemo ? (
-        <View style={gs.centered}>
-          <Text style={gs.muted}>Channels need a real account.</Text>
-        </View>
+        <EmptyState icon="megaphone" title={t('channels.title')} body={t('channels.demo')} />
       ) : (
-        <>
-          <Banner icon="information-circle-outline" tone="warning" text={CHANNELS_E2EE_NOTICE} />
-          <Row icon="git-network-outline" label="Communities" sublabel="Groups that belong together, with announcements" onPress={() => router.push('/communities')} />
-          <View style={{ flexDirection: 'row', gap: Spacing.sm, padding: Spacing.base }}>
-            {(['following', 'discover'] as Tab[]).map((t) => (
-              <TouchableOpacity key={t} style={[gs.chip, tab === t && gs.chipActive]} onPress={() => setTab(t)}>
-                <Text style={[gs.chipText, tab === t && gs.chipTextActive]}>{t === 'following' ? 'Following' : 'Discover'}</Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-
-          {tab === 'discover' && (
-            <TextInput
-              style={gs.input}
-              value={query}
-              onChangeText={setQuery}
-              placeholder="Search public channels"
-              placeholderTextColor={Colors.textTertiary}
-              autoCapitalize="none"
-            />
-          )}
-
+        <View style={s.inner}>
           <FlatList
             data={tab === 'following' ? mine : directory}
-            keyExtractor={(c) => c.id}
+            keyExtractor={(ch) => ch.id}
             renderItem={renderChannel}
+            keyboardShouldPersistTaps="handled"
+            contentContainerStyle={{ paddingBottom: insets.bottom + 32 }}
+            ListHeaderComponent={
+              <View style={{ gap: 6, paddingTop: 8 }}>
+                <Banner icon="info" tone="warning" text={t('channels.notice')} />
+                <Row icon="grid" label={t('communities.title')} sublabel={t('communities.subtitle')} onPress={() => router.push('/communities')} />
+                <View style={s.tabs}>
+                  <Chip label={t('channels.following')} active={tab === 'following'} onPress={() => setTab('following')} />
+                  <Chip label={t('channels.discover')} active={tab === 'discover'} onPress={() => setTab('discover')} />
+                </View>
+                {tab === 'discover' && (
+                  <SearchField value={query} onChangeText={setQuery} placeholder={t('channels.search')} onClear={() => setQuery('')} style={{ marginHorizontal: 16, marginBottom: 6 }} />
+                )}
+              </View>
+            }
             refreshControl={
-              tab === 'following' ? (
-                <RefreshControl refreshing={isLoadingMine} onRefresh={() => void channelsStore.getState().loadMine()} tintColor={Colors.accent} />
-              ) : undefined
+              tab === 'following' ? <RefreshControl refreshing={isLoadingMine} onRefresh={() => void channelsStore.getState().loadMine()} tintColor={c.accent} /> : undefined
             }
             ListEmptyComponent={
               (tab === 'discover' && isSearching) || (tab === 'following' && isLoadingMine) ? (
-                <ActivityIndicator color={Colors.accent} style={{ marginTop: 24 }} />
+                <ActivityIndicator color={c.accent} style={{ marginTop: 24 }} />
               ) : (
-                <View style={gs.centered}>
-                  <Text style={gs.muted}>
-                    {tab === 'following' ? "You don't follow any channels yet. Try Discover." : 'No public channels found.'}
-                  </Text>
-                </View>
+                <EmptyState
+                  icon="megaphone"
+                  title={tab === 'following' ? t('channels.noneFollowing') : t('channels.noneFound')}
+                  body={tab === 'following' ? t('channels.noneFollowingBody') : t('channels.noneFoundBody')}
+                />
               )
             }
           />
-        </>
+        </View>
       )}
-    </SafeAreaView>
+    </View>
   );
 }
+
+const useStyles = makeStyles((c, t, f) => ({
+  inner: { flex: 1, width: '100%', maxWidth: 760, alignSelf: 'center' },
+  tabs: { flexDirection: 'row', gap: 8, paddingHorizontal: 16, paddingVertical: 10 },
+  item: { flexDirection: 'row', alignItems: 'center', gap: 13, marginHorizontal: 8, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 18 },
+  name: { fontFamily: f.semibold, fontSize: 16, color: c.text, flexShrink: 1 },
+  meta: { fontFamily: f.body, fontSize: 13, color: c.muted },
+  following: { width: 26, height: 26, borderRadius: 13, backgroundColor: c.successTint, alignItems: 'center', justifyContent: 'center' },
+}));

@@ -1,13 +1,16 @@
 import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, FlatList, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { ActivityIndicator, ScrollView, Text, View } from 'react-native';
+import Animated, { FadeInDown } from 'react-native-reanimated';
 import dayjs from 'dayjs';
-import { BorderRadius, Colors, Spacing, Typography } from '../../../shared/theme/theme';
+import { useTheme } from '../../../shared/theme/ThemeProvider';
+import { useT } from '../../../shared/i18n';
+import { Avatar, Sheet } from '../../../shared/ui';
 import { StoryViewer, storyRepository } from '../StoryRepository';
-import { StoryRing } from './StoryRing';
 
 /** Author-only list of who viewed a story (RLS hides it from everyone else). */
 export function ViewersSheet({ storyId, visible, onClose }: { storyId: string | null; visible: boolean; onClose: () => void }) {
+  const { c, type, f } = useTheme();
+  const t = useT();
   const [viewers, setViewers] = useState<StoryViewer[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -19,69 +22,33 @@ export function ViewersSheet({ storyId, visible, onClose }: { storyId: string | 
     storyRepository
       .viewers(storyId)
       .then((v) => alive && setViewers(v))
-      .catch((e) => alive && setError(e?.message ?? "Couldn't load viewers"));
+      .catch((e) => alive && setError(e?.message ?? t('stories.viewersFailed')));
     return () => {
       alive = false;
     };
   }, [visible, storyId]);
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <Pressable style={styles.backdrop} onPress={onClose} />
-      <View style={styles.sheet}>
-        <View style={styles.handle} />
-        <View style={styles.header}>
-          <Ionicons name="eye-outline" size={18} color={Colors.textPrimary} />
-          <Text style={styles.title}>{viewers ? `Viewed by ${viewers.length}` : 'Viewers'}</Text>
-        </View>
-        {error ? (
-          <Text style={styles.muted}>{error}</Text>
-        ) : !viewers ? (
-          <ActivityIndicator color={Colors.accent} style={{ marginVertical: Spacing.xl }} />
-        ) : viewers.length === 0 ? (
-          <Text style={styles.muted}>No views yet. People who turned off read receipts aren’t shown.</Text>
-        ) : (
-          <FlatList
-            data={viewers}
-            keyExtractor={(v) => v.userId}
-            renderItem={({ item }) => (
-              <View style={styles.row}>
-                <StoryRing userId={item.userId} name={item.displayName} state="none" size={42} />
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.name}>{item.displayName}</Text>
-                  <Text style={styles.time}>{dayjs(item.viewedAt).format('h:mm A')}</Text>
-                </View>
+    <Sheet visible={visible} onClose={onClose} title={viewers ? t('stories.viewedBy', { count: viewers.length }) : t('stories.viewers')}>
+      {error ? (
+        <Text style={[type.caption, { textAlign: 'center' }]}>{error}</Text>
+      ) : !viewers ? (
+        <ActivityIndicator color={c.accent} style={{ marginVertical: 20 }} />
+      ) : viewers.length === 0 ? (
+        <Text style={[type.caption, { textAlign: 'center', paddingVertical: 12 }]}>{t('stories.noViews')}</Text>
+      ) : (
+        <ScrollView style={{ maxHeight: 360 }} contentContainerStyle={{ gap: 4 }}>
+          {viewers.map((v, i) => (
+            <Animated.View key={v.userId} entering={FadeInDown.delay(Math.min(i, 8) * 40)} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 6 }}>
+              <Avatar name={v.displayName} size={40} />
+              <View style={{ flex: 1 }}>
+                <Text style={[type.name, { fontSize: 15 }]}>{v.displayName}</Text>
+                <Text style={[type.caption, { fontFamily: f.mono }]}>{dayjs(v.viewedAt).format('HH:mm')}</Text>
               </View>
-            )}
-          />
-        )}
-      </View>
-    </Modal>
+            </Animated.View>
+          ))}
+        </ScrollView>
+      )}
+    </Sheet>
   );
 }
-
-const styles = StyleSheet.create({
-  backdrop: { flex: 1, backgroundColor: Colors.overlay },
-  sheet: {
-    maxHeight: '60%',
-    backgroundColor: Colors.surfaceElevated,
-    borderTopLeftRadius: BorderRadius['2xl'],
-    borderTopRightRadius: BorderRadius['2xl'],
-    paddingHorizontal: Spacing.base,
-    paddingBottom: Spacing['2xl'],
-  },
-  handle: {
-    alignSelf: 'center',
-    width: 40,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: Colors.borderLight,
-    marginVertical: Spacing.sm,
-  },
-  header: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, paddingVertical: Spacing.sm },
-  title: { color: Colors.textPrimary, fontSize: Typography.md, fontWeight: Typography.semibold },
-  muted: { color: Colors.textSecondary, fontSize: Typography.sm, paddingVertical: Spacing.lg, textAlign: 'center' },
-  row: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, paddingVertical: Spacing.sm },
-  name: { color: Colors.textPrimary, fontSize: Typography.base, fontWeight: Typography.medium },
-  time: { color: Colors.textTertiary, fontSize: Typography.xs, marginTop: 2 },
-});

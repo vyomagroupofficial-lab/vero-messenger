@@ -4,28 +4,29 @@
  */
 
 import React, { useMemo, useState } from 'react';
-import { FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { FlatList, Text, View } from 'react-native';
+import Animated, { FadeIn, ZoomIn } from 'react-native-reanimated';
 import { router } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
-import { BorderRadius, Colors, Spacing, Typography } from '../../../shared/theme/theme';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { makeStyles, useTheme } from '../../../shared/theme/ThemeProvider';
+import { useT } from '../../../shared/i18n';
+import { Avatar, Button, Eyebrow, Icon, IconButton, Pressy } from '../../../shared/ui';
 import { useAuthStore } from '../../auth/useAuthStore';
-import { AUDIENCE_LABELS, AudienceMode, StoryPrivacy, resolveAudience } from '../audience';
+import { AudienceMode, StoryPrivacy, resolveAudience } from '../audience';
 import { useStoryContacts } from '../hooks';
 import { notify } from '../confirm';
 import { useStoriesStore } from '../useStoriesStore';
-import { StoryRing } from './StoryRing';
 
-const MODES: { mode: AudienceMode; hint: string }[] = [
-  { mode: 'contacts', hint: 'Everyone you have a direct chat with' },
-  { mode: 'contacts_except', hint: 'Your contacts, minus the people you pick' },
-  { mode: 'only', hint: 'Only the contacts you pick' },
-];
+const MODES: AudienceMode[] = ['contacts', 'contacts_except', 'only'];
 
 export function StoryPrivacySettings() {
-  const userId = useAuthStore((s) => s.user?.id) ?? '';
-  const privacy = useStoriesStore((s) => s.privacy);
-  const names = useStoriesStore((s) => s.names);
+  const insets = useSafeAreaInsets();
+  const { c, type } = useTheme();
+  const s = useStyles();
+  const t = useT();
+  const userId = useAuthStore((st) => st.user?.id) ?? '';
+  const privacy = useStoriesStore((st) => st.privacy);
+  const names = useStoriesStore((st) => st.names);
   const contacts = useStoryContacts();
   const [saving, setSaving] = useState(false);
 
@@ -34,7 +35,7 @@ export function StoryPrivacySettings() {
     try {
       await useStoriesStore.getState().setPrivacy(patch);
     } catch (e: any) {
-      notify('Saved on this device only', e?.message ?? 'Couldn’t sync your story privacy. It will be applied here.');
+      notify(t('stories.localOnly'), e?.message ?? t('stories.privacySyncFailed'));
     } finally {
       setSaving(false);
     }
@@ -49,118 +50,107 @@ export function StoryPrivacySettings() {
     void save({ [listKey]: [...next] });
   };
 
-  const audienceCount = resolveAudience(contacts.map((c) => c.id), privacy, userId).length;
-  const contactNames = useMemo(() => Object.fromEntries(contacts.map((c) => [c.id, c.displayName])), [contacts]);
+  const audienceCount = resolveAudience(contacts.map((ct) => ct.id), privacy, userId).length;
+  const contactNames = useMemo(() => Object.fromEntries(contacts.map((ct) => [ct.id, ct.displayName])), [contacts]);
 
   return (
-    <SafeAreaView style={styles.root} edges={['top']}>
-      <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} hitSlop={10} accessibilityLabel="Back">
-          <Ionicons name="chevron-back" size={26} color={Colors.textPrimary} />
-        </TouchableOpacity>
-        <Text style={styles.title}>Story privacy</Text>
-        <Text style={styles.saving}>{saving ? 'Saving…' : ''}</Text>
+    <View style={[s.root, { paddingTop: insets.top }]}>
+      <View style={s.header}>
+        <IconButton icon="back" label={t('common.back')} onPress={() => (router.canGoBack() ? router.back() : router.replace('/stories'))} />
+        <Text style={[type.name, { flex: 1, fontSize: 18 }]} accessibilityRole="header">
+          {t('stories.privacy')}
+        </Text>
+        {saving && (
+          <Animated.Text entering={FadeIn} style={type.caption}>
+            {t('stories.saving')}
+          </Animated.Text>
+        )}
       </View>
 
       <FlatList
         data={privacy.audience === 'contacts' ? [] : contacts}
-        keyExtractor={(c) => c.id}
+        keyExtractor={(ct) => ct.id}
+        contentContainerStyle={[s.list, { paddingBottom: insets.bottom + 40 }]}
         ListHeaderComponent={
-          <View>
-            <Text style={styles.section}>WHO CAN SEE MY STORIES</Text>
-            {MODES.map(({ mode, hint }) => (
-              <TouchableOpacity key={mode} style={styles.option} onPress={() => save({ audience: mode })}>
-                <Ionicons
-                  name={privacy.audience === mode ? 'radio-button-on' : 'radio-button-off'}
-                  size={22}
-                  color={privacy.audience === mode ? Colors.accentLight : Colors.textTertiary}
-                />
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.optionTitle}>{AUDIENCE_LABELS[mode]}</Text>
-                  <Text style={styles.optionHint}>{hint}</Text>
-                </View>
-              </TouchableOpacity>
-            ))}
-            <Text style={styles.note}>
-              Your next story will be encrypted for {audienceCount} {audienceCount === 1 ? 'person' : 'people'}. Changes
-              don’t affect stories you already shared. The server can see who a story is shared with, never its content.
-            </Text>
-            {privacy.audience !== 'contacts' && (
-              <Text style={styles.section}>
-                {privacy.audience === 'contacts_except' ? 'HIDE MY STORIES FROM' : 'SHARE ONLY WITH'}
-              </Text>
-            )}
-            {privacy.audience !== 'contacts' && contacts.length === 0 && (
-              <Text style={styles.note}>Start a direct chat with someone to add them here.</Text>
-            )}
+          <View style={{ gap: 10 }}>
+            <Eyebrow style={s.section}>{t('stories.whoCanSee')}</Eyebrow>
+            {MODES.map((mode) => {
+              const on = privacy.audience === mode;
+              return (
+                <Pressy
+                  key={mode}
+                  onPress={() => save({ audience: mode })}
+                  scaleTo={0.98}
+                  hoverStyle={!on ? { borderColor: c.line2 } : undefined}
+                  style={[s.option, on && s.optionOn]}
+                  accessibilityRole="radio"
+                  accessibilityState={{ selected: on }}
+                  accessibilityLabel={t(`stories.mode_${mode}`)}
+                >
+                  <View style={[s.radio, on && { borderColor: c.accent }]}>{on && <Animated.View entering={ZoomIn.springify().damping(14)} style={s.radioDot} />}</View>
+                  <View style={{ flex: 1, gap: 2 }}>
+                    <Text style={s.optionTitle}>{t(`stories.mode_${mode}`)}</Text>
+                    <Text style={type.caption}>{t(`stories.modeHint_${mode}`)}</Text>
+                  </View>
+                </Pressy>
+              );
+            })}
+            <View style={s.note}>
+              <Icon name="lock" size={14} color={c.success} />
+              <Text style={[type.caption, { flex: 1 }]}>{t('stories.audienceNote', { people: t('groups.people', { count: audienceCount }) })}</Text>
+            </View>
+            {privacy.audience !== 'contacts' && <Eyebrow style={s.section}>{privacy.audience === 'contacts_except' ? t('stories.hideFrom') : t('stories.shareOnly')}</Eyebrow>}
+            {privacy.audience !== 'contacts' && contacts.length === 0 && <Text style={type.caption}>{t('stories.noContacts')}</Text>}
           </View>
         }
-        renderItem={({ item }) => (
-          <TouchableOpacity style={styles.row} onPress={() => toggle(item.id)}>
-            <StoryRing userId={item.id} name={item.displayName} state="none" size={40} />
-            <Text style={styles.rowName}>{item.displayName}</Text>
-            <Ionicons
-              name={selected.has(item.id) ? 'checkbox' : 'square-outline'}
-              size={22}
-              color={selected.has(item.id) ? Colors.accentLight : Colors.textTertiary}
-            />
-          </TouchableOpacity>
-        )}
+        renderItem={({ item }) => {
+          const on = selected.has(item.id);
+          return (
+            <Pressy onPress={() => toggle(item.id)} scaleTo={0.98} hoverStyle={{ backgroundColor: c.tint }} style={s.row} accessibilityRole="checkbox" accessibilityState={{ checked: on }} accessibilityLabel={item.displayName}>
+              <Avatar name={item.displayName} size={40} />
+              <Text style={s.rowName} numberOfLines={1}>
+                {item.displayName}
+              </Text>
+              <View style={[s.box, on && s.boxOn]}>{on && <Icon name="check" size={14} color={c.onAccent} strokeWidth={2.6} />}</View>
+            </Pressy>
+          );
+        }}
         ListFooterComponent={
-          <View>
-            <Text style={styles.section}>MUTED STORIES</Text>
+          <View style={{ gap: 6 }}>
+            <Eyebrow style={s.section}>{t('stories.mutedStories')}</Eyebrow>
             {privacy.mutedUserIds.length === 0 ? (
-              <Text style={styles.note}>Long-press someone in the stories tray to mute their stories.</Text>
+              <Text style={type.caption}>{t('stories.mutedHint')}</Text>
             ) : (
               privacy.mutedUserIds.map((id) => (
-                <View key={id} style={styles.row}>
-                  <StoryRing userId={id} name={contactNames[id] ?? names[id] ?? '?'} state="none" size={40} muted />
-                  <Text style={styles.rowName}>{contactNames[id] ?? names[id] ?? 'Unknown'}</Text>
-                  <TouchableOpacity onPress={() => void useStoriesStore.getState().toggleMute(id)} style={styles.unmute}>
-                    <Text style={styles.unmuteText}>Unmute</Text>
-                  </TouchableOpacity>
+                <View key={id} style={s.row}>
+                  <Avatar name={contactNames[id] ?? names[id] ?? '?'} size={40} />
+                  <Text style={[s.rowName, { color: c.muted }]} numberOfLines={1}>
+                    {contactNames[id] ?? names[id] ?? t('stories.unknown')}
+                  </Text>
+                  <Button label={t('channels.unmute')} size="sm" variant="secondary" onPress={() => void useStoriesStore.getState().toggleMute(id)} />
                 </View>
               ))
             )}
           </View>
         }
-        contentContainerStyle={{ paddingBottom: Spacing['3xl'] }}
       />
-    </SafeAreaView>
+    </View>
   );
 }
 
-const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: Colors.background },
-  header: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, paddingHorizontal: Spacing.base, paddingVertical: Spacing.md },
-  title: { flex: 1, color: Colors.textPrimary, fontSize: Typography.xl, fontWeight: Typography.bold },
-  saving: { color: Colors.textTertiary, fontSize: Typography.xs },
-  section: {
-    color: Colors.textTertiary,
-    fontSize: Typography.xs,
-    fontWeight: Typography.semibold,
-    letterSpacing: 0.8,
-    paddingHorizontal: Spacing.base,
-    marginTop: Spacing.lg,
-    marginBottom: Spacing.sm,
-  },
-  option: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.md,
-    marginHorizontal: Spacing.base,
-    marginBottom: Spacing.sm,
-    padding: Spacing.md,
-    backgroundColor: Colors.surface,
-    borderRadius: BorderRadius.lg,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  optionTitle: { color: Colors.textPrimary, fontSize: Typography.base, fontWeight: Typography.medium },
-  optionHint: { color: Colors.textSecondary, fontSize: Typography.xs, marginTop: 2 },
-  note: { color: Colors.textSecondary, fontSize: Typography.xs, paddingHorizontal: Spacing.base, lineHeight: 18 },
-  row: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, paddingHorizontal: Spacing.base, paddingVertical: Spacing.sm },
-  rowName: { flex: 1, color: Colors.textPrimary, fontSize: Typography.base },
-  unmute: { borderWidth: 1, borderColor: Colors.borderAccent, borderRadius: BorderRadius.full, paddingHorizontal: Spacing.md, paddingVertical: Spacing.xs },
-  unmuteText: { color: Colors.accentLight, fontSize: Typography.sm },
-});
+const useStyles = makeStyles((c, t, f) => ({
+  root: { flex: 1, backgroundColor: c.bg },
+  header: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 8, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: c.line },
+  list: { width: '100%', maxWidth: 640, alignSelf: 'center', paddingHorizontal: 16 },
+  section: { marginTop: 18 },
+  option: { flexDirection: 'row', alignItems: 'center', gap: 14, padding: 14, backgroundColor: c.panel, borderRadius: 18, borderWidth: 1, borderColor: c.line },
+  optionOn: { borderColor: c.accentLine, backgroundColor: c.accentTint },
+  radio: { width: 22, height: 22, borderRadius: 11, borderWidth: 2, borderColor: c.line3, alignItems: 'center', justifyContent: 'center' },
+  radioDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: c.accent },
+  optionTitle: { fontFamily: f.semibold, fontSize: 15, color: c.text },
+  note: { flexDirection: 'row', gap: 8, alignItems: 'flex-start', paddingHorizontal: 4 },
+  row: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 8, paddingVertical: 8, borderRadius: 14 },
+  rowName: { flex: 1, fontFamily: f.medium, fontSize: 15, color: c.text },
+  box: { width: 24, height: 24, borderRadius: 8, borderWidth: 1.5, borderColor: c.line3, alignItems: 'center', justifyContent: 'center' },
+  boxOn: { backgroundColor: c.accent, borderColor: c.accent },
+}));

@@ -1,14 +1,22 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { View, Text, ScrollView, Switch, TextInput, Alert, ActivityIndicator, StyleSheet } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { ActivityIndicator, ScrollView, Text, View } from 'react-native';
+import Animated, { FadeIn } from 'react-native-reanimated';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuthStore } from '../../src/features/auth/useAuthStore';
 import { discoveryRepository, DiscoverabilityStatus } from '../../src/features/discovery/DiscoveryRepository';
 import { friendlyError } from '../../src/core/network/supabase';
-import { Button, Card, Note, ScreenHeader, ui } from '../../src/features/linking/ui';
-import { Colors, Spacing } from '../../src/shared/theme/theme';
+import { Card, Note, ScreenHeader, useLinkStyles } from '../../src/features/linking/ui';
+import { makeStyles, useTheme } from '../../src/shared/theme/ThemeProvider';
+import { useT } from '../../src/shared/i18n';
+import { Button, Icon, IconName, TextField, Toggle, notify } from '../../src/shared/ui';
 
 export default function DiscoverySettingsScreen() {
-  const isDemo = useAuthStore((s) => s.isDemo);
+  const insets = useSafeAreaInsets();
+  const { c, type } = useTheme();
+  const ui = useLinkStyles();
+  const s = useStyles();
+  const t = useT();
+  const isDemo = useAuthStore((st) => st.isDemo);
   const [status, setStatus] = useState<DiscoverabilityStatus | null>(null);
   const [saving, setSaving] = useState(false);
   const [phone, setPhone] = useState('');
@@ -20,9 +28,9 @@ export default function DiscoverySettingsScreen() {
     try {
       setStatus(await discoveryRepository.getStatus());
     } catch (e) {
-      Alert.alert('Could not load settings', friendlyError(e));
+      notify(t('discovery.loadFailed'), friendlyError(e));
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     if (!isDemo) void load();
@@ -33,7 +41,7 @@ export default function DiscoverySettingsScreen() {
     try {
       setStatus(await discoveryRepository.setDiscoverable(byEmail, byPhone));
     } catch (e) {
-      Alert.alert('Could not save', friendlyError(e));
+      notify(t('groups.saveFailed'), friendlyError(e));
     } finally {
       setSaving(false);
     }
@@ -44,7 +52,7 @@ export default function DiscoverySettingsScreen() {
     try {
       setPendingPhone(await discoveryRepository.startPhoneVerification(phone));
     } catch (e) {
-      Alert.alert('Could not send code', friendlyError(e));
+      notify(t('discovery.codeFailed'), friendlyError(e));
     } finally {
       setBusy(false);
     }
@@ -60,113 +68,87 @@ export default function DiscoverySettingsScreen() {
       setPhone('');
       // A verified phone is listed only if phone discovery is on.
       setStatus(await discoveryRepository.setDiscoverable(status?.discoverableByEmail ?? false, true));
-      Alert.alert('Phone verified', 'Friends who have your number can now find you on Vero.');
+      notify(t('discovery.phoneVerified'), t('discovery.phoneVerifiedBody'));
     } catch (e) {
-      Alert.alert('Verification failed', friendlyError(e));
+      notify(t('discovery.verifyFailed'), friendlyError(e));
     } finally {
       setBusy(false);
     }
   };
 
+  const toggleLine = ({ icon, label, hint, value, onChange, first }: { icon: IconName; label: string; hint: string; value: boolean; onChange: (v: boolean) => void; first?: boolean }) => (
+    <View style={[s.toggleRow, !first && s.border]}>
+      <View style={s.rowIcon}>
+        <Icon name={icon} size={18} color={c.accentText} />
+      </View>
+      <View style={{ flex: 1, gap: 2 }}>
+        <Text style={ui.label}>{label}</Text>
+        <Text style={type.caption}>{hint}</Text>
+      </View>
+      <Toggle label={label} value={value} onValueChange={onChange} disabled={saving} />
+    </View>
+  );
+
   return (
-    <SafeAreaView style={ui.screen} edges={['top']}>
-      <ScreenHeader title="Who can find me" />
-      <ScrollView contentContainerStyle={ui.content} keyboardShouldPersistTaps="handled">
+    <View style={[ui.screen, { paddingTop: insets.top }]}>
+      <ScreenHeader title={t('settings.findMe')} />
+      <ScrollView contentContainerStyle={[ui.content, { paddingBottom: insets.bottom + 40 }]} keyboardShouldPersistTaps="handled">
         {isDemo ? (
-          <Note icon="sparkles">Discovery settings need a real account.</Note>
+          <Note icon="info">{t('discovery.settingsDemo')}</Note>
         ) : !status ? (
-          <ActivityIndicator color={Colors.accent} />
+          <ActivityIndicator color={c.accent} style={{ marginTop: 40 }} />
         ) : (
           <>
-            <Text style={ui.body}>
-              Off by default. When on, Vero stores only a SHA-256 hash of your verified email or phone so friends who
-              have it in their contacts can find you. Your username search is unaffected.
-            </Text>
+            <Note icon="eyeOff">{t('discovery.offByDefault')}</Note>
 
-            <Card>
-              <View style={styles.toggleRow}>
-                <View style={{ flex: 1 }}>
-                  <Text style={ui.label}>Find me by email</Text>
-                  <Text style={ui.muted}>
-                    {!status.emailVerified
-                      ? 'Confirm your email address first.'
-                      : status.emailListed
-                        ? 'On - your email hash is listed.'
-                        : 'Off'}
-                  </Text>
-                </View>
-                <Switch
-                  value={status.discoverableByEmail}
-                  disabled={saving}
-                  onValueChange={(v) => void update(v, status.discoverableByPhone)}
-                  trackColor={{ true: Colors.accent, false: Colors.surfaceHighlight }}
-                />
-              </View>
-              <View style={styles.toggleRow}>
-                <View style={{ flex: 1 }}>
-                  <Text style={ui.label}>Find me by phone number</Text>
-                  <Text style={ui.muted}>
-                    {!status.phoneVerified
-                      ? 'Verify a phone number below first.'
-                      : status.phoneListed
-                        ? `On - ${status.phoneHint ?? 'your number'} is listed (hashed).`
-                        : `Off (${status.phoneHint ?? 'verified number'})`}
-                  </Text>
-                </View>
-                <Switch
-                  value={status.discoverableByPhone}
-                  disabled={saving}
-                  onValueChange={(v) => void update(status.discoverableByEmail, v)}
-                  trackColor={{ true: Colors.accent, false: Colors.surfaceHighlight }}
-                />
-              </View>
+            <Card style={{ paddingVertical: 6 }}>
+              {toggleLine({
+                first: true,
+                icon: 'mail',
+                label: t('discovery.byEmail'),
+                hint: !status.emailVerified ? t('discovery.confirmEmailFirst') : status.emailListed ? t('discovery.emailOn') : t('timer.off'),
+                value: status.discoverableByEmail,
+                onChange: (v) => void update(v, status.discoverableByPhone),
+              })}
+              {toggleLine({
+                icon: 'phone',
+                label: t('discovery.byPhone'),
+                hint: !status.phoneVerified
+                  ? t('discovery.verifyPhoneFirst')
+                  : status.phoneListed
+                  ? t('discovery.phoneOn', { phone: status.phoneHint ?? t('discovery.yourNumber') })
+                  : t('discovery.phoneOff', { phone: status.phoneHint ?? t('discovery.verifiedNumber') }),
+                value: status.discoverableByPhone,
+                onChange: (v) => void update(status.discoverableByEmail, v),
+              })}
             </Card>
 
             <Card>
-              <Text style={ui.label}>{status.phoneVerified ? 'Change phone number' : 'Verify your phone number'}</Text>
+              <Text style={type.eyebrow}>{status.phoneVerified ? t('discovery.changePhone') : t('discovery.verifyPhone')}</Text>
               {!pendingPhone ? (
-                <>
-                  <TextInput
-                    style={ui.input}
-                    value={phone}
-                    onChangeText={setPhone}
-                    placeholder="+91 98765 43210"
-                    placeholderTextColor={Colors.textTertiary}
-                    keyboardType="phone-pad"
-                    autoComplete="tel"
-                  />
-                  <Button label="Send code by SMS" variant="secondary" onPress={sendCode} loading={busy} disabled={!phone.trim()} />
-                </>
+                <Animated.View key="phone" entering={FadeIn} style={{ gap: 12 }}>
+                  <TextField icon="phone" value={phone} onChangeText={setPhone} placeholder="+91 98765 43210" keyboardType="phone-pad" autoComplete="tel" />
+                  <Button label={t('discovery.sendCode')} variant="secondary" icon="send" onPress={sendCode} loading={busy} disabled={!phone.trim()} />
+                </Animated.View>
               ) : (
-                <>
-                  <Text style={ui.muted}>Enter the code sent to {pendingPhone}.</Text>
-                  <TextInput
-                    style={ui.input}
-                    value={code}
-                    onChangeText={setCode}
-                    placeholder="123456"
-                    placeholderTextColor={Colors.textTertiary}
-                    keyboardType="number-pad"
-                    autoComplete="sms-otp"
-                    textContentType="oneTimeCode"
-                    maxLength={10}
-                  />
-                  <Button label="Verify" onPress={confirmCode} loading={busy} disabled={code.length < 4} />
-                  <Button label="Use a different number" variant="secondary" onPress={() => setPendingPhone(null)} />
-                </>
+                <Animated.View key="code" entering={FadeIn} style={{ gap: 12 }}>
+                  <Text style={type.caption}>{t('discovery.enterCode', { phone: pendingPhone })}</Text>
+                  <TextField icon="key" value={code} onChangeText={setCode} placeholder="123456" keyboardType="number-pad" autoComplete="sms-otp" textContentType="oneTimeCode" maxLength={10} />
+                  <Button label={t('discovery.verify')} onPress={confirmCode} loading={busy} disabled={code.length < 4} />
+                  <Button label={t('discovery.differentNumber')} variant="secondary" onPress={() => setPendingPhone(null)} />
+                </Animated.View>
               )}
-              <Text style={ui.muted}>
-                Numbers without a country code are treated as Indian (+91). Phone verification needs an SMS provider
-                on the Vero server; if it isn't set up yet, email discovery still works.
-              </Text>
+              <Text style={type.caption}>{t('discovery.phoneNote')}</Text>
             </Card>
           </>
         )}
       </ScrollView>
-    </SafeAreaView>
+    </View>
   );
 }
 
-const styles = StyleSheet.create({
-  toggleRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
-});
+const useStyles = makeStyles((c, t, f) => ({
+  toggleRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12 },
+  border: { borderTopWidth: 1, borderTopColor: c.line },
+  rowIcon: { width: 36, height: 36, borderRadius: 12, backgroundColor: c.raised, alignItems: 'center', justifyContent: 'center' },
+}));

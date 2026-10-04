@@ -1,48 +1,74 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  TextInput,
-  FlatList,
-  Alert,
-  ActivityIndicator,
-  ScrollView,
-} from 'react-native';
+import React, { useEffect, useMemo, useState } from 'react';
+import { ActivityIndicator, FlatList, ScrollView, Text, TextInput, View } from 'react-native';
+import Animated, { FadeIn, LinearTransition, ZoomIn, ZoomOut } from 'react-native-reanimated';
 import { router } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
-import { Colors, Typography, Spacing, BorderRadius } from '../src/shared/theme/theme';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuthStore } from '../src/features/auth/useAuthStore';
 import { conversationRepository } from '../src/features/chats/ConversationRepository';
 import { useChatsStore } from '../src/features/chats/useChatsStore';
 import { friendlyError } from '../src/core/network/supabase';
 import { User } from '../src/shared/models/Message';
+import { makeStyles, useTheme } from '../src/shared/theme/ThemeProvider';
+import { useT } from '../src/shared/i18n';
+import { Avatar, Button, EmptyState, Eyebrow, Grain, Hatch, Icon, IconButton, Pressy, Rise, SearchField, notify, useLayout } from '../src/shared/ui';
 
-const AVATAR_GRADIENTS = [
-  '#0284C7',
-  '#7C3AED',
-  '#0D9488',
-  '#D97706',
-  '#E11D48',
-  '#4F46E5',
-];
+const NAME_LIMIT = 50;
+
+function PersonRow({ user, selected, index, onPress }: { user: User; selected: boolean; index: number; onPress: () => void }) {
+  const { c } = useTheme();
+  const s = useStyles();
+  return (
+    <Rise index={Math.min(index, 10)}>
+      <Pressy
+        onPress={onPress}
+        scaleTo={0.98}
+        hoverStyle={!selected ? { backgroundColor: c.tint } : undefined}
+        style={[s.row, selected && s.rowOn]}
+        accessibilityRole="checkbox"
+        accessibilityState={{ checked: selected }}
+        accessibilityLabel={user.displayName}
+      >
+        <Avatar name={user.displayName} size={44} />
+        <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+          <Text style={s.name} numberOfLines={1}>
+            {user.displayName}
+          </Text>
+          <Text style={s.handle} numberOfLines={1}>
+            @{user.username}
+          </Text>
+        </View>
+        <View style={[s.box, selected && s.boxOn]}>
+          {selected && (
+            <Animated.View entering={ZoomIn.springify().damping(14)}>
+              <Icon name="check" size={14} color={c.onAccent} strokeWidth={2.6} />
+            </Animated.View>
+          )}
+        </View>
+      </Pressy>
+    </Rise>
+  );
+}
 
 export default function NewGroupScreen() {
-  const isDemo = useAuthStore((s) => s.isDemo);
-  const conversations = useChatsStore((s) => s.conversations);
+  const insets = useSafeAreaInsets();
+  const { isWide } = useLayout();
+  const { c, type } = useTheme();
+  const s = useStyles();
+  const t = useT();
+  const isDemo = useAuthStore((st) => st.isDemo);
+  const conversations = useChatsStore((st) => st.conversations);
   const [groupName, setGroupName] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<User[]>([]);
   const [selected, setSelected] = useState<Map<string, User>>(new Map());
   const [isLoading, setIsLoading] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
+  const [nameFocused, setNameFocused] = useState(false);
 
   const knownContacts = useMemo<User[]>(() => {
     const seen = new Map<string, User>();
-    for (const c of conversations) if (c.otherUser) seen.set(c.otherUser.id, c.otherUser);
-    return [...seen.values()];
+    for (const cv of conversations) if (cv.otherUser) seen.set(cv.otherUser.id, cv.otherUser);
+    return [...seen.values()].sort((a, b) => a.displayName.localeCompare(b.displayName));
   }, [conversations]);
 
   // Directory search for people you haven't chatted with yet.
@@ -50,11 +76,12 @@ export default function NewGroupScreen() {
     const q = searchQuery.trim();
     if (q.length < 2 || isDemo) {
       setSearchResults([]);
+      setIsLoading(false);
       return;
     }
     setIsLoading(true);
     let cancelled = false;
-    const t = setTimeout(async () => {
+    const timer = setTimeout(async () => {
       try {
         const results = await conversationRepository.searchUsers(q);
         if (!cancelled) setSearchResults(results);
@@ -66,471 +93,197 @@ export default function NewGroupScreen() {
     }, 300);
     return () => {
       cancelled = true;
-      clearTimeout(t);
+      clearTimeout(timer);
     };
   }, [searchQuery, isDemo]);
 
-  const selectedUserIds = useMemo(() => new Set(selected.keys()), [selected]);
-
-  const toggleSelectUser = (id: string) => {
-    const updated = new Map(selected);
-    if (updated.has(id)) updated.delete(id);
-    else {
-      const u = [...knownContacts, ...searchResults].find((c) => c.id === id);
-      if (u) updated.set(id, u);
-    }
-    setSelected(updated);
-  };
-
-  const removeSelectedUser = (id: string) => {
-    const updated = new Map(selected);
-    updated.delete(id);
-    setSelected(updated);
+  const toggle = (u: User) => {
+    const next = new Map(selected);
+    if (next.has(u.id)) next.delete(u.id);
+    else next.set(u.id, u);
+    setSelected(next);
   };
 
   const handleCreateGroup = async () => {
-    if (isDemo) {
-      Alert.alert('Demo mode', 'Create a real account to start encrypted groups.');
-      return;
-    }
-    if (!groupName.trim()) {
-      Alert.alert('Group name required', 'Please enter a name for this group.');
-      return;
-    }
-    if (selected.size === 0) {
-      Alert.alert('Add participants', 'Please select at least one participant.');
-      return;
-    }
+    if (isDemo) return notify(t('newGroup.demoTitle'), t('newGroup.demoBody'));
+    if (!groupName.trim()) return notify(t('newGroup.nameRequired'), t('newGroup.nameRequiredBody'));
+    if (selected.size === 0) return notify(t('newGroup.membersRequired'), t('newGroup.membersRequiredBody'));
     setIsCreating(true);
     try {
       const conversationId = await conversationRepository.createGroupConversation(groupName.trim(), [...selected.keys()]);
       void useChatsStore.getState().load({ sync: false });
       router.replace(`/chat/${conversationId}`);
     } catch (e) {
-      Alert.alert('Could not create group', friendlyError(e));
+      notify(t('newGroup.failed'), friendlyError(e));
     } finally {
       setIsCreating(false);
     }
   };
 
-  const selectedUsersList = [...selected.values()];
+  const members = [...selected.values()];
   const q = searchQuery.trim().toLowerCase();
   const pool = q.length >= 2 ? [...knownContacts, ...searchResults.filter((r) => !knownContacts.some((k) => k.id === r.id))] : knownContacts;
-  const filteredContacts = pool.filter(
-    (c) => !q || c.displayName.toLowerCase().includes(q) || c.username.toLowerCase().includes(q)
+  const people = pool.filter((u) => !q || u.displayName.toLowerCase().includes(q) || u.username.toLowerCase().includes(q));
+  const canCreate = !!groupName.trim() && selected.size > 0 && !isCreating;
+
+  const groupCard = (
+    <View style={s.groupCard}>
+      <Hatch gap={12} />
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 16 }}>
+        <Animated.View key={groupName.trim() ? 'named' : 'blank'} entering={ZoomIn.springify().damping(14)}>
+          {groupName.trim() ? <Avatar name={groupName} size={64} square /> : (
+            <View style={s.groupGlyph}>
+              <Icon name="users" size={28} color={c.accentText} />
+            </View>
+          )}
+        </Animated.View>
+        <View style={{ flex: 1, gap: 6 }}>
+          <Eyebrow>{t('newGroup.name')}</Eyebrow>
+          <View style={[s.nameField, nameFocused && { borderColor: c.accentLine }]}>
+            <TextInput
+              value={groupName}
+              onChangeText={setGroupName}
+              placeholder={t('newGroup.namePlaceholder')}
+              placeholderTextColor={c.placeholder}
+              maxLength={NAME_LIMIT}
+              onFocus={() => setNameFocused(true)}
+              onBlur={() => setNameFocused(false)}
+              style={s.nameInput}
+              accessibilityLabel={t('newGroup.name')}
+              numberOfLines={1}
+            />
+            <Text style={s.counter}>{`${groupName.length}/${NAME_LIMIT}`}</Text>
+          </View>
+        </View>
+      </View>
+      <View style={s.note}>
+        <Icon name="shieldCheck" size={15} color={c.success} />
+        <Text style={[type.caption, { flex: 1 }]}>{t('newGroup.keysNote')}</Text>
+      </View>
+    </View>
+  );
+
+  const selectedStrip = (
+    <View style={{ gap: 10 }}>
+      <Eyebrow style={{ paddingHorizontal: 4 }}>{members.length ? t('newGroup.membersCount', { count: members.length }) : t('newGroup.members')}</Eyebrow>
+      {members.length === 0 ? (
+        <Text style={[type.caption, { paddingHorizontal: 4 }]}>{t('newGroup.pickHint')}</Text>
+      ) : isWide ? (
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+          {members.map((u) => (
+            <Animated.View key={u.id} entering={ZoomIn.springify().damping(15)} exiting={ZoomOut.duration(140)} layout={LinearTransition}>
+              <Pressy onPress={() => toggle(u)} style={s.chip} hoverStyle={{ borderColor: c.dangerTint }} accessibilityLabel={t('newGroup.remove', { name: u.displayName })}>
+                <Avatar name={u.displayName} size={26} />
+                <Text style={s.chipName} numberOfLines={1}>
+                  {u.displayName}
+                </Text>
+                <Icon name="close" size={14} color={c.faint} />
+              </Pressy>
+            </Animated.View>
+          ))}
+        </View>
+      ) : (
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 14, paddingHorizontal: 4 }}>
+          {members.map((u) => (
+            <Animated.View key={u.id} entering={ZoomIn.springify().damping(15)} exiting={ZoomOut.duration(140)} layout={LinearTransition}>
+              <Pressy onPress={() => toggle(u)} style={s.bubble} accessibilityLabel={t('newGroup.remove', { name: u.displayName })}>
+                <View>
+                  <Avatar name={u.displayName} size={52} />
+                  <View style={s.bubbleX}>
+                    <Icon name="close" size={10} color={c.bg} strokeWidth={2.6} />
+                  </View>
+                </View>
+                <Text style={s.bubbleName} numberOfLines={1}>
+                  {u.displayName.split(' ')[0]}
+                </Text>
+              </Pressy>
+            </Animated.View>
+          ))}
+        </ScrollView>
+      )}
+    </View>
+  );
+
+  const empty = isLoading ? (
+    <ActivityIndicator color={c.accent} style={{ marginTop: 30 }} />
+  ) : (
+    <EmptyState icon="search" title={q.length >= 2 ? t('newGroup.empty') : t('newGroup.addPeople')} body={q.length >= 2 ? t('newGroup.emptyBody') : t('newGroup.noContacts')} />
+  );
+
+  const list = (
+    <FlatList
+      data={people}
+      keyExtractor={(u) => u.id}
+      keyboardShouldPersistTaps="handled"
+      contentContainerStyle={{ paddingBottom: insets.bottom + 32, gap: 2 }}
+      showsVerticalScrollIndicator={false}
+      ListHeaderComponent={
+        <View style={{ gap: 12, paddingBottom: 10 }}>
+          {!isWide && groupCard}
+          {!isWide && selectedStrip}
+          <Eyebrow style={{ paddingHorizontal: 4, marginTop: isWide ? 0 : 8 }}>{t('newGroup.addPeople')}</Eyebrow>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+            <SearchField value={searchQuery} onChangeText={setSearchQuery} placeholder={t('newGroup.search')} onClear={() => setSearchQuery('')} style={{ flex: 1 }} />
+            {isLoading && <ActivityIndicator size="small" color={c.accent} />}
+          </View>
+        </View>
+      }
+      ListEmptyComponent={empty}
+      renderItem={({ item, index }) => <PersonRow user={item} index={index} selected={selected.has(item.id)} onPress={() => toggle(item)} />}
+    />
   );
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
-      {/* Frosted Glass Cyber Header */}
-      <View style={styles.header}>
-        <TouchableOpacity style={styles.iconBtn} onPress={() => router.back()} activeOpacity={0.7}>
-          <Ionicons name="arrow-back" size={20} color={Colors.textPrimary} />
-        </TouchableOpacity>
-        <View style={styles.headerTitleContainer}>
-          <Text style={styles.headerTitle}>New group</Text>
-          <Text style={styles.headerSub}>End-to-end encrypted</Text>
-        </View>
-        <TouchableOpacity
-          style={[styles.createBtn, (!groupName.trim() || selectedUserIds.size === 0) && styles.createBtnDisabled]}
-          onPress={handleCreateGroup}
-          disabled={!groupName.trim() || selectedUserIds.size === 0 || isCreating}
-          activeOpacity={0.85}
-        >
-          {isCreating ? (
-            <ActivityIndicator size="small" color={Colors.white} />
-          ) : (
-            <Text style={styles.createBtnText}>Create</Text>
-          )}
-        </TouchableOpacity>
-      </View>
-
-      {/* Group Info Input Card */}
-      <View style={styles.groupInfoCard}>
-        <View style={styles.groupAvatarPlaceholder}>
-          <Ionicons name="people" size={26} color={Colors.accent} />
-          <View style={styles.cameraBadge}>
-            <Ionicons name="camera" size={10} color={Colors.white} />
+    <View style={s.container}>
+      <Grain />
+      <View style={[s.header, { paddingTop: insets.top + 8 }]}>
+        <IconButton icon="back" label={t('common.back')} onPress={() => (router.canGoBack() ? router.back() : router.replace('/(tabs)/chats'))} />
+        <View style={{ flex: 1, alignItems: isWide ? 'flex-start' : 'center' }}>
+          <Text style={[type.h3, { fontSize: 18 }]} accessibilityRole="header">
+            {t('newGroup.title')}
+          </Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+            <Icon name="lock" size={11} color={c.success} />
+            <Text style={[type.caption, { fontSize: 12 }]}>{t('newGroup.sub')}</Text>
           </View>
         </View>
-        <View style={styles.groupInputWrap}>
-          <TextInput
-            style={styles.groupNameInput}
-            placeholder="Group subject..."
-            placeholderTextColor={Colors.textTertiary}
-            value={groupName}
-            onChangeText={setGroupName}
-            maxLength={50}
-          />
-          <Text style={styles.charCounter}>{groupName.length}/50</Text>
-        </View>
+        <Button label={t('newGroup.create')} size="md" loading={isCreating} disabled={!canCreate} onPress={handleCreateGroup} />
       </View>
-
-      {/* Selected Members Carousel */}
-      {selectedUsersList.length > 0 && (
-        <View style={styles.selectedSection}>
-          <Text style={styles.selectedCountText}>
-            PARTICIPANTS ({selectedUsersList.length})
-          </Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.selectedChipsList}>
-            {selectedUsersList.map((item) => (
-              <View key={item.id} style={styles.selectedChip}>
-                <View style={styles.chipAvatar}>
-                  <Text style={styles.chipAvatarText}>{item.displayName.slice(0, 1)}</Text>
-                </View>
-                <Text style={styles.chipName} numberOfLines={1}>{item.displayName.split(' ')[0]}</Text>
-                <TouchableOpacity onPress={() => removeSelectedUser(item.id)} style={styles.chipRemove}>
-                  <Ionicons name="close-circle" size={16} color={Colors.textSecondary} />
-                </TouchableOpacity>
-              </View>
-            ))}
-          </ScrollView>
+      {isWide ? (
+        <View style={s.wide}>
+          <Animated.View entering={FadeIn} style={{ width: 400, gap: 22 }}>
+            {groupCard}
+            {selectedStrip}
+          </Animated.View>
+          <View style={s.wideList}>{list}</View>
         </View>
+      ) : (
+        <View style={{ flex: 1, paddingHorizontal: 12 }}>{list}</View>
       )}
-
-      {/* Search Input Bar */}
-      <View style={styles.searchSection}>
-        <View style={styles.searchBar}>
-          <Ionicons name="search" size={17} color={Colors.accent} />
-          <TextInput
-            style={styles.searchInput}
-            placeholder="Search directory by name or @handle..."
-            placeholderTextColor={Colors.textTertiary}
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-          />
-          {searchQuery.length > 0 && (
-            <TouchableOpacity onPress={() => setSearchQuery('')}>
-              <Ionicons name="close" size={16} color={Colors.textTertiary} />
-            </TouchableOpacity>
-          )}
-        </View>
-      </View>
-
-      {/* Security Info Card */}
-      <View style={styles.secNotice}>
-        <Ionicons name="shield-checkmark" size={14} color={Colors.online} />
-        <Text style={styles.secNoticeText}>Each group member will maintain independent end-to-end ratchet sessions.</Text>
-      </View>
-
-      {/* Contact List */}
-      <FlatList
-        data={filteredContacts}
-        keyExtractor={(item) => item.id}
-        contentContainerStyle={styles.listContent}
-        showsVerticalScrollIndicator={false}
-        ListEmptyComponent={
-          isLoading ? (
-            <ActivityIndicator color={Colors.accent} style={{ marginTop: 30 }} />
-          ) : (
-            <View style={styles.emptyWrap}>
-              <Ionicons name="search-outline" size={36} color={Colors.textTertiary} />
-              <Text style={styles.emptyText}>{q.length >= 2 ? 'No one found' : 'Search for people by name or @username'}</Text>
-            </View>
-          )
-        }
-        renderItem={({ item, index }) => {
-          const isSelected = selectedUserIds.has(item.id);
-          const avatarColor = AVATAR_GRADIENTS[index % AVATAR_GRADIENTS.length];
-          const initials = item.displayName.slice(0, 2).toUpperCase();
-
-          return (
-            <TouchableOpacity
-              style={[styles.contactRow, isSelected && styles.contactRowSelected]}
-              onPress={() => toggleSelectUser(item.id)}
-              activeOpacity={0.75}
-            >
-              <View style={[styles.avatar, { backgroundColor: avatarColor }]}>
-                <Text style={styles.avatarText}>{initials}</Text>
-              </View>
-
-              <View style={styles.contactInfo}>
-                <Text style={styles.displayName}>{item.displayName}</Text>
-                <Text style={styles.username}>@{item.username}</Text>
-              </View>
-
-              <View style={[styles.checkbox, isSelected && styles.checkboxSelected]}>
-                {isSelected ? (
-                  <Ionicons name="checkmark" size={14} color={Colors.white} />
-                ) : (
-                  <View style={styles.checkboxInnerUnchecked} />
-                )}
-              </View>
-            </TouchableOpacity>
-          );
-        }}
-      />
-    </SafeAreaView>
+    </View>
   );
 }
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: Colors.background,
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: Spacing.base,
-    paddingVertical: Spacing.sm,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(6, 182, 212, 0.15)',
-    backgroundColor: 'rgba(8, 14, 26, 0.95)',
-  },
-  iconBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: '#0E1726',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#1E293B',
-  },
-  headerTitleContainer: {
-    flex: 1,
-    alignItems: 'center',
-    marginHorizontal: Spacing.sm,
-  },
-  headerTitle: {
-    fontSize: Typography.base,
-    fontWeight: Typography.bold,
-    color: Colors.textPrimary,
-  },
-  headerSub: {
-    fontSize: 10,
-    color: Colors.accent,
-    letterSpacing: 0.3,
-  },
-  createBtn: {
-    backgroundColor: Colors.accent,
-    paddingHorizontal: 16,
-    paddingVertical: 7,
-    borderRadius: BorderRadius.full,
-    shadowColor: Colors.accent,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.4,
-    shadowRadius: 6,
-    elevation: 4,
-  },
-  createBtnDisabled: {
-    opacity: 0.4,
-    shadowOpacity: 0,
-  },
-  createBtnText: {
-    color: Colors.white,
-    fontWeight: Typography.bold,
-    fontSize: Typography.sm,
-  },
-  groupInfoCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: Spacing.base,
-    backgroundColor: '#080E1A',
-    gap: Spacing.md,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(6, 182, 212, 0.1)',
-  },
-  groupAvatarPlaceholder: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
-    backgroundColor: 'rgba(6, 182, 212, 0.12)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(6, 182, 212, 0.3)',
-    position: 'relative',
-  },
-  cameraBadge: {
-    position: 'absolute',
-    bottom: -2,
-    right: -2,
-    width: 18,
-    height: 18,
-    borderRadius: 9,
-    backgroundColor: Colors.accent,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  groupInputWrap: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderBottomWidth: 1,
-    borderBottomColor: '#1E293B',
-    paddingBottom: 4,
-  },
-  groupNameInput: {
-    flex: 1,
-    color: Colors.textPrimary,
-    fontSize: Typography.base,
-    fontWeight: Typography.medium,
-  },
-  charCounter: {
-    fontSize: 10,
-    color: Colors.textTertiary,
-    marginLeft: 6,
-  },
-  selectedSection: {
-    paddingVertical: Spacing.sm,
-    backgroundColor: '#050A14',
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(6, 182, 212, 0.08)',
-  },
-  selectedCountText: {
-    fontSize: 10,
-    fontWeight: Typography.bold,
-    color: Colors.textSecondary,
-    letterSpacing: 0.8,
-    paddingHorizontal: Spacing.base,
-    marginBottom: 6,
-  },
-  selectedChipsList: {
-    paddingHorizontal: Spacing.base,
-    gap: 8,
-  },
-  selectedChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#0E1726',
-    borderRadius: BorderRadius.full,
-    paddingVertical: 3,
-    paddingLeft: 4,
-    paddingRight: 8,
-    borderWidth: 1,
-    borderColor: 'rgba(6, 182, 212, 0.25)',
-    gap: 6,
-  },
-  chipAvatar: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    backgroundColor: Colors.accent,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  chipAvatarText: {
-    fontSize: 10,
-    fontWeight: Typography.bold,
-    color: Colors.white,
-  },
-  chipName: {
-    fontSize: Typography.xs,
-    color: Colors.textPrimary,
-    fontWeight: Typography.medium,
-    maxWidth: 80,
-  },
-  chipRemove: {
-    padding: 1,
-  },
-  searchSection: {
-    paddingHorizontal: Spacing.base,
-    paddingTop: Spacing.sm,
-    paddingBottom: 6,
-  },
-  searchBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#080E1A',
-    borderRadius: BorderRadius.xl,
-    paddingHorizontal: Spacing.md,
-    height: 42,
-    gap: Spacing.sm,
-    borderWidth: 1,
-    borderColor: '#1E293B',
-  },
-  searchInput: {
-    flex: 1,
-    color: Colors.textPrimary,
-    fontSize: Typography.sm,
-  },
-  secNotice: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: Spacing.base,
-    paddingVertical: 6,
-  },
-  secNoticeText: {
-    fontSize: 10.5,
-    color: Colors.textTertiary,
-  },
-  listContent: {
-    paddingHorizontal: Spacing.base,
-    paddingBottom: Spacing['2xl'],
-  },
-  contactRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 10,
-    paddingHorizontal: 8,
-    borderRadius: BorderRadius.lg,
-    marginVertical: 1,
-  },
-  contactRowSelected: {
-    backgroundColor: 'rgba(6, 182, 212, 0.08)',
-  },
-  avatar: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: Spacing.md,
-  },
-  avatarText: {
-    color: Colors.white,
-    fontWeight: Typography.bold,
-    fontSize: Typography.sm,
-  },
-  contactInfo: {
-    flex: 1,
-  },
-  displayName: {
-    fontSize: Typography.base,
-    fontWeight: Typography.semibold,
-    color: Colors.textPrimary,
-  },
-  username: {
-    fontSize: Typography.xs,
-    color: Colors.textSecondary,
-    marginTop: 1,
-  },
-  checkbox: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    borderWidth: 1.5,
-    borderColor: '#334155',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  checkboxInnerUnchecked: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: 'transparent',
-  },
-  checkboxSelected: {
-    backgroundColor: Colors.accent,
-    borderColor: Colors.accent,
-    shadowColor: Colors.accent,
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.6,
-    shadowRadius: 6,
-  },
-  emptyWrap: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingTop: 40,
-    gap: 8,
-  },
-  emptyText: {
-    fontSize: Typography.sm,
-    color: Colors.textTertiary,
-  },
-});
-
+const useStyles = makeStyles((c, t, f) => ({
+  container: { flex: 1, backgroundColor: c.bg },
+  header: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 12, paddingBottom: 12 },
+  wide: { flex: 1, flexDirection: 'row', gap: 28, paddingHorizontal: 28, paddingTop: 12, maxWidth: 1180, width: '100%', alignSelf: 'center' },
+  wideList: { flex: 1, minWidth: 0, backgroundColor: c.panel, borderRadius: 24, borderWidth: 1, borderColor: c.line, padding: 16, paddingBottom: 0, marginBottom: 24 },
+  groupCard: { gap: 16, padding: 18, borderRadius: 24, backgroundColor: c.panel, borderWidth: 1, borderColor: c.line, overflow: 'hidden' },
+  groupGlyph: { width: 64, height: 64, borderRadius: 20, backgroundColor: c.accentTint, borderWidth: 1, borderColor: c.accentTint2, borderStyle: 'dashed', alignItems: 'center', justifyContent: 'center' },
+  nameField: { flexDirection: 'row', alignItems: 'center', gap: 8, height: 48, paddingHorizontal: 14, borderRadius: 14, backgroundColor: c.field, borderWidth: 1, borderColor: c.line },
+  nameInput: { flex: 1, minWidth: 0, fontFamily: f.semibold, fontSize: 16, color: c.text, outlineStyle: 'none' } as any,
+  counter: { fontFamily: f.mono, fontSize: 11.5, color: c.faint },
+  note: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
+  chip: { flexDirection: 'row', alignItems: 'center', gap: 8, height: 38, paddingLeft: 6, paddingRight: 12, borderRadius: 19, backgroundColor: c.raised, borderWidth: 1, borderColor: c.line, maxWidth: 220 },
+  chipName: { fontFamily: f.medium, fontSize: 13.5, color: c.text, flexShrink: 1 },
+  bubble: { alignItems: 'center', gap: 6, width: 62 },
+  bubbleX: { position: 'absolute', right: -2, top: -2, width: 20, height: 20, borderRadius: 10, backgroundColor: c.muted, borderWidth: 2, borderColor: c.bg, alignItems: 'center', justifyContent: 'center' },
+  bubbleName: { fontFamily: f.medium, fontSize: 12, color: c.muted },
+  row: { flexDirection: 'row', alignItems: 'center', gap: 13, paddingHorizontal: 10, paddingVertical: 9, borderRadius: 18, borderWidth: 1, borderColor: 'transparent' },
+  rowOn: { backgroundColor: c.accentTint, borderColor: c.accentTint2 },
+  name: { fontFamily: f.semibold, fontSize: 15.5, color: c.text },
+  handle: { fontFamily: f.script === 'latin' ? f.mono : f.body, fontSize: 12.5, color: c.muted },
+  box: { width: 24, height: 24, borderRadius: 8, borderWidth: 1.5, borderColor: c.line3, alignItems: 'center', justifyContent: 'center' },
+  boxOn: { backgroundColor: c.accent, borderColor: c.accent },
+}));

@@ -6,13 +6,7 @@ import SplashScreen from './splash';
 export default function Index() {
   const { isAuthenticated, isLoading } = useAuthStore();
 
-  if (isLoading) {
-    return <SplashScreen />;
-  }
-
-  if (!isAuthenticated) {
-    return <Redirect href="/(auth)/login" />;
-  }
-
+  if (isLoading) return <SplashScreen />;
+  if (!isAuthenticated) return <Redirect href="/(auth)/login" />;
   return <Redirect href="/(tabs)/chats" />;
 }

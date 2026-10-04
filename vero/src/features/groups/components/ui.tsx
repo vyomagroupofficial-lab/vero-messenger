@@ -4,10 +4,12 @@
  */
 
 import React from 'react';
-import { Alert, Modal, Platform, Pressable, Share, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, Platform, Share, Text, View } from 'react-native';
+import Animated, { FadeInDown } from 'react-native-reanimated';
 import * as Clipboard from 'expo-clipboard';
-import { Ionicons } from '@expo/vector-icons';
-import { BorderRadius, Colors, Spacing, Typography } from '../../../shared/theme/theme';
+import i18n from '../../../shared/i18n';
+import { makeStyles, useTheme } from '../../../shared/theme/ThemeProvider';
+import { Glyph, GlyphName, Pressy, Sheet } from '../../../shared/ui';
 
 export function notify(title: string, message?: string): void {
   if (Platform.OS === 'web') {
@@ -22,10 +24,15 @@ export function confirmAction(title: string, message: string, confirmLabel: stri
     return Promise.resolve(!!(globalThis as any).confirm?.(`${title}\n\n${message}`));
   }
   return new Promise((resolve) =>
-    Alert.alert(title, message, [
-      { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
-      { text: confirmLabel, style: destructive ? 'destructive' : 'default', onPress: () => resolve(true) },
-    ], { cancelable: true, onDismiss: () => resolve(false) })
+    Alert.alert(
+      title,
+      message,
+      [
+        { text: i18n.t('common.cancel'), style: 'cancel', onPress: () => resolve(false) },
+        { text: confirmLabel, style: destructive ? 'destructive' : 'default', onPress: () => resolve(true) },
+      ],
+      { cancelable: true, onDismiss: () => resolve(false) }
+    )
   );
 }
 
@@ -36,77 +43,60 @@ export async function shareLink(url: string, title: string): Promise<void> {
     await Share.share(Platform.OS === 'ios' ? { url, message: title } : { message: `${title}\n${url}`, title });
   } catch {
     await Clipboard.setStringAsync(url);
-    notify('Link copied', url);
+    notify(i18n.t('groups.linkCopied'), url);
   }
 }
 
 export async function copyLink(url: string): Promise<void> {
   await Clipboard.setStringAsync(url);
-  notify('Link copied', url);
+  notify(i18n.t('groups.linkCopied'), url);
 }
 
 export interface SheetOption {
   label: string;
-  icon?: keyof typeof Ionicons.glyphMap;
+  icon?: GlyphName;
   destructive?: boolean;
   onPress: () => void;
 }
 
-export function ActionSheet({
-  visible,
-  title,
-  options,
-  onClose,
-}: {
-  visible: boolean;
-  title?: string;
-  options: SheetOption[];
-  onClose: () => void;
-}) {
+export function ActionSheet({ visible, title, options, onClose }: { visible: boolean; title?: string; options: SheetOption[]; onClose: () => void }) {
+  const { c } = useTheme();
+  const s = useStyles();
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable style={styles.backdrop} onPress={onClose}>
-        <View style={styles.sheet}>
-          {!!title && <Text style={styles.title}>{title}</Text>}
-          {options.map((o) => (
-            <TouchableOpacity
-              key={o.label}
-              style={styles.option}
+    <Sheet visible={visible} onClose={onClose} title={title}>
+      <View style={{ gap: 2 }}>
+        {options.map((o, i) => (
+          <Animated.View key={o.label} entering={FadeInDown.delay(i * 35).duration(260)}>
+            <Pressy
               onPress={() => {
                 onClose();
                 o.onPress();
               }}
+              scaleTo={0.98}
+              hoverStyle={{ backgroundColor: c.tint }}
+              style={s.option}
+              accessibilityLabel={o.label}
             >
-              {o.icon && <Ionicons name={o.icon} size={20} color={o.destructive ? Colors.error : Colors.accent} />}
-              <Text style={[styles.optionText, o.destructive && { color: Colors.error }]}>{o.label}</Text>
-            </TouchableOpacity>
-          ))}
-          <TouchableOpacity style={styles.option} onPress={onClose}>
-            <Ionicons name="close" size={20} color={Colors.textSecondary} />
-            <Text style={[styles.optionText, { color: Colors.textSecondary }]}>Cancel</Text>
-          </TouchableOpacity>
-        </View>
-      </Pressable>
-    </Modal>
+              <View style={[s.icon, o.destructive && { backgroundColor: c.dangerTint }]}>
+                {o.icon ? <Glyph name={o.icon} size={19} color={o.destructive ? c.danger : c.accentText} /> : null}
+              </View>
+              <Text style={[s.label, o.destructive && { color: c.danger }]}>{o.label}</Text>
+            </Pressy>
+          </Animated.View>
+        ))}
+        <Pressy onPress={onClose} scaleTo={0.98} hoverStyle={{ backgroundColor: c.tint }} style={s.option} accessibilityLabel={i18n.t('common.cancel')}>
+          <View style={s.icon}>
+            <Glyph name="close" size={19} color={c.muted} />
+          </View>
+          <Text style={[s.label, { color: c.muted }]}>{i18n.t('common.cancel')}</Text>
+        </Pressy>
+      </View>
+    </Sheet>
   );
 }
 
-const styles = StyleSheet.create({
-  backdrop: { flex: 1, backgroundColor: Colors.overlay, justifyContent: 'flex-end' },
-  sheet: {
-    backgroundColor: Colors.surfaceElevated,
-    borderTopLeftRadius: BorderRadius['2xl'],
-    borderTopRightRadius: BorderRadius['2xl'],
-    paddingVertical: Spacing.md,
-    paddingBottom: Spacing['2xl'],
-  },
-  title: {
-    color: Colors.textSecondary,
-    fontSize: Typography.sm,
-    fontWeight: Typography.semibold,
-    paddingHorizontal: Spacing.lg,
-    paddingBottom: Spacing.sm,
-  },
-  option: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, paddingHorizontal: Spacing.lg, paddingVertical: Spacing.md },
-  optionText: { color: Colors.textPrimary, fontSize: Typography.base },
-});
+const useStyles = makeStyles((c, t, f) => ({
+  option: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 8, paddingVertical: 8, borderRadius: 14 },
+  icon: { width: 38, height: 38, borderRadius: 12, backgroundColor: c.raised, alignItems: 'center', justifyContent: 'center' },
+  label: { fontFamily: f.medium, fontSize: 15.5, color: c.text, flex: 1 },
+}));

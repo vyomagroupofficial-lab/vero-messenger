@@ -1,52 +1,61 @@
-import React, { useCallback, useRef, useState } from 'react';
-import { View, Text, StyleSheet, TextInput, ScrollView, Platform } from 'react-native';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
+import Animated, { Easing, FadeIn, useAnimatedStyle, useSharedValue, withRepeat, withTiming } from 'react-native-reanimated';
 import { router, useLocalSearchParams } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CameraView, useCameraPermissions } from 'expo-camera';
-import { Ionicons } from '@expo/vector-icons';
 import { parseQrPayload, QrPayload } from '../../src/features/linking/qrPayloads';
 import { handOff } from '../../src/features/linking/scanHandoff';
-import { Button, Card, Note, ScreenHeader, ui } from '../../src/features/linking/ui';
-import { Colors, BorderRadius, Spacing } from '../../src/shared/theme/theme';
+import { Card, Note, ScreenHeader, useLinkStyles } from '../../src/features/linking/ui';
+import { makeStyles, useTheme } from '../../src/shared/theme/ThemeProvider';
+import { useT } from '../../src/shared/i18n';
+import { Button, Icon, TextField } from '../../src/shared/ui';
 
 type Expect = QrPayload['kind'] | undefined;
 
-const TITLES: Record<string, string> = {
-  link: 'Link a device',
-  transfer: 'Transfer chats',
-  profile: 'Scan a friend',
-};
-
-const HINTS: Record<string, string> = {
-  link: 'On your computer, open Vero (web or desktop) and choose "Link with QR code". Point your camera at the code.',
-  transfer: 'On your NEW phone, sign in and open Settings → Devices & transfer → "Receive chats from old phone".',
-  profile: 'Scan a friend\'s Vero QR code (Contacts → My QR) to start a chat and verify their keys.',
-};
+/** Four brass corner brackets with a sweeping scan line. */
+function Viewfinder() {
+  const s = useStyles();
+  const y = useSharedValue(0);
+  useEffect(() => {
+    y.value = withRepeat(withTiming(1, { duration: 2200, easing: Easing.bezier(0.6, 0, 0.4, 1) }), -1, true);
+  }, []);
+  const line = useAnimatedStyle(() => ({ top: `${8 + y.value * 84}%` }));
+  return (
+    <View pointerEvents="none" style={s.reticle}>
+      <View style={[s.corner, { top: 0, left: 0, borderTopWidth: 4, borderLeftWidth: 4, borderTopLeftRadius: 22 }]} />
+      <View style={[s.corner, { top: 0, right: 0, borderTopWidth: 4, borderRightWidth: 4, borderTopRightRadius: 22 }]} />
+      <View style={[s.corner, { bottom: 0, left: 0, borderBottomWidth: 4, borderLeftWidth: 4, borderBottomLeftRadius: 22 }]} />
+      <View style={[s.corner, { bottom: 0, right: 0, borderBottomWidth: 4, borderRightWidth: 4, borderBottomRightRadius: 22 }]} />
+      <Animated.View style={[s.scanLine, line]} />
+    </View>
+  );
+}
 
 export default function ScanScreen() {
   const { expect } = useLocalSearchParams<{ expect?: string }>();
   const expected: Expect = expect === 'link' || expect === 'transfer' || expect === 'profile' ? expect : undefined;
+  const insets = useSafeAreaInsets();
+  const { c, type } = useTheme();
+  const ui = useLinkStyles();
+  const s = useStyles();
+  const t = useT();
   const [permission, requestPermission] = useCameraPermissions();
   const [manual, setManual] = useState('');
   const [error, setError] = useState<string | null>(null);
   const locked = useRef(false);
+  const mode = expected ?? 'profile';
 
   const dispatch = useCallback(
     (raw: string) => {
       if (locked.current) return;
       const payload = parseQrPayload(raw);
       if (!payload) {
-        setError('That is not a Vero code.');
+        setError(t('scan.notVero'));
         return;
       }
       if (expected && payload.kind !== expected) {
-        setError(
-          payload.kind === 'profile'
-            ? 'That is a contact code, not a device code.'
-            : payload.kind === 'link'
-              ? 'That code links a computer. Use "Link a device" for it.'
-              : 'That code is for transferring chats to a new phone.'
-        );
+        setError(payload.kind === 'profile' ? t('scan.wrongProfile') : payload.kind === 'link' ? t('scan.wrongLink') : t('scan.wrongTransfer'));
         return;
       }
       locked.current = true;
@@ -63,85 +72,69 @@ export default function ScanScreen() {
         router.replace('/devices/send-transfer');
       }
     },
-    [expected]
+    [expected, t]
   );
 
   const cameraReady = permission?.granted;
 
   return (
-    <SafeAreaView style={ui.screen} edges={['top']}>
-      <ScreenHeader title={TITLES[expected ?? 'profile']} />
-      <ScrollView contentContainerStyle={ui.content} keyboardShouldPersistTaps="handled">
-        <View style={styles.cameraBox}>
+    <View style={[ui.screen, { paddingTop: insets.top }]}>
+      <ScreenHeader title={t(`scan.title_${mode}`)} />
+      <ScrollView contentContainerStyle={[ui.content, { paddingBottom: insets.bottom + 40 }]} keyboardShouldPersistTaps="handled">
+        <View style={s.cameraBox}>
           {cameraReady ? (
-            <CameraView
-              style={StyleSheet.absoluteFill}
-              facing="back"
-              barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
-              onBarcodeScanned={({ data }) => dispatch(data)}
-            />
+            <>
+              <CameraView style={StyleSheet.absoluteFill} facing="back" barcodeScannerSettings={{ barcodeTypes: ['qr'] }} onBarcodeScanned={({ data }) => dispatch(data)} />
+              <Viewfinder />
+            </>
           ) : (
-            <View style={styles.cameraPlaceholder}>
-              <Ionicons name="camera-outline" size={42} color={Colors.textTertiary} />
-              <Text style={ui.body}>
-                {permission && !permission.canAskAgain
-                  ? 'Camera access is blocked. Enable it in your system settings, or paste the code below.'
-                  : 'Vero needs your camera to scan QR codes. Nothing is recorded or uploaded.'}
+            <View style={s.placeholder}>
+              <View style={s.camIcon}>
+                <Icon name="camera" size={32} color="#E7BD72" />
+              </View>
+              <Text style={[type.body, { color: c.onStageMuted, textAlign: 'center' }]}>
+                {permission && !permission.canAskAgain ? t('scan.blocked') : t('scan.needCamera')}
               </Text>
-              {(!permission || permission.canAskAgain) && (
-                <Button label="Allow camera" icon="camera" onPress={() => void requestPermission()} />
-              )}
+              {(!permission || permission.canAskAgain) && <Button label={t('scan.allow')} icon="camera" size="md" onPress={() => void requestPermission()} />}
             </View>
           )}
-          {cameraReady && <View pointerEvents="none" style={styles.reticle} />}
         </View>
 
-        <Text style={ui.body}>{HINTS[expected ?? 'profile']}</Text>
-        {error && <Note icon="alert-circle" tone="warning">{error}</Note>}
+        <Text style={ui.body}>{t(`scan.hint_${mode}`)}</Text>
+        {error && (
+          <Animated.View entering={FadeIn}>
+            <Note icon="info" tone="warning">
+              {error}
+            </Note>
+          </Animated.View>
+        )}
 
         <Card>
-          <Text style={ui.label}>{Platform.OS === 'web' ? 'No camera? Paste a link instead' : 'Or paste a link'}</Text>
-          <TextInput
-            style={ui.input}
+          <TextField
+            label={Platform.OS === 'web' ? t('scan.pasteWeb') : t('scan.paste')}
+            icon="link"
             value={manual}
-            onChangeText={(t) => {
-              setManual(t);
+            onChangeText={(v) => {
+              setManual(v);
               setError(null);
             }}
-            placeholder={expected === 'profile' || !expected ? 'vero://u/username or @username' : 'Paste the code text'}
-            placeholderTextColor={Colors.textTertiary}
+            placeholder={mode === 'profile' ? t('scan.placeholderProfile') : t('scan.placeholderCode')}
             autoCapitalize="none"
             autoCorrect={false}
             onSubmitEditing={() => dispatch(manual)}
           />
-          <Button label="Continue" variant="secondary" onPress={() => dispatch(manual)} disabled={!manual.trim()} />
+          <Button label={t('common.next')} iconRight="arrowRight" variant="secondary" onPress={() => dispatch(manual)} disabled={!manual.trim()} />
         </Card>
       </ScrollView>
-    </SafeAreaView>
+    </View>
   );
 }
 
-const styles = StyleSheet.create({
-  cameraBox: {
-    width: '100%',
-    aspectRatio: 1,
-    maxWidth: 420,
-    alignSelf: 'center',
-    borderRadius: BorderRadius['2xl'],
-    overflow: 'hidden',
-    backgroundColor: Colors.surface,
-    borderWidth: 1,
-    borderColor: Colors.borderAccent,
-  },
-  cameraPlaceholder: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: Spacing.md, padding: Spacing.xl },
-  reticle: {
-    position: 'absolute',
-    top: '18%',
-    left: '18%',
-    right: '18%',
-    bottom: '18%',
-    borderWidth: 3,
-    borderColor: Colors.accentLight,
-    borderRadius: BorderRadius.xl,
-  },
-});
+const useStyles = makeStyles((c, t, f) => ({
+  cameraBox: { width: '100%', aspectRatio: 1, maxWidth: 420, alignSelf: 'center', borderRadius: 30, overflow: 'hidden', backgroundColor: c.stage },
+  placeholder: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 16, padding: 28 },
+  camIcon: { width: 76, height: 76, borderRadius: 26, backgroundColor: 'rgba(237,231,217,0.08)', borderWidth: 1, borderColor: 'rgba(237,231,217,0.12)', alignItems: 'center', justifyContent: 'center' },
+  reticle: { position: 'absolute', top: '16%', left: '16%', right: '16%', bottom: '16%' },
+  corner: { position: 'absolute', width: 44, height: 44, borderColor: c.accent },
+  scanLine: { position: 'absolute', left: 10, right: 10, height: 2, borderRadius: 1, backgroundColor: c.accentHover, opacity: 0.85 },
+}));

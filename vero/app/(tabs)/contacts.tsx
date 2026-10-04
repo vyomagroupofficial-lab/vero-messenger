@@ -1,29 +1,113 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import {
-  View,
-  Text,
-  FlatList,
-  StyleSheet,
-  TouchableOpacity,
-  TextInput,
-  StatusBar,
-  ActivityIndicator,
-  Alert,
-} from 'react-native';
+import { ActivityIndicator, Platform, ScrollView, SectionList, Share, Text, View } from 'react-native';
+import Animated, { FadeIn } from 'react-native-reanimated';
 import { router } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import * as Clipboard from 'expo-clipboard';
 import { useAuthStore } from '../../src/features/auth/useAuthStore';
 import { conversationRepository } from '../../src/features/chats/ConversationRepository';
 import { useChatsStore } from '../../src/features/chats/useChatsStore';
+import { callService } from '../../src/features/calls/CallService';
 import { DEMO_CONTACTS } from '../../src/features/demo/demoData';
 import { friendlyError } from '../../src/core/network/supabase';
 import { User } from '../../src/shared/models/Message';
-import { Colors, Typography, Spacing, BorderRadius } from '../../src/shared/theme/theme';
+import { makeStyles, useTheme } from '../../src/shared/theme/ThemeProvider';
+import { useT } from '../../src/shared/i18n';
+import { Avatar, EmptyState, Grain, Icon, IconButton, IconName, Pressy, Rise, SearchField, notify, useLayout } from '../../src/shared/ui';
+
+function QuickAction({ icon, title, body, onPress, index }: { icon: IconName; title: string; body: string; onPress: () => void; index: number }) {
+  const { c } = useTheme();
+  const { isWide } = useLayout();
+  const s = useStyles();
+  return (
+    <Rise index={index} style={{ flex: 1 }}>
+      <Pressy onPress={onPress} style={[s.quick, !isWide && s.quickStack]} hoverStyle={{ borderColor: c.accentLine }} scaleTo={0.97} accessibilityLabel={title}>
+        <View style={s.quickIcon}>
+          <Icon name={icon} size={21} color={c.accentText} />
+        </View>
+        <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+          <Text style={s.quickTitle} numberOfLines={isWide ? 1 : 2}>
+            {title}
+          </Text>
+          <Text style={s.quickBody} numberOfLines={2}>
+            {body}
+          </Text>
+        </View>
+      </Pressy>
+    </Rise>
+  );
+}
+
+function PersonRow({ user, index, busy, onMessage, onCall }: { user: User; index: number; busy: boolean; onMessage: () => void; onCall: () => void }) {
+  const { c } = useTheme();
+  const s = useStyles();
+  const t = useT();
+  return (
+    <Rise index={index}>
+      <View style={s.row}>
+        <Pressy onPress={onMessage} scaleTo={0.98} style={s.rowMain} hoverStyle={{ backgroundColor: c.tint }} accessibilityLabel={t('contacts.messagePerson', { name: user.displayName })}>
+          <Avatar name={user.displayName} size={46} />
+          <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+            <Text style={s.name} numberOfLines={1}>
+              {user.displayName}
+            </Text>
+            <Text style={s.handle} numberOfLines={1}>
+              @{user.username}
+              {user.about ? <Text style={s.about}>{`  ·  ${user.about}`}</Text> : null}
+            </Text>
+          </View>
+        </Pressy>
+        {busy ? (
+          <View style={s.busy}>
+            <ActivityIndicator size="small" color={c.accent} />
+          </View>
+        ) : (
+          <IconButton icon="phone" label={t('contacts.callPerson', { name: user.displayName })} color={c.accentText} onPress={onCall} />
+        )}
+      </View>
+    </Rise>
+  );
+}
+
+function PersonCard({ user, index, busy, onMessage, onCall }: { user: User; index: number; busy: boolean; onMessage: () => void; onCall: () => void }) {
+  const { c } = useTheme();
+  const s = useStyles();
+  const t = useT();
+  return (
+    <Rise index={index} style={s.cardWrap}>
+      <View style={s.card}>
+        <Pressy onPress={() => router.push(`/profile/${user.id}`)} scaleTo={0.97} style={{ alignItems: 'center', gap: 10 }} accessibilityLabel={user.displayName}>
+          <Avatar name={user.displayName} size={72} />
+          <View style={{ alignItems: 'center', gap: 2, maxWidth: '100%' }}>
+            <Text style={[s.name, { textAlign: 'center' }]} numberOfLines={1}>
+              {user.displayName}
+            </Text>
+            <Text style={s.handle} numberOfLines={1}>
+              @{user.username}
+            </Text>
+          </View>
+        </Pressy>
+        <View style={s.cardActions}>
+          <Pressy onPress={onMessage} style={s.cardBtn} hoverStyle={{ backgroundColor: c.accentTint2 }} accessibilityLabel={t('contacts.messagePerson', { name: user.displayName })}>
+            {busy ? <ActivityIndicator size="small" color={c.accent} /> : <Icon name="chat" size={18} color={c.accentText} />}
+            <Text style={s.cardBtnLabel}>{t('contacts.message')}</Text>
+          </Pressy>
+          <IconButton icon="phone" label={t('contacts.callPerson', { name: user.displayName })} variant="outline" color={c.accentText} onPress={onCall} />
+        </View>
+      </View>
+    </Rise>
+  );
+}
 
 export default function ContactsScreen() {
-  const isDemo = useAuthStore((s) => s.isDemo);
-  const conversations = useChatsStore((s) => s.conversations);
+  const insets = useSafeAreaInsets();
+  const { isWide } = useLayout();
+  const { c, type, f } = useTheme();
+  const s = useStyles();
+  const t = useT();
+  const user = useAuthStore((st) => st.user);
+  const isDemo = useAuthStore((st) => st.isDemo);
+  const conversations = useChatsStore((st) => st.conversations);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<User[]>([]);
   const [isSearching, setIsSearching] = useState(false);
@@ -33,7 +117,7 @@ export default function ContactsScreen() {
   const knownContacts = useMemo<User[]>(() => {
     if (isDemo) return DEMO_CONTACTS;
     const seen = new Map<string, User>();
-    for (const c of conversations) if (c.otherUser) seen.set(c.otherUser.id, c.otherUser);
+    for (const cv of conversations) if (cv.otherUser) seen.set(cv.otherUser.id, cv.otherUser);
     return [...seen.values()].sort((a, b) => a.displayName.localeCompare(b.displayName));
   }, [conversations, isDemo]);
 
@@ -46,14 +130,12 @@ export default function ContactsScreen() {
       return;
     }
     if (isDemo) {
-      setSearchResults(
-        DEMO_CONTACTS.filter((u) => `${u.displayName} ${u.username}`.toLowerCase().includes(q.toLowerCase()))
-      );
+      setSearchResults(DEMO_CONTACTS.filter((u) => `${u.displayName} ${u.username}`.toLowerCase().includes(q.toLowerCase())));
       return;
     }
     setIsSearching(true);
     let cancelled = false;
-    const t = setTimeout(async () => {
+    const timer = setTimeout(async () => {
       try {
         const results = await conversationRepository.searchUsers(q);
         if (!cancelled) setSearchResults(results);
@@ -65,290 +147,190 @@ export default function ContactsScreen() {
     }, 300);
     return () => {
       cancelled = true;
-      clearTimeout(t);
+      clearTimeout(timer);
     };
   }, [searchQuery, isDemo]);
 
-  const handleSearch = (query: string) => setSearchQuery(query);
+  const existingConversation = (peerId: string) => conversations.find((cv) => cv.otherUser?.id === peerId)?.id;
 
-  const handleStartChat = async (otherUser: User) => {
+  // Resolves (or creates) the direct conversation with someone. Demo mode can only open existing chats.
+  const openConversation = async (other: User): Promise<string | null> => {
+    const existing = existingConversation(other.id);
+    if (existing) return existing;
     if (isDemo) {
-      const existing = conversations.find((c) => c.otherUser?.id === otherUser.id);
-      if (existing) router.push(`/chat/${existing.id}`);
-      else Alert.alert('Demo mode', 'Create a real account to start new encrypted chats.');
-      return;
+      notify(t('contacts.demoTitle'), t('contacts.demoBody'));
+      return null;
     }
-    setOpeningId(otherUser.id);
+    setOpeningId(other.id);
     try {
-      const conversationId = await conversationRepository.createDirectConversation(otherUser.id);
-      router.push(`/chat/${conversationId}`);
+      return await conversationRepository.createDirectConversation(other.id);
     } catch (e) {
-      Alert.alert('Could not start chat', friendlyError(e));
+      notify(t('contacts.startFailed'), friendlyError(e));
+      return null;
     } finally {
       setOpeningId(null);
     }
   };
 
-  const renderUser = ({ item }: { item: User }) => {
-    const initials = item.displayName.slice(0, 2).toUpperCase();
-    const avatarColors = ['#06B6D4', '#8B5CF6', '#10B981', '#F59E0B'];
-    const bgStart = avatarColors[Math.abs(item.id.charCodeAt(item.id.length - 1)) % avatarColors.length];
-
-    return (
-      <TouchableOpacity
-        style={styles.userItem}
-        onPress={() => handleStartChat(item)}
-        activeOpacity={0.75}
-      >
-        <View style={[styles.avatar, { backgroundColor: bgStart }]}>
-          <Text style={styles.avatarText}>{initials}</Text>
-        </View>
-
-        <View style={styles.userInfo}>
-          <View style={styles.nameRow}>
-            <Text style={styles.displayName}>{item.displayName}</Text>
-          </View>
-          <Text style={styles.username}>@{item.username}</Text>
-          {item.about && <Text style={styles.userBio}>{item.about}</Text>}
-        </View>
-
-        <View style={styles.chatIconWrapper}>
-          {openingId === item.id ? (
-            <ActivityIndicator size="small" color={Colors.accentLight} />
-          ) : (
-            <Ionicons name="chatbubble-ellipses" size={17} color={Colors.accentLight} />
-          )}
-        </View>
-      </TouchableOpacity>
-    );
+  const handleStartChat = async (other: User) => {
+    const id = await openConversation(other);
+    if (id) router.push(`/chat/${id}`);
   };
 
-  const displayedList = searchQuery.trim().length >= 2 ? searchResults : knownContacts;
+  const handleCall = async (other: User) => {
+    if (!user?.id) return;
+    const conversationId = await openConversation(other);
+    if (!conversationId) return;
+    try {
+      const callId = await callService.startCall({ conversationId, peerId: other.id, peerName: other.displayName, callType: 'voice' });
+      router.push(`/call/${callId}`);
+    } catch (e) {
+      notify(t('calls.failed'), friendlyError(e));
+    }
+  };
 
-  return (
-    <SafeAreaView style={styles.container} edges={['top']}>
-      <StatusBar barStyle="light-content" backgroundColor={Colors.background} />
+  const invite = async () => {
+    const message = t('contacts.inviteMessage');
+    try {
+      if (Platform.OS === 'web' && !(typeof navigator !== 'undefined' && 'share' in navigator)) throw new Error('no share');
+      await Share.share({ message });
+    } catch {
+      await Clipboard.setStringAsync(message).catch(() => undefined);
+      notify(t('contacts.inviteCopied'), t('contacts.inviteCopiedBody'));
+    }
+  };
 
-      {/* Header */}
-      <View style={[styles.header, { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }]}>
-        <Text style={styles.headerTitle}>Contacts</Text>
-        {!isDemo && (
-          <View style={{ flexDirection: 'row', gap: Spacing.md }}>
-            <TouchableOpacity onPress={() => router.push('/discovery')} accessibilityLabel="Find friends from contacts">
-              <Ionicons name="person-add-outline" size={22} color={Colors.accentLight} />
-            </TouchableOpacity>
-            <TouchableOpacity onPress={() => router.push('/qr')} accessibilityLabel="My QR code">
-              <Ionicons name="qr-code-outline" size={22} color={Colors.accentLight} />
-            </TouchableOpacity>
-          </View>
-        )}
-      </View>
+  const searching = searchQuery.trim().length >= 2;
+  const displayed = searching ? searchResults : knownContacts;
+  const upper = (text: string) => (f.script === 'latin' ? text.toUpperCase() : text);
 
-      {/* Search Bar */}
-      <View style={styles.searchSection}>
-        <View style={styles.searchBar}>
-          <Ionicons name="search" size={18} color={Colors.accentLight} />
-          <TextInput
-            style={styles.searchInput}
-            placeholder="Search people by name or @username"
-            placeholderTextColor={Colors.textTertiary}
-            value={searchQuery}
-            onChangeText={handleSearch}
-            autoCapitalize="none"
-          />
-          {searchQuery ? (
-            <TouchableOpacity onPress={() => { setSearchQuery(''); setSearchResults([]); }}>
-              <Ionicons name="close-circle" size={18} color={Colors.textSecondary} />
-            </TouchableOpacity>
-          ) : null}
+  const caption = searching
+    ? isSearching
+      ? t('contacts.searching')
+      : t('contacts.results', { count: searchResults.length })
+    : searchQuery.trim().length === 1
+    ? t('contacts.minChars')
+    : knownContacts.length
+    ? t('contacts.count', { count: knownContacts.length })
+    : '';
+
+  const empty = searching ? (
+    isSearching ? null : <EmptyState icon="search" title={t('contacts.noResults')} body={t('contacts.noResultsBody')} />
+  ) : (
+    <EmptyState icon="users" title={t('contacts.emptyTitle')} body={t('contacts.emptyBody')} />
+  );
+
+  const sections = useMemo(() => {
+    if (searching) return displayed.length ? [{ key: 'results', title: '', data: displayed }] : [];
+    const groups = new Map<string, User[]>();
+    for (const u of displayed) {
+      const first = (u.displayName.trim()[0] || '#').toLocaleUpperCase();
+      const letter = /\p{L}/u.test(first) ? first : '#';
+      groups.set(letter, [...(groups.get(letter) ?? []), u]);
+    }
+    return [...groups.entries()].map(([letter, data]) => ({ key: letter, title: letter, data }));
+  }, [displayed, searching]);
+
+  const header = (
+    <View style={{ gap: 16, paddingBottom: 6 }}>
+      <View style={[s.header, { paddingTop: isWide ? 24 : 16 + insets.top }]}>
+        <View style={{ gap: 2 }}>
+          <Text style={type.title} accessibilityRole="header">
+            {t('contacts.title')}
+          </Text>
+          {!!caption && (
+            <Animated.Text key={caption} entering={FadeIn} style={type.caption} accessibilityLiveRegion="polite">
+              {caption}
+            </Animated.Text>
+          )}
+        </View>
+        <View style={{ flexDirection: 'row', gap: 8 }}>
+          {!isDemo && <IconButton icon="search" label={t('contacts.discover')} variant="filled" onPress={() => router.push('/discovery')} />}
+          {!isDemo && <IconButton icon="qr" label={t('contacts.myQr')} variant="filled" onPress={() => router.push('/qr')} />}
+          <IconButton icon="users" label={t('contacts.newGroup')} variant="brass" onPress={() => router.push('/new-group')} />
         </View>
       </View>
-
-      {/* New Group Action Banner */}
-      {!searchQuery && (
-        <TouchableOpacity
-          style={styles.newGroupBtn}
-          onPress={() => router.push('/new-group')}
-          activeOpacity={0.8}
-        >
-          <View style={styles.newGroupIcon}>
-            <Ionicons name="people" size={22} color={Colors.purpleLight} />
-          </View>
-          <View style={styles.newGroupText}>
-            <Text style={styles.newGroupTitle}>New group</Text>
-            <Text style={styles.newGroupSubtitle}>Every member's devices get their own key slot</Text>
-          </View>
-          <Ionicons name="chevron-forward" size={18} color={Colors.textTertiary} />
-        </TouchableOpacity>
+      <View style={[s.pad, isWide && s.wideTop]}>
+        <SearchField value={searchQuery} onChangeText={setSearchQuery} placeholder={t('contacts.search')} onClear={() => setSearchQuery('')} style={{ flex: 1, maxWidth: isWide ? 520 : undefined }} />
+        {isSearching && <ActivityIndicator size="small" color={c.accent} />}
+      </View>
+      {!searching && (
+        <View style={[s.pad, { flexDirection: 'row', gap: 10 }, isWide && { maxWidth: 760 }]}>
+          <QuickAction index={0} icon="users" title={t('contacts.newGroup')} body={t('contacts.newGroupBody')} onPress={() => router.push('/new-group')} />
+          <QuickAction index={1} icon="userPlus" title={t('contacts.invite')} body={t('contacts.inviteBody')} onPress={invite} />
+        </View>
       )}
+    </View>
+  );
 
-      {/* Directory Contacts List */}
-      <FlatList
-        data={displayedList}
-        keyExtractor={(item) => item.id}
-        renderItem={renderUser}
-        contentContainerStyle={styles.listContent}
-        ItemSeparatorComponent={() => <View style={styles.separator} />}
+  if (isWide) {
+    return (
+      <View style={s.container}>
+        <Grain />
+        <ScrollView contentContainerStyle={{ paddingBottom: 48 }}>
+          <View style={s.wideInner}>
+            {header}
+            {displayed.length === 0 ? (
+              <View style={{ paddingTop: 40 }}>{empty}</View>
+            ) : (
+              <View style={{ gap: 12, paddingHorizontal: 20, paddingTop: 14 }}>
+                <Text style={type.eyebrow}>{upper(searching ? t('contacts.results', { count: displayed.length }) : t('contacts.known'))}</Text>
+                <View style={s.grid}>
+                  {displayed.map((u, i) => (
+                    <PersonCard key={u.id} user={u} index={Math.min(i, 12)} busy={openingId === u.id} onMessage={() => handleStartChat(u)} onCall={() => handleCall(u)} />
+                  ))}
+                </View>
+              </View>
+            )}
+          </View>
+        </ScrollView>
+      </View>
+    );
+  }
+
+  return (
+    <View style={s.container}>
+      <Grain />
+      <SectionList
+        sections={sections}
+        keyExtractor={(u) => u.id}
+        stickySectionHeadersEnabled={false}
+        keyboardShouldPersistTaps="handled"
+        ListHeaderComponent={header}
+        renderSectionHeader={({ section }) => (section.title ? <Text style={s.letter}>{section.title}</Text> : <View style={{ height: 8 }} />)}
+        renderItem={({ item, index }) => (
+          <PersonRow user={item} index={Math.min(index, 10)} busy={openingId === item.id} onMessage={() => handleStartChat(item)} onCall={() => handleCall(item)} />
+        )}
+        ListEmptyComponent={empty}
+        contentContainerStyle={{ paddingBottom: 32 }}
         showsVerticalScrollIndicator={false}
-        ListHeaderComponent={
-          <Text style={styles.resultsHeader}>
-            {searchQuery.trim().length >= 2
-              ? isSearching
-                ? 'Searching…'
-                : `${searchResults.length} result${searchResults.length !== 1 ? 's' : ''}`
-              : knownContacts.length
-                ? 'People you chat with'
-                : 'Search for someone by name or username to start a chat'}
-          </Text>
-        }
       />
-    </SafeAreaView>
+    </View>
   );
 }
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: Colors.background,
-  },
-  header: {
-    paddingHorizontal: Spacing.xl,
-    paddingTop: Spacing.md,
-    paddingBottom: Spacing.sm,
-    backgroundColor: Colors.background,
-  },
-  headerTitle: {
-    fontSize: Typography['2xl'],
-    fontWeight: Typography.extrabold,
-    color: Colors.textPrimary,
-    letterSpacing: -0.5,
-  },
-  searchSection: {
-    paddingHorizontal: Spacing.xl,
-    paddingVertical: Spacing.sm,
-  },
-  searchBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#0B1322',
-    borderRadius: BorderRadius.lg,
-    paddingHorizontal: Spacing.md,
-    height: 46,
-    gap: Spacing.sm,
-    borderWidth: 1,
-    borderColor: 'rgba(6, 182, 212, 0.25)',
-  },
-  searchInput: {
-    flex: 1,
-    color: Colors.textPrimary,
-    fontSize: Typography.sm,
-  },
-  newGroupBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginHorizontal: Spacing.xl,
-    marginTop: Spacing.xs,
-    marginBottom: Spacing.sm,
-    padding: Spacing.md,
-    backgroundColor: 'rgba(139, 92, 246, 0.08)',
-    borderRadius: BorderRadius.xl,
-    borderWidth: 1,
-    borderColor: 'rgba(139, 92, 246, 0.25)',
-  },
-  newGroupIcon: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: 'rgba(139, 92, 246, 0.18)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: Spacing.md,
-  },
-  newGroupText: {
-    flex: 1,
-  },
-  newGroupTitle: {
-    fontSize: Typography.base,
-    fontWeight: Typography.semibold,
-    color: Colors.textPrimary,
-  },
-  newGroupSubtitle: {
-    fontSize: Typography.xs,
-    color: Colors.textSecondary,
-    marginTop: 2,
-  },
-  listContent: {
-    paddingHorizontal: Spacing.xl,
-    paddingBottom: 90,
-  },
-  resultsHeader: {
-    fontSize: Typography.xs,
-    fontWeight: Typography.bold,
-    color: Colors.textTertiary,
-    marginTop: Spacing.base,
-    marginBottom: Spacing.sm,
-    letterSpacing: 0.8,
-    textTransform: 'uppercase',
-  },
-  userItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: Spacing.md,
-  },
-  avatar: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: Spacing.md,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3,
-    shadowRadius: 6,
-  },
-  avatarText: {
-    fontSize: Typography.base,
-    fontWeight: Typography.bold,
-    color: '#FFF',
-  },
-  userInfo: {
-    flex: 1,
-  },
-  nameRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginBottom: 2,
-  },
-  displayName: {
-    fontSize: Typography.base,
-    fontWeight: Typography.semibold,
-    color: Colors.textPrimary,
-  },
-  username: {
-    fontSize: Typography.xs,
-    color: Colors.textTertiary,
-    marginBottom: 2,
-  },
-  userBio: {
-    fontSize: 11,
-    color: Colors.emerald,
-    letterSpacing: 0.2,
-  },
-  chatIconWrapper: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: 'rgba(6, 182, 212, 0.12)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(6, 182, 212, 0.25)',
-  },
-  separator: {
-    height: 1,
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
-    marginLeft: 64,
-  },
-});
+const useStyles = makeStyles((c, t, f) => ({
+  container: { flex: 1, backgroundColor: c.bg },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20 },
+  pad: { paddingHorizontal: 20, flexDirection: 'row', alignItems: 'center', gap: 12 },
+  wideTop: { justifyContent: 'flex-start' },
+  wideInner: { width: '100%', maxWidth: 1180, alignSelf: 'center', paddingHorizontal: 12 },
+  quick: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 12, borderRadius: 18, backgroundColor: c.raised, borderWidth: 1, borderColor: c.line, minHeight: 72 },
+  quickStack: { flexDirection: 'column', alignItems: 'flex-start', gap: 10, padding: 14 },
+  quickIcon: { width: 42, height: 42, borderRadius: 14, backgroundColor: c.accentTint, borderWidth: 1, borderColor: c.accentTint2, alignItems: 'center', justifyContent: 'center' },
+  quickTitle: { fontFamily: f.semibold, fontSize: 14.5, color: c.text },
+  quickBody: { fontFamily: f.body, fontSize: 12, lineHeight: f.script === 'latin' ? 16 : 19, color: c.muted },
+  letter: { fontFamily: f.display, fontSize: 15, color: c.accentText, paddingHorizontal: 22, paddingTop: 18, paddingBottom: 4 },
+  row: { flexDirection: 'row', alignItems: 'center', gap: 6, marginHorizontal: 8, paddingRight: 8 },
+  rowMain: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 13, paddingHorizontal: 12, paddingVertical: 9, borderRadius: 18 },
+  name: { fontFamily: f.semibold, fontSize: 16, color: c.text },
+  handle: { fontFamily: f.script === 'latin' ? f.mono : f.body, fontSize: 12.5, color: c.muted },
+  about: { fontFamily: f.body, color: c.faint },
+  busy: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
+  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 14 },
+  cardWrap: { flexGrow: 1, flexBasis: 210, maxWidth: 280 },
+  card: { alignItems: 'center', gap: 16, paddingTop: 22, paddingBottom: 14, paddingHorizontal: 14, borderRadius: 24, backgroundColor: c.raised, borderWidth: 1, borderColor: c.line },
+  cardActions: { flexDirection: 'row', alignItems: 'center', gap: 8, alignSelf: 'stretch' },
+  cardBtn: { flex: 1, height: 44, borderRadius: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: c.accentTint, borderWidth: 1, borderColor: c.accentTint2 },
+  cardBtnLabel: { fontFamily: f.semibold, fontSize: 14, color: c.accentText },
+}));

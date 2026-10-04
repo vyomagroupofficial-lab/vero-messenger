@@ -1,17 +1,23 @@
 import React, { useCallback } from 'react';
-import { ActivityIndicator, FlatList, RefreshControl, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, FlatList, RefreshControl, Text, View } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuthStore } from '../../src/features/auth/useAuthStore';
 import { communitiesStore, useCommunitiesStore } from '../../src/features/communities/useCommunitiesStore';
-import { Banner, EntityAvatar, groupStyles as gs, ScreenHeader } from '../../src/features/groups/components/GroupComponents';
-import { Colors, Spacing } from '../../src/shared/theme/theme';
+import { Banner, EntityAvatar, ScreenHeader, useGroupStyles } from '../../src/features/groups/components/GroupComponents';
+import { makeStyles, useTheme } from '../../src/shared/theme/ThemeProvider';
+import { useT } from '../../src/shared/i18n';
+import { Button, EmptyState, Grain, Icon, IconButton, Pill, Pressy, Rise } from '../../src/shared/ui';
 
 export default function CommunitiesScreen() {
-  const isDemo = useAuthStore((s) => s.isDemo);
-  const list = useCommunitiesStore((s) => s.list);
-  const isLoading = useCommunitiesStore((s) => s.isLoading);
+  const insets = useSafeAreaInsets();
+  const { c } = useTheme();
+  const gs = useGroupStyles();
+  const s = useStyles();
+  const t = useT();
+  const isDemo = useAuthStore((st) => st.isDemo);
+  const list = useCommunitiesStore((st) => st.list);
+  const isLoading = useCommunitiesStore((st) => st.isLoading);
 
   useFocusEffect(
     useCallback(() => {
@@ -20,60 +26,64 @@ export default function CommunitiesScreen() {
   );
 
   return (
-    <SafeAreaView style={gs.container} edges={['top']}>
+    <View style={[gs.container, { paddingTop: insets.top }]}>
+      <Grain />
       <ScreenHeader
-        title="Communities"
-        onBack={() => router.back()}
-        right={
-          !isDemo ? (
-            <TouchableOpacity onPress={() => router.push('/communities/new')} accessibilityLabel="New community" style={{ padding: Spacing.sm }}>
-              <Ionicons name="add-circle-outline" size={24} color={Colors.accentLight} />
-            </TouchableOpacity>
-          ) : null
-        }
+        title={t('communities.title')}
+        onBack={() => (router.canGoBack() ? router.back() : router.replace('/channels'))}
+        right={!isDemo ? <IconButton icon="plus" label={t('communities.new')} variant="brass" onPress={() => router.push('/communities/new')} /> : null}
       />
       {isDemo ? (
-        <View style={gs.centered}>
-          <Text style={gs.muted}>Communities need a real account.</Text>
-        </View>
+        <EmptyState icon="grid" title={t('communities.title')} body={t('communities.demo')} />
       ) : (
         <FlatList
           data={list}
-          keyExtractor={(c) => c.id}
-          refreshControl={<RefreshControl refreshing={isLoading} onRefresh={() => void communitiesStore.getState().loadMine()} tintColor={Colors.accent} />}
+          keyExtractor={(cm) => cm.id}
+          contentContainerStyle={[s.list, { paddingBottom: insets.bottom + 32 }]}
+          refreshControl={<RefreshControl refreshing={isLoading} onRefresh={() => void communitiesStore.getState().loadMine()} tintColor={c.accent} />}
           ListHeaderComponent={
-            <Banner icon="lock-closed" text="Community groups and announcements are end-to-end encrypted. Community and group names are visible to Vero's servers." />
+            <View style={{ marginHorizontal: -16, paddingTop: 8 }}>
+              <Banner icon="lock" text={t('communities.notice')} />
+            </View>
           }
           ListEmptyComponent={
             isLoading ? (
-              <ActivityIndicator color={Colors.accent} style={{ marginTop: 24 }} />
+              <ActivityIndicator color={c.accent} style={{ marginTop: 24 }} />
             ) : (
-              <View style={gs.centered}>
-                <Text style={gs.heroTitle}>Bring groups together</Text>
-                <Text style={gs.heroSub}>
-                  A community keeps related groups in one place, with an announcements group where only admins post.
-                </Text>
-              </View>
+              <EmptyState
+                icon="grid"
+                title={t('communities.emptyTitle')}
+                body={t('communities.emptyBody')}
+                action={<Button label={t('communities.new')} icon="plus" size="md" onPress={() => router.push('/communities/new')} />}
+              />
             )
           }
-          renderItem={({ item }) => (
-            <TouchableOpacity onPress={() => router.push(`/communities/${item.id}`)} activeOpacity={0.7}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: Spacing.md, paddingHorizontal: Spacing.base, paddingVertical: Spacing.md }}>
-                <EntityAvatar name={item.name} dataUri={item.avatarData} size={48} icon="git-network" />
-                <View style={{ flex: 1 }}>
-                  <Text style={gs.body} numberOfLines={1}>
+          renderItem={({ item, index }) => (
+            <Rise index={Math.min(index, 10)}>
+              <Pressy onPress={() => router.push(`/communities/${item.id}`)} scaleTo={0.98} hoverStyle={{ borderColor: c.accentLine }} style={s.card} accessibilityLabel={item.name}>
+                <EntityAvatar name={item.name} dataUri={item.avatarData} size={56} icon="grid" />
+                <View style={{ flex: 1, minWidth: 0, gap: 6 }}>
+                  <Text style={s.name} numberOfLines={1}>
                     {item.name}
                   </Text>
-                  <Text style={gs.muted} numberOfLines={1}>
-                    {item.groupCount} groups · {item.memberCount} members
-                    {item.myRole && item.myRole !== 'member' ? ` · ${item.myRole === 'owner' ? 'Owner' : 'Admin'}` : ''}
-                  </Text>
+                  <View style={{ flexDirection: 'row', gap: 6, flexWrap: 'wrap' }}>
+                    <Pill icon="grid" label={t('communities.groups', { count: item.groupCount })} tone="stage" />
+                    <Pill icon="users" label={t('communities.members', { count: item.memberCount })} tone="stage" />
+                    {item.myRole && item.myRole !== 'member' && <Pill label={item.myRole === 'owner' ? t('thread.role_owner') : t('thread.role_admin')} tone="brass" />}
+                  </View>
                 </View>
-              </View>
-            </TouchableOpacity>
+                <Icon name="forwardChevron" size={18} color={c.faint} />
+              </Pressy>
+            </Rise>
           )}
         />
       )}
-    </SafeAreaView>
+    </View>
   );
 }
+
+const useStyles = makeStyles((c, t, f) => ({
+  list: { width: '100%', maxWidth: 760, alignSelf: 'center', paddingHorizontal: 16, gap: 10 },
+  card: { flexDirection: 'row', alignItems: 'center', gap: 14, padding: 14, borderRadius: 22, backgroundColor: c.panel, borderWidth: 1, borderColor: c.line },
+  name: { fontFamily: f.semibold, fontSize: 16.5, color: c.text },
+}));

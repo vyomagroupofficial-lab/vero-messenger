@@ -1,22 +1,82 @@
-import { useEffect } from 'react';
-import { Stack, router } from 'expo-router';
+import { useEffect, useMemo } from 'react';
+import { DarkTheme, DefaultTheme, Stack, ThemeProvider as NavThemeProvider, router } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import { StyleSheet, View, Platform } from 'react-native';
+import { StyleSheet, View } from 'react-native';
+import { useFonts } from 'expo-font';
+import {
+  BricolageGrotesque_600SemiBold,
+  BricolageGrotesque_700Bold,
+  BricolageGrotesque_800ExtraBold,
+} from '@expo-google-fonts/bricolage-grotesque';
+import { Geist_400Regular, Geist_500Medium, Geist_600SemiBold, Geist_700Bold } from '@expo-google-fonts/geist';
+import { GeistMono_400Regular, GeistMono_500Medium } from '@expo-google-fonts/geist-mono';
 import { useAuthStore } from '../src/features/auth/useAuthStore';
 import { callService } from '../src/features/calls/CallService';
 import { startInbox, useChatsStore } from '../src/features/chats/useChatsStore';
 import { closeAllConversationChannels } from '../src/features/messages/useMessagesStore';
 import { userChannel } from '../src/core/network/realtime';
+import { ThemeProvider, useTheme } from '../src/shared/theme/ThemeProvider';
+import { dark } from '../src/shared/theme/theme';
+import '../src/shared/i18n';
 import { AppLockGate } from '../src/features/settings/AppLockGate';
 import { useAccountServices } from '../src/features/settings/useAccountServices';
-import { Colors } from '../src/shared/theme/theme';
+
+function ThemedStack() {
+  const { c, isDark } = useTheme();
+
+  // React Navigation's own theme drives card backgrounds and transitions between screens.
+  const navTheme = useMemo(() => {
+    const base = isDark ? DarkTheme : DefaultTheme;
+    return {
+      ...base,
+      colors: { ...base.colors, primary: c.accent, background: c.bg, card: c.bg, text: c.text, border: c.line, notification: c.accent },
+    };
+  }, [c, isDark]);
+
+  return (
+    <NavThemeProvider value={navTheme}>
+      <StatusBar style={isDark ? 'light' : 'dark'} />
+      <Stack
+        screenOptions={{
+          headerShown: false,
+          contentStyle: { backgroundColor: c.bg },
+          animation: 'slide_from_right',
+          animationDuration: 280,
+        }}
+      >
+        <Stack.Screen name="index" options={{ animation: 'none' }} />
+        <Stack.Screen name="splash" options={{ animation: 'none' }} />
+        <Stack.Screen name="(auth)" options={{ animation: 'fade' }} />
+        <Stack.Screen name="(tabs)" options={{ animation: 'fade' }} />
+        <Stack.Screen name="chat/[id]" />
+        <Stack.Screen name="call/[id]" options={{ animation: 'fade_from_bottom', contentStyle: { backgroundColor: c.stage } }} />
+        <Stack.Screen name="profile/[id]" />
+        <Stack.Screen name="new-group" options={{ animation: 'slide_from_bottom' }} />
+        <Stack.Screen name="verify-safety-number" />
+        <Stack.Screen name="media-viewer" options={{ animation: 'fade', presentation: 'fullScreenModal', contentStyle: { backgroundColor: c.black } }} />
+      </Stack>
+    </NavThemeProvider>
+  );
+}
 
 export default function RootLayout() {
   const initialize = useAuthStore((s) => s.initialize);
   const userId = useAuthStore((s) => s.user?.id);
   const deviceId = useAuthStore((s) => s.deviceId);
   const isDemo = useAuthStore((s) => s.isDemo);
+
+  const [fontsLoaded, fontError] = useFonts({
+    BricolageGrotesque_600SemiBold,
+    BricolageGrotesque_700Bold,
+    BricolageGrotesque_800ExtraBold,
+    Geist_400Regular,
+    Geist_500Medium,
+    Geist_600SemiBold,
+    Geist_700Bold,
+    GeistMono_400Regular,
+    GeistMono_500Medium,
+  });
 
   useEffect(() => {
     void initialize();
@@ -49,59 +109,22 @@ export default function RootLayout() {
     };
   }, [userId, deviceId, isDemo]);
 
+  // Fonts are bundled, so this is a single frame — never a flash of system type.
+  if (!fontsLoaded && !fontError) {
+    return <View style={styles.boot} />;
+  }
+
   return (
-    <GestureHandlerRootView style={styles.root}>
-      <StatusBar style="light" />
-      <View style={styles.appShell}>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <ThemeProvider>
         <AppLockGate>
-        <Stack
-          screenOptions={{
-            headerShown: false,
-            contentStyle: { backgroundColor: Colors.background },
-            animation: 'slide_from_right',
-          }}
-        >
-          <Stack.Screen name="index" options={{ animation: 'none' }} />
-          <Stack.Screen name="splash" options={{ animation: 'none' }} />
-          <Stack.Screen name="(auth)" options={{ animation: 'none' }} />
-          <Stack.Screen name="(tabs)" options={{ animation: 'none' }} />
-          <Stack.Screen name="chat/[id]" />
-          <Stack.Screen name="call/[id]" />
-          <Stack.Screen name="profile/[id]" />
-          <Stack.Screen name="new-group" />
-          <Stack.Screen name="verify-safety-number" />
-          <Stack.Screen
-            name="media-viewer"
-            options={{ animation: 'fade', presentation: 'fullScreenModal' }}
-          />
-        </Stack>
+          <ThemedStack />
         </AppLockGate>
-      </View>
+      </ThemeProvider>
     </GestureHandlerRootView>
   );
 }
 
 const styles = StyleSheet.create({
-  root: {
-    flex: 1,
-    backgroundColor: '#02050D',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  appShell: {
-    flex: 1,
-    width: '100%',
-    maxWidth: Platform.OS === 'web' ? 620 : undefined,
-    height: '100%',
-    backgroundColor: Colors.background,
-    ...(Platform.OS === 'web'
-      ? ({
-          boxShadow: '0 0 80px rgba(6, 182, 212, 0.09), 0 0 1px rgba(255, 255, 255, 0.12)',
-          borderLeftWidth: 1,
-          borderRightWidth: 1,
-          borderColor: 'rgba(255, 255, 255, 0.08)',
-          overflow: 'hidden',
-        } as any)
-      : {}),
-  },
+  boot: { flex: 1, backgroundColor: dark.bg },
 });

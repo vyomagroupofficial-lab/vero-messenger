@@ -5,10 +5,12 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
-    "userInterfaceStyle": "dark",
+    "userInterfaceStyle": "automatic",
     "scheme": "vero",
     "splash": {
-      "backgroundColor": "#050A14"
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0C0E0D"
     },
     "ios": {
       "supportsTablet": true,
@@ -20,7 +22,7 @@
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#050A14",
+        "backgroundColor": "#D6A657",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
@@ -70,7 +72,7 @@
       [
         "expo-notifications",
         {
-          "color": "#06B6D4"
+          "color": "#D6A657"
         }
       ],
       [
@@ -81,6 +83,7 @@
           "microphonePermission": "Vero uses the microphone for calls and to record voice messages and videos you send end-to-end encrypted."
         }
       ],
+      "expo-font",
       [
         "expo-camera",
         {

@@ -1,24 +1,23 @@
 import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, ScrollView, Text, View } from 'react-native';
+import Animated, { FadeIn, ZoomIn } from 'react-native-reanimated';
 import { router, useLocalSearchParams } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { friendlyError } from '../../src/core/network/supabase';
 import { useAuthStore } from '../../src/features/auth/useAuthStore';
 import { channelRepository } from '../../src/features/channels/ChannelRepository';
-import { CHANNELS_E2EE_NOTICE, followersLabel } from '../../src/features/channels/channelUtils';
+import { formatCount } from '../../src/features/channels/channelUtils';
 import { ChannelInvitePreview } from '../../src/features/channels/types';
 import { useChatsStore } from '../../src/features/chats/useChatsStore';
-import { Banner, EntityAvatar, groupStyles as gs, PrimaryButton, ScreenHeader } from '../../src/features/groups/components/GroupComponents';
+import { Banner, EntityAvatar, inviteStatusText, ScreenHeader, useGroupStyles } from '../../src/features/groups/components/GroupComponents';
 import { groupRepository } from '../../src/features/groups/GroupRepository';
-import { inviteStatusMessage, isValidInviteToken, parseInviteLink } from '../../src/features/groups/inviteLinks';
+import { isValidInviteToken, parseInviteLink } from '../../src/features/groups/inviteLinks';
 import { InvitePreview } from '../../src/features/groups/types';
-import { Colors } from '../../src/shared/theme/theme';
+import { makeStyles, useTheme } from '../../src/shared/theme/ThemeProvider';
+import { useT } from '../../src/shared/i18n';
+import { Button, DotWall, Icon, Pill, Ripple } from '../../src/shared/ui';
 
-type Preview =
-  | { kind: 'loading' }
-  | { kind: 'group'; data: InvitePreview }
-  | { kind: 'channel'; data: ChannelInvitePreview }
-  | { kind: 'error'; message: string };
+type Preview = { kind: 'loading' } | { kind: 'group'; data: InvitePreview } | { kind: 'channel'; data: ChannelInvitePreview } | { kind: 'error'; message: string };
 
 /**
  * Handles vero://join/<token> and https://<host>/join/<token>: previews a group
@@ -27,9 +26,14 @@ type Preview =
 export default function JoinScreen() {
   const params = useLocalSearchParams<{ token: string }>();
   const token = parseInviteLink(params.token ?? '') ?? '';
-  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
-  const isAuthLoading = useAuthStore((s) => s.isLoading);
-  const isDemo = useAuthStore((s) => s.isDemo);
+  const insets = useSafeAreaInsets();
+  const { c, type } = useTheme();
+  const gs = useGroupStyles();
+  const s = useStyles();
+  const t = useT();
+  const isAuthenticated = useAuthStore((st) => st.isAuthenticated);
+  const isAuthLoading = useAuthStore((st) => st.isLoading);
+  const isDemo = useAuthStore((st) => st.isDemo);
   const [preview, setPreview] = useState<Preview>({ kind: 'loading' });
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<string | null>(null);
@@ -37,7 +41,7 @@ export default function JoinScreen() {
   useEffect(() => {
     if (!isAuthenticated || isDemo) return;
     if (!isValidInviteToken(token)) {
-      setPreview({ kind: 'error', message: inviteStatusMessage('invalid') });
+      setPreview({ kind: 'error', message: inviteStatusText(t, 'invalid') });
       return;
     }
     let cancelled = false;
@@ -46,12 +50,12 @@ export default function JoinScreen() {
         const group = await groupRepository.previewInvite(token);
         if (cancelled) return;
         if (group.status !== 'invalid') {
-          setPreview(group.status === 'valid' ? { kind: 'group', data: group } : { kind: 'error', message: inviteStatusMessage(group.status) });
+          setPreview(group.status === 'valid' ? { kind: 'group', data: group } : { kind: 'error', message: inviteStatusText(t, group.status) });
           return;
         }
         const channel = await channelRepository.previewInvite(token);
         if (cancelled) return;
-        setPreview(channel.status === 'valid' ? { kind: 'channel', data: channel } : { kind: 'error', message: inviteStatusMessage(channel.status) });
+        setPreview(channel.status === 'valid' ? { kind: 'channel', data: channel } : { kind: 'error', message: inviteStatusText(t, channel.status) });
       } catch (e) {
         if (!cancelled) setPreview({ kind: 'error', message: friendlyError(e) });
       }
@@ -63,28 +67,36 @@ export default function JoinScreen() {
 
   const back = () => (router.canGoBack() ? router.back() : router.replace('/'));
 
+  const shell = (children: React.ReactNode) => (
+    <View style={[gs.container, { paddingTop: insets.top }]}>
+      <ScreenHeader title={t('join.title')} onBack={back} />
+      <View style={{ flex: 1 }}>
+        <DotWall />
+        <ScrollView contentContainerStyle={s.body}>{children}</ScrollView>
+      </View>
+    </View>
+  );
+
   if (isAuthLoading) {
     return (
-      <SafeAreaView style={gs.container}>
+      <View style={gs.container}>
         <View style={gs.centered}>
-          <ActivityIndicator color={Colors.accent} />
+          <ActivityIndicator color={c.accent} />
         </View>
-      </SafeAreaView>
+      </View>
     );
   }
 
   if (!isAuthenticated || isDemo) {
-    return (
-      <SafeAreaView style={gs.container} edges={['top']}>
-        <ScreenHeader title="Invite" onBack={back} />
-        <View style={gs.centered}>
-          <Text style={gs.heroTitle}>You've been invited</Text>
-          <Text style={gs.heroSub}>
-            {isDemo ? 'Invite links need a real account.' : 'Sign in to Vero, then open this link again to see the invite.'}
-          </Text>
-          {!isDemo && <PrimaryButton label="Sign in" onPress={() => router.replace('/(auth)/login')} />}
+    return shell(
+      <Animated.View entering={FadeIn} style={s.card}>
+        <View style={s.glyph}>
+          <Icon name="link" size={30} color={c.accentText} />
         </View>
-      </SafeAreaView>
+        <Text style={gs.heroTitle}>{t('join.invited')}</Text>
+        <Text style={gs.heroSub}>{isDemo ? t('join.demo') : t('join.signIn')}</Text>
+        {!isDemo && <Button label={t('auth.signIn')} iconRight="arrowRight" onPress={() => router.replace('/(auth)/login')} style={{ alignSelf: 'stretch' }} />}
+      </Animated.View>
     );
   }
 
@@ -101,7 +113,7 @@ export default function JoinScreen() {
         router.replace(`/chat/${r.conversationId}`);
         return;
       }
-      setResult(inviteStatusMessage(r.status));
+      setResult(inviteStatusText(t, r.status));
     } catch (e) {
       setResult(friendlyError(e));
     } finally {
@@ -117,7 +129,7 @@ export default function JoinScreen() {
         router.replace(`/channels/${r.channelId}`);
         return;
       }
-      setResult(inviteStatusMessage(r.status));
+      setResult(inviteStatusText(t, r.status));
     } catch (e) {
       setResult(friendlyError(e));
     } finally {
@@ -125,74 +137,82 @@ export default function JoinScreen() {
     }
   };
 
-  return (
-    <SafeAreaView style={gs.container} edges={['top']}>
-      <ScreenHeader title="Invite" onBack={back} />
-      <ScrollView contentContainerStyle={gs.scroll}>
-        {preview.kind === 'loading' && <ActivityIndicator color={Colors.accent} style={{ marginTop: 48 }} />}
+  if (preview.kind === 'loading') return shell(<ActivityIndicator color={c.accent} style={{ marginTop: 48 }} />);
 
-        {preview.kind === 'error' && (
-          <View style={gs.hero}>
-            <Text style={gs.heroTitle}>Can't open invite</Text>
-            <Text style={gs.heroSub}>{preview.message}</Text>
-          </View>
-        )}
+  if (preview.kind === 'error') {
+    return shell(
+      <Animated.View entering={FadeIn} style={s.card}>
+        <View style={[s.glyph, { backgroundColor: c.dangerTint, borderColor: c.dangerTint }]}>
+          <Icon name="link" size={30} color={c.danger} />
+        </View>
+        <Text style={gs.heroTitle}>{t('join.cantOpen')}</Text>
+        <Text style={gs.heroSub}>{preview.message}</Text>
+        <Button label={t('common.back')} variant="ghost" onPress={back} style={{ alignSelf: 'stretch' }} />
+      </Animated.View>
+    );
+  }
 
-        {preview.kind === 'group' && (
-          <>
-            <View style={gs.hero}>
-              <EntityAvatar name={preview.data.groupName ?? 'Group'} dataUri={preview.data.avatarData} size={96} icon="people" />
-              <Text style={gs.heroTitle}>{preview.data.groupName}</Text>
-              <Text style={gs.muted}>Group · {preview.data.memberCount} members</Text>
-              {!!preview.data.description && <Text style={gs.heroSub}>{preview.data.description}</Text>}
-            </View>
-            <Banner icon="lock-closed" text="Messages in this group are end-to-end encrypted. Members will see your name and username." />
-            {preview.data.requiresApproval && !preview.data.isMember && (
-              <Banner icon="hand-left-outline" tone="warning" text="An admin must approve your request before you can see messages." />
-            )}
-            {result ? (
-              <Text style={[gs.heroSub, { marginTop: 16 }]}>{result}</Text>
-            ) : (
-              <PrimaryButton
-                label={
-                  preview.data.isMember
-                    ? 'Open chat'
-                    : preview.data.hasPendingRequest
-                      ? 'Request pending'
-                      : preview.data.requiresApproval
-                        ? 'Request to join'
-                        : 'Join group'
-                }
-                disabled={busy || (preview.data.hasPendingRequest && !preview.data.isMember)}
-                onPress={() => void joinGroup(preview.data)}
-              />
-            )}
-          </>
-        )}
+  const isGroup = preview.kind === 'group';
+  const g = isGroup ? (preview.data as InvitePreview) : null;
+  const ch = !isGroup ? (preview.data as ChannelInvitePreview) : null;
+  const name = (g ? g.groupName : ch?.name) ?? (g ? t('communities.group') : t('channels.channel'));
 
-        {preview.kind === 'channel' && (
-          <>
-            <View style={gs.hero}>
-              <EntityAvatar name={preview.data.name ?? 'Channel'} dataUri={preview.data.avatarData} size={96} icon="megaphone" />
-              <Text style={gs.heroTitle}>{preview.data.name}</Text>
-              <Text style={gs.muted}>
-                @{preview.data.handle} · {followersLabel(preview.data.followerCount ?? 0)} · Private channel
-              </Text>
-              {!!preview.data.description && <Text style={gs.heroSub}>{preview.data.description}</Text>}
-            </View>
-            <Banner icon="information-circle-outline" tone="warning" text={CHANNELS_E2EE_NOTICE} />
-            {result ? (
-              <Text style={[gs.heroSub, { marginTop: 16 }]}>{result}</Text>
-            ) : (
-              <PrimaryButton
-                label={preview.data.isFollowing ? 'Open channel' : 'Follow channel'}
-                disabled={busy}
-                onPress={() => void followChannel(preview.data)}
-              />
-            )}
-          </>
+  const label = g
+    ? g.isMember
+      ? t('join.openChat')
+      : g.hasPendingRequest
+      ? t('join.pending')
+      : g.requiresApproval
+      ? t('join.request')
+      : t('join.joinGroup')
+    : ch?.isFollowing
+    ? t('join.openChannel')
+    : t('join.followChannel');
+
+  return shell(
+    <View style={{ gap: 12, width: '100%' }}>
+      <Animated.View entering={FadeIn} style={s.card}>
+        <Animated.View entering={ZoomIn.springify().damping(14)}>
+          <Ripple size={104} color={c.accentLine}>
+            <EntityAvatar name={name} dataUri={g ? g.avatarData : ch?.avatarData} size={104} icon={g ? 'users' : 'megaphone'} />
+          </Ripple>
+        </Animated.View>
+        <Text style={gs.heroTitle}>{name}</Text>
+        <Pill
+          icon={g ? 'users' : 'megaphone'}
+          tone="brass"
+          label={
+            g
+              ? t('groups.groupMembers', { count: g.memberCount ?? 0 })
+              : `@${ch?.handle} · ${t('channels.followers', { count: ch?.followerCount ?? 0, n: formatCount(ch?.followerCount ?? 0) })}`
+          }
+        />
+        {!!(g ? g.description : ch?.description) && <Text style={gs.heroSub}>{g ? g.description : ch?.description}</Text>}
+        {result ? (
+          <Animated.Text entering={FadeIn} style={[type.body, { textAlign: 'center', color: c.accentText }]}>
+            {result}
+          </Animated.Text>
+        ) : (
+          <Button
+            label={label}
+            icon={g ? 'users' : 'megaphone'}
+            loading={busy}
+            disabled={!!g && g.hasPendingRequest && !g.isMember}
+            onPress={() => void (g ? joinGroup(g) : followChannel(ch!))}
+            style={{ alignSelf: 'stretch' }}
+          />
         )}
-      </ScrollView>
-    </SafeAreaView>
+      </Animated.View>
+      <View style={{ marginHorizontal: -16 }}>
+        {g ? <Banner icon="lock" text={t('join.groupNote')} /> : <Banner icon="info" tone="warning" text={t('channels.notice')} />}
+        {g?.requiresApproval && !g.isMember && <Banner icon="info" tone="warning" text={t('join.approvalNote')} />}
+      </View>
+    </View>
   );
 }
+
+const useStyles = makeStyles((c, t, f) => ({
+  body: { flexGrow: 1, alignItems: 'center', justifyContent: 'center', padding: 16, paddingVertical: 40, width: '100%', maxWidth: 520, alignSelf: 'center' },
+  card: { width: '100%', alignItems: 'center', gap: 14, padding: 24, borderRadius: 28, backgroundColor: c.panel, borderWidth: 1, borderColor: c.line },
+  glyph: { width: 72, height: 72, borderRadius: 24, backgroundColor: c.accentTint, borderWidth: 1, borderColor: c.accentTint2, alignItems: 'center', justifyContent: 'center' },
+}));
