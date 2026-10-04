@@ -5,12 +5,13 @@
  */
 
 import React, { useCallback, useRef } from 'react';
-import { Alert, Modal, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, Modal, Platform, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
 import { getSodium } from '../../../core/crypto/sodium';
 import { requireSession } from '../../../core/session';
-import { Colors } from '../../../shared/theme/theme';
+import i18n, { useT } from '../../../shared/i18n';
+import { makeStyles, useTheme } from '../../../shared/theme/ThemeProvider';
+import { Icon, IconButton } from '../../../shared/ui';
 import { useMessagesStore } from '../../messages/useMessagesStore';
 import type { BotInfo } from '../BotRepository';
 import { bridgeResponse, BridgeRequest, BridgeResponse, httpsOrigin, opaqueUserId } from '../miniAppBridge';
@@ -20,12 +21,13 @@ const MAX_SENDS_PER_SESSION = 50;
 const MIN_SEND_INTERVAL_MS = 1000;
 
 function askConsent(botName: string): Promise<boolean> {
-  const text = `${botName} wants to know your display name. It gets a pseudonymous id that only works for this bot - never your Vero account id.`;
-  if (Platform.OS === 'web') return Promise.resolve(globalThis.confirm?.(`Share your name?\n\n${text}`) === true);
+  const text = i18n.t('bots.consentBody', { name: botName });
+  const title = i18n.t('bots.consentTitle');
+  if (Platform.OS === 'web') return Promise.resolve(globalThis.confirm?.(`${title}\n\n${text}`) === true);
   return new Promise((resolve) =>
-    Alert.alert('Share your name?', text, [
-      { text: 'Don’t allow', style: 'cancel', onPress: () => resolve(false) },
-      { text: 'Allow', onPress: () => resolve(true) },
+    Alert.alert(title, text, [
+      { text: i18n.t('bots.dontAllow'), style: 'cancel', onPress: () => resolve(false) },
+      { text: i18n.t('bots.allow'), onPress: () => resolve(true) },
     ], { cancelable: true, onDismiss: () => resolve(false) })
   );
 }
@@ -41,6 +43,9 @@ export function MiniAppSheet({
   visible: boolean;
   onClose: () => void;
 }) {
+  const { c } = useTheme();
+  const styles = useStyles();
+  const t = useT();
   const consent = useRef<boolean | null>(null);
   const sends = useRef({ count: 0, last: 0 });
 
@@ -81,9 +86,7 @@ export function MiniAppSheet({
     <Modal visible={visible} animationType="slide" onRequestClose={onClose} presentationStyle="pageSheet">
       <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
         <View style={styles.header}>
-          <TouchableOpacity onPress={onClose} accessibilityLabel="Close mini-app" style={styles.close}>
-            <Ionicons name="close" size={22} color={Colors.textPrimary} />
-          </TouchableOpacity>
+          <IconButton icon="close" label={t('bots.closeApp')} onPress={onClose} />
           <View style={styles.titleWrap}>
             <Text style={styles.title} numberOfLines={1}>
               {bot.name}
@@ -92,7 +95,9 @@ export function MiniAppSheet({
               {httpsOrigin(bot.miniAppUrl)?.replace('https://', '')}
             </Text>
           </View>
-          <Ionicons name="lock-closed" size={14} color={Colors.textTertiary} />
+          <View style={styles.lock}>
+            <Icon name="lock" size={13} color={c.success} />
+          </View>
         </View>
         {visible ? <MiniAppView url={bot.miniAppUrl} onRequest={handle} /> : null}
       </SafeAreaView>
@@ -100,19 +105,11 @@ export function MiniAppSheet({
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: Colors.background },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-    gap: 8,
-  },
-  close: { padding: 4 },
+const useStyles = makeStyles((c, t, f) => ({
+  container: { flex: 1, backgroundColor: c.bg },
+  header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: c.line, gap: 8 },
   titleWrap: { flex: 1 },
-  title: { color: Colors.textPrimary, fontSize: 16, fontWeight: '600' },
-  origin: { color: Colors.textTertiary, fontSize: 11 },
-});
+  title: { fontFamily: f.semibold, color: c.text, fontSize: 16 },
+  origin: { fontFamily: f.mono, color: c.faint, fontSize: 11 },
+  lock: { width: 30, height: 30, borderRadius: 10, backgroundColor: c.successTint, alignItems: 'center', justifyContent: 'center', marginRight: 6 },
+}));
